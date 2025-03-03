@@ -175,11 +175,17 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction * _Nonnull action) {
             self.selectedProfileName = name;
-            // Parse lastVersionId assuming format: "<modLoader>-loader-<loaderVersion>-<mcVersion>"
-            // Example: "fabric-loader-0.16.10-1.20.1"
+            // Parse lastVersionId with different logic for Forge and Fabric.
+            // If it has three components (e.g. "1.20-forge-46.0.14"), treat as Forge.
+            // If it has four or more components (e.g. "fabric-loader-0.16.10-1.20.1"), treat as Fabric.
             NSString *lastVersionId = [[[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
             NSArray *components = [lastVersionId componentsSeparatedByString:@"-"];
-            if (components.count >= 4) {
+            if (components.count == 3) {
+                // Forge format.
+                self.selectedMCVersion = components[0];
+                self.selectedModLoader = components[1];
+            } else if (components.count >= 4) {
+                // Fabric format.
                 self.selectedModLoader = components[0];
                 self.selectedMCVersion = [components lastObject];
             } else {
@@ -318,9 +324,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 #pragma mark - Version Filtering and Action Sheet
 - (void)showModDetails:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSArray *versionNames = mod[@"versionNames"];
-    // Use 'gameVersions' for Modrinth; fallback to 'mcVersionNames' for CurseForge.
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
-    // Get loaders array.
     NSArray *loadersArray = mod[@"versionLoaders"];
     NSLog(@"Mod %@ has versionNames: %@", mod[@"title"], versionNames);
     NSLog(@"Game versions: %@", gameVersionsArray);
@@ -330,31 +334,26 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
     if (self.selectedMCVersion.length == 0 || self.selectedModLoader.length == 0) {
-        // If either is missing, show all versions.
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        // Use relaxed matching for Minecraft version.
         NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
         NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
         NSLog(@"Filtering for MC version: %@ and loader: %@", profileMCVer, profileLoader);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
-            // Check game version match.
             id gameVerItem = gameVersionsArray[i];
             NSArray *gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : (@[gameVerItem]);
             BOOL mcMatch = NO;
             for (NSString *gv in gameVers) {
                 NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                if ([trimmedGV isEqualToString:profileMCVer] ||
-                    [trimmedGV hasPrefix:profileMCVer] ||
-                    [profileMCVer hasPrefix:trimmedGV]) {
+                // Relax matching: check if one is a prefix of the other.
+                if ([trimmedGV isEqualToString:profileMCVer] || [trimmedGV hasPrefix:profileMCVer] || [profileMCVer hasPrefix:trimmedGV]) {
                     mcMatch = YES;
                     break;
                 }
             }
-            // Check loader match.
             id loaderItem = (loadersArray && loadersArray.count > i) ? loadersArray[i] : nil;
             NSArray *versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
             BOOL loaderMatch = NO;
