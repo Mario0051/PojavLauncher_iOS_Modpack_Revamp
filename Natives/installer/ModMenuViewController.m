@@ -79,7 +79,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     presentAlertDialog(@"Installation Started", @"Queued mod installations have been triggered.");
 }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    NSLog(@"Queue table number of rows: %lu", (unsigned long)self.queue.count);
+    NSLog(@"Queue table rows: %lu", (unsigned long)self.queue.count);
     return self.queue.count;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {    
@@ -92,12 +92,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
     cell.textLabel.text = mod[@"title"];
     NSArray *versionNames = mod[@"versionNames"];
-    if (versionIndex < versionNames.count) {
-        cell.detailTextLabel.text = versionNames[versionIndex];
-    } else {
-        cell.detailTextLabel.text = @"Unknown Version";
-    }
-    NSLog(@"Queue cell configured for mod: %@, version: %@", mod[@"title"], cell.detailTextLabel.text);
+    cell.detailTextLabel.text = (versionIndex < versionNames.count ? versionNames[versionIndex] : @"Unknown Version");
     return cell;
 }
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
@@ -119,7 +114,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 @property (nonatomic, strong) CurseForgeAPI *curseForge;
 @property (nonatomic, strong) NSMutableDictionary *searchFilters;
 @property (nonatomic, strong) NSString *selectedProfileName;
-// New properties to hold both the Minecraft version and the mod loader.
+// New properties for both Minecraft version and mod loader.
 @property (nonatomic, strong) NSString *selectedMCVersion;
 @property (nonatomic, strong) NSString *selectedModLoader;
 @property (nonatomic, strong) NSMutableArray *installQueue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
@@ -138,19 +133,16 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     self.modsList = [NSMutableArray new];
     self.installQueue = [NSMutableArray new];
     
-    // Setup modern search controller.
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.navigationItem.searchController = self.searchController;
     
-    // Setup API segmented control.
     self.apiSegmentedControl = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
     self.apiSegmentedControl.selectedSegmentIndex = 0;
     [self.apiSegmentedControl addTarget:self action:@selector(updateModsList) forControlEvents:UIControlEventValueChanged];
     self.tableView.tableHeaderView = self.apiSegmentedControl;
     
-    // Left: Profile selection; Right: Install queue.
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Profile"
                                                                              style:UIBarButtonItemStylePlain
                                                                             target:self
@@ -195,7 +187,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 self.selectedMCVersion = lastVersionId;
             }
             NSLog(@"Selected profile: %@, mod loader: %@, Minecraft version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
-            // Update search filters with the selected Minecraft version.
             self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
         }]];
     }
@@ -215,7 +206,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSString *name = self.searchController.searchBar.text;
     NSLog(@"Updating mods list with search term: %@", name);
     self.searchFilters[@"name"] = name ?: @"";
-    // Ensure the selected MC version is in the filters.
     if (self.selectedMCVersion && self.selectedMCVersion.length > 0) {
         self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
     }
@@ -330,7 +320,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSArray *versionNames = mod[@"versionNames"];
     // Use 'gameVersions' for Modrinth; fallback to 'mcVersionNames' for CurseForge.
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
-    // Get loaders if available.
+    // Get loaders array.
     NSArray *loadersArray = mod[@"versionLoaders"];
     NSLog(@"Mod %@ has versionNames: %@", mod[@"title"], versionNames);
     NSLog(@"Game versions: %@", gameVersionsArray);
@@ -346,18 +336,20 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        // Filter by both Minecraft version and mod loader.
-        NSString *profileMCVer = [[[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
-        NSString *profileLoader = [[[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
-        NSLog(@"Filtering versions for MC version: %@ and loader: %@", profileMCVer, profileLoader);
+        // Use relaxed matching for Minecraft version.
+        NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+        NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+        NSLog(@"Filtering for MC version: %@ and loader: %@", profileMCVer, profileLoader);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             // Check game version match.
             id gameVerItem = gameVersionsArray[i];
             NSArray *gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : (@[gameVerItem]);
             BOOL mcMatch = NO;
             for (NSString *gv in gameVers) {
-                NSString *trimmedGV = [[[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
-                if ([trimmedGV isEqualToString:profileMCVer]) {
+                NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                if ([trimmedGV isEqualToString:profileMCVer] ||
+                    [trimmedGV hasPrefix:profileMCVer] ||
+                    [profileMCVer hasPrefix:trimmedGV]) {
                     mcMatch = YES;
                     break;
                 }
@@ -367,7 +359,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             NSArray *versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
             BOOL loaderMatch = NO;
             for (NSString *ld in versionLoaders) {
-                NSString *trimmedLD = [[[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
+                NSString *trimmedLD = [[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
                 if ([trimmedLD isEqualToString:profileLoader]) {
                     loaderMatch = YES;
                     break;
@@ -377,7 +369,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 [supportedIndices addObject:@(i)];
                 NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%@ / %@)",
                                           [gameVers componentsJoinedByString:@", "],
-                                          versionLoaders.count > 0 ? [versionLoaders componentsJoinedByString:@", "] : @""];
+                                          (versionLoaders.count > 0 ? [versionLoaders componentsJoinedByString:@", "] : @"")];
                 [supportedDisplayNames addObject:displayName];
             }
         }
