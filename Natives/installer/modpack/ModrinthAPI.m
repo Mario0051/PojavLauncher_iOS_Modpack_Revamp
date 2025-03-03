@@ -9,15 +9,9 @@
     return self;
 }
 
-- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters
-                       previousPageResult:(NSMutableArray *)modrinthSearchResult {
-    // Determine project type based on isModpack flag.
+- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters previousPageResult:(NSMutableArray *)modrinthSearchResult {
     NSString *projectType = [searchFilters[@"isModpack"] boolValue] ? @"modpack" : @"mod";
-    // Get the Minecraft version from the searchFilters.
     NSString *mcVer = searchFilters[@"mcVersion"];
-    
-    // Build the facets array per Modrinth API requirements.
-    // Example JSON: [["project_type:mod"],["versions:1.21.4"]]
     NSMutableArray *outerFacets = [NSMutableArray array];
     [outerFacets addObject:@[[NSString stringWithFormat:@"project_type:%@", projectType]]];
     if (mcVer && mcVer.length > 0) {
@@ -33,7 +27,6 @@
         NSLog(@"ModrinthAPI.searchModWithFilters: JSON error: %@", jsonError.localizedDescription);
     }
     
-    // Build the remaining parameters.
     int limit = 20;
     NSString *rawName = (searchFilters[@"name"] != nil ? searchFilters[@"name"] : @"");
     NSString *nameQuery = [rawName stringByReplacingOccurrencesOfString:@" " withString:@"+"];
