@@ -43,21 +43,27 @@
 }
 
 // Updated method for parsing version strings for different modloaders.
+// Supports:
+// - Forge: "1.20-forge-46.0.14"
+// - Fabric: "fabric-loader-0.16.10-1.21.4" (returns loader = "fabric")
+// - NeoForge: "1.20-neoforge-46.0.14"
+// - Quilt: "1.20-quilt-<version>"
 + (NSDictionary *)parseVersionString:(NSString *)versionString {
     if (!versionString || versionString.length == 0) return @{};
     NSString *trimmed = [[versionString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     NSArray *components = [trimmed componentsSeparatedByString:@"-"];
     NSMutableDictionary *result = [NSMutableDictionary new];
-    if (components.count == 3) {
-        // For forge (e.g., "1.20-forge-46.0.14")
-        result[@"mcVersion"] = components[0];
-        result[@"loader"] = components[1];
-        result[@"loaderVersion"] = components[2];
-    } else if (components.count == 4 && [components[0] isEqualToString:@"fabric"] && [components[1] isEqualToString:@"loader"]) {
-        // For fabric (e.g., "fabric-loader-0.16.10-1.21.4")
-        result[@"loader"] = @"fabric-loader";
+    
+    if (components.count == 4 && [components[0] isEqualToString:@"fabric"] && [components[1] isEqualToString:@"loader"]) {
+        // Fabric example: "fabric-loader-0.16.10-1.21.4"
+        result[@"loader"] = @"fabric";
         result[@"loaderVersion"] = components[2];
         result[@"mcVersion"] = components[3];
+    } else if (components.count == 3) {
+        // For Forge, NeoForge, or Quilt in the format "1.20-loader-46.0.14"
+        result[@"mcVersion"] = components[0];
+        result[@"loader"] = components[1]; // Expected to be "forge", "neoforge", or "quilt"
+        result[@"loaderVersion"] = components[2];
     } else {
         // Fallback: best-effort parsing.
         if (components.count >= 3) {
