@@ -7,7 +7,7 @@
 #import "PLProfiles.h"
 
 #pragma mark - Debug Logging to File
-// Writes debug logs to the console and appends them to a file in Documents/debug.log.
+// Writes debug logs to console and appends them to Documents/debug.log.
 static void DebugLogToFile(NSString *format, ...) {
     va_list args;
     va_start(args, format);
@@ -165,7 +165,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 
 #pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
-
 - (void)viewDidLoad {
     [super viewDidLoad];
     
@@ -204,7 +203,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     
     [self updateModsList];
 }
-
 #pragma mark - Profile Selection
 - (void)actionChooseProfile {
     NSDictionary *profiles = [PLProfiles current].profiles;
@@ -223,7 +221,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction * _Nonnull action) {
             self.selectedProfileName = name;
-            // Expecting lastVersionId to be formatted as "<gameVersion>-<loader>-<loaderVersion>"
+            // Parse lastVersionId in the format: "<gameVersion>-<loader>-<loaderVersion>"
             NSString *lastVersionId = [[[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
             NSRange dashRange = [lastVersionId rangeOfString:@"-"];
             if (dashRange.location != NSNotFound) {
@@ -232,7 +230,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 self.selectedMCVersion = lastVersionId;
             }
             DEBUG_LOG(@"Selected profile: %@, parsed Minecraft version: %@", self.selectedProfileName, self.selectedMCVersion);
-            // Update the search filters with the selected Minecraft version.
+            // Update search filters with the selected Minecraft version.
             self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
         }]];
     }
@@ -247,13 +245,12 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         DEBUG_LOG(@"Profile selection alert presented.");
     }];
 }
-
 #pragma mark - Mod Search
 - (void)updateModsList {
     NSString *name = self.searchController.searchBar.text;
     DEBUG_LOG(@"Updating mods list with search term: %@", name);
     self.searchFilters[@"name"] = name ?: @"";
-    // Ensure the selected MC version is sent with the search filters.
+    // Ensure the selected MC version is in the filters.
     if (self.selectedMCVersion && self.selectedMCVersion.length > 0) {
         self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
     }
@@ -295,7 +292,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateModsList) object:nil];
     [self performSelector:@selector(updateModsList) withObject:nil afterDelay:0.5];
 }
-
 #pragma mark - UITableView DataSource
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return 1;
@@ -319,7 +315,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     DEBUG_LOG(@"Configured mod cell: %@", mod[@"title"]);
     return cell;
 }
-
 #pragma mark - UITableView Delegate
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     NSDictionary *mod = self.modsList[indexPath.row];
@@ -365,7 +360,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         }];
     }
 }
-
 #pragma mark - Version Filtering and Action Sheet
 - (void)showModDetails:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSArray *versionNames = mod[@"versionNames"];
@@ -378,13 +372,12 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
     if (self.selectedMCVersion.length == 0) {
-        // No profile selected: show all versions.
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        // Use exact, case-insensitive matching per API docs.
+        // Use exact, case-insensitive matching per Modrinth API.
         NSString *profileVersion = [[[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
         DEBUG_LOG(@"Filtering versions for profile version: %@", profileVersion);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
@@ -425,7 +418,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [versionAlert addAction:[UIAlertAction actionWithTitle:displayName
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction * _Nonnull action) {
-            // Prompt user to choose install now or add to queue.
             UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
                                                                                     message:@"Choose to install now or add to the install queue."
                                                                              preferredStyle:UIAlertControllerStyleAlert];
@@ -480,7 +472,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         DEBUG_LOG(@"Version selection alert presented for mod: %@", mod[@"title"]);
     }];
 }
-
 #pragma mark - Install Queue
 - (void)updateQueueButtonTitle {
     NSUInteger count = self.installQueue.count;
@@ -506,5 +497,4 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         DEBUG_LOG(@"Install queue view presented.");
     }];
 }
-
 @end
