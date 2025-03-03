@@ -5,7 +5,7 @@
 #import "UIKit+AFNetworking.h"
 #import "utils.h"
 #import "PLProfiles.h"
-#import "ModpackUtils.h"
+#import "modpack/ModpackUtils.h"
 
 #pragma mark - Alert Dialog Helper
 static inline void presentAlertDialog(NSString *title, NSString *message) {
