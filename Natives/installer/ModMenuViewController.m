@@ -119,8 +119,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 @property (nonatomic, strong) CurseForgeAPI *curseForge;
 @property (nonatomic, strong) NSMutableDictionary *searchFilters;
 @property (nonatomic, strong) NSString *selectedProfileName;
+// New properties to hold both the Minecraft version and the mod loader.
 @property (nonatomic, strong) NSString *selectedMCVersion;
-// Install queue for mods awaiting installation.
+@property (nonatomic, strong) NSString *selectedModLoader;
 @property (nonatomic, strong) NSMutableArray *installQueue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
 @end
 
@@ -182,15 +183,19 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction * _Nonnull action) {
             self.selectedProfileName = name;
-            // Parse lastVersionId using the last dash to extract the Minecraft version.
-            NSString *lastVersionId = [[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-            NSRange lastDashRange = [lastVersionId rangeOfString:@"-" options:NSBackwardsSearch];
-            if (lastDashRange.location != NSNotFound) {
-                self.selectedMCVersion = [lastVersionId substringFromIndex:(lastDashRange.location + 1)];
+            // Parse lastVersionId assuming format: "<modLoader>-loader-<loaderVersion>-<mcVersion>"
+            // Example: "fabric-loader-0.16.10-1.20.1"
+            NSString *lastVersionId = [[[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
+            NSArray *components = [lastVersionId componentsSeparatedByString:@"-"];
+            if (components.count >= 4) {
+                self.selectedModLoader = components[0];
+                self.selectedMCVersion = [components lastObject];
             } else {
+                // Fallback if format unexpected.
+                self.selectedModLoader = @"";
                 self.selectedMCVersion = lastVersionId;
             }
-            NSLog(@"Selected profile: %@, parsed Minecraft version: %@", self.selectedProfileName, self.selectedMCVersion);
+            NSLog(@"Selected profile: %@, mod loader: %@, Minecraft version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
             // Update search filters with the selected Minecraft version.
             self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
         }]];
@@ -326,38 +331,50 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSArray *versionNames = mod[@"versionNames"];
     // Use 'gameVersions' for Modrinth; fallback to 'mcVersionNames' for CurseForge.
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
+    // Also get loaders if available.
+    NSArray *loadersArray = mod[@"versionLoaders"];
     NSLog(@"Mod %@ has versionNames: %@", mod[@"title"], versionNames);
     NSLog(@"Game versions: %@", gameVersionsArray);
+    NSLog(@"Loaders: %@", loadersArray);
     
     NSMutableArray<NSNumber *> *supportedIndices = [NSMutableArray array];
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
-    if (self.selectedMCVersion.length == 0) {
-        // No profile selected: show all versions.
+    if (self.selectedMCVersion.length == 0 || self.selectedModLoader.length == 0) {
+        // If no profile or mod loader selected, show all versions.
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        // Use exact, case-insensitive matching.
-        NSString *profileVersion = [[[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
-        NSLog(@"Filtering versions for profile version: %@", profileVersion);
+        // Filter by both Minecraft version and mod loader.
+        NSString *profileMCVer = [[[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
+        NSString *profileLoader = [[[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
+        NSLog(@"Filtering versions for MC version: %@ and loader: %@", profileMCVer, profileLoader);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
-            id gvItem = gameVersionsArray[i];
-            NSArray *gv = [gvItem isKindOfClass:[NSArray class]] ? gvItem : (@[gvItem]);
-            if (gv.count == 0) continue;
-            BOOL match = NO;
-            for (NSString *gameVer in gv) {
-                NSString *trimmedGameVer = [[[gameVer stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
-                NSLog(@"Comparing game version '%@' with profile version '%@'", trimmedGameVer, profileVersion);
-                if ([trimmedGameVer isEqualToString:profileVersion]) {
-                    match = YES;
+            id gameVerItem = gameVersionsArray[i];
+            NSArray *gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : (@[gameVerItem]);
+            BOOL mcMatch = NO;
+            for (NSString *gv in gameVers) {
+                NSString *trimmedGV = [[[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
+                if ([trimmedGV isEqualToString:profileMCVer]) {
+                    mcMatch = YES;
                     break;
                 }
             }
-            if (match) {
+            id loaderItem = (loadersArray && loadersArray.count > i) ? loadersArray[i] : nil;
+            NSArray *versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (versionLoaders ? @[versionItem] : @[]);
+            BOOL loaderMatch = NO;
+            for (NSString *ld in versionLoaders) {
+                NSString *trimmedLD = [[[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
+                if ([trimmedLD isEqualToString:profileLoader]) {
+                    loaderMatch = YES;
+                    break;
+                }
+            }
+            if (mcMatch && loaderMatch) {
                 [supportedIndices addObject:@(i)];
-                NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%@)", [gv componentsJoinedByString:@", "]];
+                NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%@ / %@)", [gameVers componentsJoinedByString:@", "], (loaderItem ? [versionLoaders componentsJoinedByString:@", "] : @"")];
                 [supportedDisplayNames addObject:displayName];
             }
         }
