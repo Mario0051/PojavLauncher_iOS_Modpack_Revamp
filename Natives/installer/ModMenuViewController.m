@@ -6,10 +6,24 @@
 #import "utils.h"
 #import "PLProfiles.h"
 
-// Forward declaration for helper function.
+// Helper to normalize version strings by stripping non-numeric and non-dot characters.
+static inline NSString *normalizedVersion(NSString *version) {
+    if (!version) return @"";
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"0123456789."];
+    NSMutableString *normalized = [NSMutableString string];
+    for (NSUInteger i = 0; i < version.length; i++) {
+        unichar c = [version characterAtIndex:i];
+        if ([allowed characterIsMember:c]) {
+            [normalized appendFormat:@"%C", c];
+        }
+    }
+    return normalized;
+}
+
+// Forward declaration for alert dialog helper.
 static inline void presentAlertDialog(NSString *title, NSString *message);
 
-// Helper function to present alert dialogs.
+// Helper to present alert dialogs.
 static inline void presentAlertDialog(NSString *title, NSString *message) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
                                                                    message:message
@@ -56,18 +70,23 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         presentAlertDialog(localize(@"Queue Empty", nil), @"There are no mods in the install queue.");
         return;
     }
-    // Trigger installation for each queued mod.
     for (NSDictionary *entry in self.queue) {
         NSDictionary *mod = entry[@"mod"];
         NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
         NSNumber *apiSource = mod[@"apiSource"];
         if ([apiSource integerValue] == 1) {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" object:nil userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
+                                                                object:nil
+                                                              userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
         } else {
             if ([mod[@"isModpack"] boolValue]) {
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack" object:nil userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack"
+                                                                    object:nil
+                                                                  userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
             } else {
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" object:nil userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
+                                                                    object:nil
+                                                                  userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
             }
         }
     }
@@ -124,7 +143,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 @property (nonatomic, strong) NSMutableDictionary *searchFilters;
 @property (nonatomic, strong) NSString *selectedProfileName;
 @property (nonatomic, strong) NSString *selectedMCVersion;
-// New install queue property.
+// Install queue for mods waiting for installation.
 @property (nonatomic, strong) NSMutableArray *installQueue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
 @end
 
@@ -154,12 +173,11 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [self.apiSegmentedControl addTarget:self action:@selector(updateModsList) forControlEvents:UIControlEventValueChanged];
     self.tableView.tableHeaderView = self.apiSegmentedControl;
     
-    // Add profile selection button on the left.
+    // Left: Profile selection; Right: Install queue.
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Profile"
                                                                              style:UIBarButtonItemStylePlain
                                                                             target:self
                                                                             action:@selector(actionChooseProfile)];
-    // Add mod install queue button on the right.
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Queue (0)"
                                                                               style:UIBarButtonItemStylePlain
                                                                              target:self
@@ -323,49 +341,39 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 
 - (void)showModDetails:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSArray *versionNames = mod[@"versionNames"];
+    // Use 'gameVersions' for Modrinth; fallback to 'mcVersionNames' for CurseForge.
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
     
     NSMutableArray<NSNumber *> *supportedIndices = [NSMutableArray array];
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
+    // If no profile is selected, show all versions.
     if (self.selectedMCVersion.length == 0) {
-        // No profile selected: show all versions.
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        // Filter versions that support the selected profile version.
+        NSString *profileNorm = normalizedVersion(self.selectedMCVersion);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             id gvItem = gameVersionsArray[i];
             NSArray *gv = [gvItem isKindOfClass:[NSArray class]] ? gvItem : (@[gvItem]);
             if (gv.count == 0) continue;
-            if ([gv containsObject:self.selectedMCVersion]) {
+            BOOL match = NO;
+            for (NSString *modVer in gv) {
+                if ([normalizedVersion(modVer) isEqualToString:profileNorm]) {
+                    match = YES;
+                    break;
+                }
+            }
+            if (match) {
                 [supportedIndices addObject:@(i)];
                 NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%@)", [gv componentsJoinedByString:@", "]];
                 [supportedDisplayNames addObject:displayName];
             }
         }
         if (supportedIndices.count == 0) {
-            // Instead of silently failing, show an action sheet indicating no supported versions.
-            UIAlertController *noSupportAlert = [UIAlertController alertControllerWithTitle:@"No Supported Versions"
-                                                                                    message:@"There are no supported versions available for your selected profile for this mod."
-                                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-            [noSupportAlert addAction:[UIAlertAction actionWithTitle:localize(@"OK", nil)
-                                                               style:UIAlertActionStyleCancel
-                                                             handler:nil]];
-            if (noSupportAlert.popoverPresentationController) {
-                UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
-                if (cell) {
-                    noSupportAlert.popoverPresentationController.sourceView = cell;
-                    noSupportAlert.popoverPresentationController.sourceRect = cell.bounds;
-                } else {
-                    noSupportAlert.popoverPresentationController.sourceView = self.view;
-                    noSupportAlert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
-                                                                                        CGRectGetMidY(self.view.bounds), 1, 1);
-                }
-            }
-            [self presentViewController:noSupportAlert animated:YES completion:nil];
+            presentAlertDialog(localize(@"Error", nil), @"No supported versions available for your selected profile.");
             return;
         }
     }
@@ -379,10 +387,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [versionAlert addAction:[UIAlertAction actionWithTitle:displayName
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction * _Nonnull action) {
-            // Prompt the user to install immediately or add to the install queue.
             UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
-                                                                                   message:@"Choose to install now or add to the install queue."
-                                                                            preferredStyle:UIAlertControllerStyleAlert];
+                                                                                    message:@"Choose to install now or add to the install queue."
+                                                                             preferredStyle:UIAlertControllerStyleAlert];
             [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Install Now"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(UIAlertAction * _Nonnull action) {
