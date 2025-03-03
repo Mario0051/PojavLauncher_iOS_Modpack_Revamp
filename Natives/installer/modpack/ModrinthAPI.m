@@ -1,5 +1,5 @@
-#import "MinecraftResourceDownloadTask.h"
 #import "ModrinthAPI.h"
+#import "MinecraftResourceDownloadTask.h"
 #import "PLProfiles.h"
 
 @implementation ModrinthAPI
@@ -9,27 +9,48 @@
     return self;
 }
 
-- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters previousPageResult:(NSMutableArray *)modrinthSearchResult {
-    int limit = 50;
-    NSMutableString *facetString = [NSMutableString new];
-    [facetString appendString:@"["];
-    [facetString appendFormat:@"[\"project_type:%@\"]", [searchFilters[@"isModpack"] boolValue] ? @"modpack" : @"mod"];
-    if ([searchFilters[@"mcVersion"] length] > 0) {
-        [facetString appendFormat:@",[\"versions:%@\"]", searchFilters[@"mcVersion"]];
+- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters
+                       previousPageResult:(NSMutableArray *)modrinthSearchResult {
+    // Determine project type based on isModpack flag.
+    NSString *projectType = [searchFilters[@"isModpack"] boolValue] ? @"modpack" : @"mod";
+    // Get the Minecraft version from the searchFilters (set by ModMenuViewController)
+    NSString *mcVer = searchFilters[@"mcVersion"];
+    
+    // Build the facets array per Modrinth API requirements.
+    // Example JSON: [["project_type:mod"],["versions:1.21.4"]]
+    NSMutableArray *outerFacets = [NSMutableArray array];
+    [outerFacets addObject:@[[NSString stringWithFormat:@"project_type:%@", projectType]]];
+    if (mcVer && mcVer.length > 0) {
+        [outerFacets addObject:@[[NSString stringWithFormat:@"versions:%@", mcVer]]];
     }
-    [facetString appendString:@"]"];
+    
+    NSError *jsonError = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:outerFacets options:0 error:&jsonError];
+    NSString *facetsParam = @"[]";
+    if (jsonData && !jsonError) {
+        facetsParam = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+    } else {
+        NSLog(@"ModrinthAPI.searchModWithFilters: JSON error: %@", jsonError.localizedDescription);
+    }
+    
+    // Build the remaining parameters.
+    int limit = 20;
+    NSString *nameQuery = [[searchFilters[@"name"] ?: @""] stringByReplacingOccurrencesOfString:@" " withString:@"+"];
     NSDictionary *params = @{
-        @"facets": facetString,
-        @"query": [searchFilters[@"name"] stringByReplacingOccurrencesOfString:@" " withString:@"+"],
         @"limit": @(limit),
         @"index": @"relevance",
-        @"offset": @(modrinthSearchResult.count)
+        @"facets": facetsParam,
+        @"offset": @(modrinthSearchResult.count),
+        @"query": nameQuery
     };
+    
+    // Execute the search GET request.
     NSDictionary *response = [self getEndpoint:@"search" params:params];
     if (!response) {
         NSLog(@"ModrinthAPI.searchModWithFilters: No response returned");
         return nil;
     }
+    
     NSMutableArray *result = modrinthSearchResult ?: [NSMutableArray new];
     for (NSDictionary *hit in response[@"hits"]) {
         BOOL isModpack = [hit[@"project_type"] isEqualToString:@"modpack"];
@@ -37,18 +58,18 @@
             @"apiSource": @(1),
             @"isModpack": @(isModpack),
             @"id": hit[@"project_id"],
-            @"title": hit[@"title"],
-            @"description": hit[@"description"],
-            @"imageUrl": hit[@"icon_url"]
+            @"title": hit[@"title"] ?: @"",
+            @"description": hit[@"description"] ?: @"",
+            @"imageUrl": hit[@"icon_url"] ?: @""
         } mutableCopy]];
     }
+    
     self.reachedLastPage = result.count >= [response[@"total_hits"] unsignedLongValue];
     return result;
 }
 
 - (void)loadDetailsOfMod:(NSMutableDictionary *)item {
-    [self loadDetailsOfMod:item completion:^(NSError *error) {
-    }];
+    [self loadDetailsOfMod:item completion:^(NSError *error) {}];
 }
 
 - (void)loadDetailsOfModSync:(NSMutableDictionary *)item {
