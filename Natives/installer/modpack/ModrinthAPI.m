@@ -35,8 +35,9 @@
     
     // Build the remaining parameters.
     int limit = 20;
-    // Replace nil using ternary operator
-    NSString *nameQuery = [[(searchFilters[@"name"]) ? searchFilters[@"name"] : @""] stringByReplacingOccurrencesOfString:@" " withString:@"+"];
+    // Use separate variable for the search term to avoid implicit function declaration errors.
+    NSString *rawName = (searchFilters[@"name"] != nil ? searchFilters[@"name"] : @"");
+    NSString *nameQuery = [rawName stringByReplacingOccurrencesOfString:@" " withString:@"+"];
     NSDictionary *params = @{
         @"limit": @(limit),
         @"index": @"relevance",
@@ -45,7 +46,6 @@
         @"query": nameQuery
     };
     
-    // Execute the search GET request.
     NSDictionary *response = [self getEndpoint:@"search" params:params];
     if (!response) {
         NSLog(@"[ModrinthAPI] searchModWithFilters: No response returned");
