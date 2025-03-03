@@ -7,7 +7,7 @@
 #import "PLProfiles.h"
 
 #pragma mark - Debug Logging to File
-// Writes debug logs to console and appends them to Documents/debug.log.
+// Writes debug logs to the console and appends them to Documents/debug.log.
 static void DebugLogToFile(NSString *format, ...) {
     va_list args;
     va_start(args, format);
@@ -372,12 +372,13 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
     if (self.selectedMCVersion.length == 0) {
+        // No profile selected: show all versions.
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        // Use exact, case-insensitive matching per Modrinth API.
+        // Use exact, case-insensitive matching per API docs.
         NSString *profileVersion = [[[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
         DEBUG_LOG(@"Filtering versions for profile version: %@", profileVersion);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
