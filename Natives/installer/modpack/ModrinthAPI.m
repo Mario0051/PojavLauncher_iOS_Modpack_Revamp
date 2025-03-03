@@ -13,7 +13,7 @@
                        previousPageResult:(NSMutableArray *)modrinthSearchResult {
     // Determine project type based on isModpack flag.
     NSString *projectType = [searchFilters[@"isModpack"] boolValue] ? @"modpack" : @"mod";
-    // Get the Minecraft version from the searchFilters (set by ModMenuViewController)
+    // Get the Minecraft version from the searchFilters.
     NSString *mcVer = searchFilters[@"mcVersion"];
     
     // Build the facets array per Modrinth API requirements.
@@ -35,7 +35,6 @@
     
     // Build the remaining parameters.
     int limit = 20;
-    // Use separate variable for the search term to avoid implicit function declaration errors.
     NSString *rawName = (searchFilters[@"name"] != nil ? searchFilters[@"name"] : @"");
     NSString *nameQuery = [rawName stringByReplacingOccurrencesOfString:@" " withString:@"+"];
     NSDictionary *params = @{
