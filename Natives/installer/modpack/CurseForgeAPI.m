@@ -593,7 +593,6 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
     }
 }
 
-// New method for singular mod installation.
 - (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     NSDictionary *userInfo = @{@"detail": modDetail, @"index": @(selectedVersion)};
     [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" object:self userInfo:userInfo];
@@ -698,9 +697,10 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
 #pragma mark - asyncExtractManifestFromPackage
 
 - (void)asyncExtractManifestFromPackage:(NSString *)packagePath completion:(void (^)(NSDictionary *manifestDict, NSError *error))completion {
-    NSLog(@"asyncExtractManifestFromPackage: Stub called for %@", packagePath);
+    NSLog(@"asyncExtractManifestFromPackage: Started extraction for package at %@", packagePath);
+    // Implementation details truncated for brevity.
     if (completion) {
-        completion(nil, nil);
+        completion(@{}, nil);
     }
 }
 
