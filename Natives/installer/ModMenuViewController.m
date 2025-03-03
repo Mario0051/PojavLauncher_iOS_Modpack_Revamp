@@ -182,11 +182,11 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction * _Nonnull action) {
             self.selectedProfileName = name;
-            // Parse lastVersionId in the format: "<gameVersion>-<loader>-<loaderVersion>"
-            NSString *lastVersionId = [[[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
-            NSRange dashRange = [lastVersionId rangeOfString:@"-"];
-            if (dashRange.location != NSNotFound) {
-                self.selectedMCVersion = [lastVersionId substringToIndex:dashRange.location];
+            // Parse lastVersionId using the last dash to extract the Minecraft version.
+            NSString *lastVersionId = [[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+            NSRange lastDashRange = [lastVersionId rangeOfString:@"-" options:NSBackwardsSearch];
+            if (lastDashRange.location != NSNotFound) {
+                self.selectedMCVersion = [lastVersionId substringFromIndex:(lastDashRange.location + 1)];
             } else {
                 self.selectedMCVersion = lastVersionId;
             }
@@ -333,12 +333,13 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
     if (self.selectedMCVersion.length == 0) {
+        // No profile selected: show all versions.
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        // Use exact, case-insensitive matching per API docs.
+        // Use exact, case-insensitive matching.
         NSString *profileVersion = [[[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
         NSLog(@"Filtering versions for profile version: %@", profileVersion);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
