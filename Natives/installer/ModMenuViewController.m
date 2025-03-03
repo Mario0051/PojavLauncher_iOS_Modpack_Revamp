@@ -13,7 +13,7 @@
     #define DEBUG_LOG(...)
 #endif
 
-// Helper to present alert dialogs.
+#pragma mark - Alert Dialog Helper
 static inline void presentAlertDialog(NSString *title, NSString *message) {
     DEBUG_LOG(@"Presenting alert: %@ - %@", title, message);
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
@@ -206,6 +206,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction * _Nonnull action) {
             self.selectedProfileName = name;
+            // Parse the lastVersionId per Modrinth API convention: "<gameVersion>-<loader>-<loaderVersion>".
             NSString *lastVersionId = [[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
             NSRange dashRange = [lastVersionId rangeOfString:@"-"];
             if (dashRange.location != NSNotFound) {
@@ -361,13 +362,14 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
     if (self.selectedMCVersion.length == 0) {
-        // No profile: show all versions.
+        // No profile selected: show all versions.
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        NSString *profileVersion = [[[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
+        // Correct logic per Modrinth API: use exact case-insensitive matching.
+        NSString *profileVersion = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
         DEBUG_LOG(@"Filtering versions for profile version: %@", profileVersion);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             id gvItem = gameVersionsArray[i];
@@ -375,9 +377,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             if (gv.count == 0) continue;
             BOOL match = NO;
             for (NSString *gameVer in gv) {
-                NSString *trimmedGameVer = [[[gameVer stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
-                DEBUG_LOG(@"Comparing game version %@ with profile version %@", trimmedGameVer, profileVersion);
-                if ([trimmedGameVer hasPrefix:profileVersion]) {
+                NSString *trimmedGameVer = [[gameVer stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                DEBUG_LOG(@"Comparing game version '%@' with profile version '%@'", trimmedGameVer, profileVersion);
+                if ([trimmedGameVer isEqualToString:profileVersion]) {
                     match = YES;
                     break;
                 }
@@ -394,6 +396,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             return;
         }
     }
+    
     DEBUG_LOG(@"Supported indices: %@", supportedIndices);
     DEBUG_LOG(@"Supported display names: %@", supportedDisplayNames);
     
@@ -406,7 +409,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [versionAlert addAction:[UIAlertAction actionWithTitle:displayName
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction * _Nonnull action) {
-            // Prompt for immediate install or queue.
+            // Prompt the user to choose install now or add to queue.
             UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
                                                                                     message:@"Choose to install now or add to the install queue."
                                                                              preferredStyle:UIAlertControllerStyleAlert];
