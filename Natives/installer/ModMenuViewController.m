@@ -6,9 +6,41 @@
 #import "utils.h"
 #import "PLProfiles.h"
 
-#pragma mark - Debug Logging Macro
+#pragma mark - Debug Logging to File
+// Writes debug logs to the console and appends them to a file in Documents/debug.log.
+static void DebugLogToFile(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *logMsg = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    
+    NSLog(@"DEBUG: %@", logMsg);
+    
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+    NSString *timeStamp = [formatter stringFromDate:[NSDate date]];
+    NSString *timeStampedLog = [NSString stringWithFormat:@"%@: %@\n", timeStamp, logMsg];
+    
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documentsDirectory = [paths firstObject];
+    NSString *filePath = [documentsDirectory stringByAppendingPathComponent:@"debug.log"];
+    
+    NSFileHandle *fileHandle = [NSFileHandle fileHandleForWritingAtPath:filePath];
+    if (!fileHandle) {
+        NSError *error = nil;
+        BOOL success = [[NSFileManager defaultManager] createFileAtPath:filePath contents:[timeStampedLog dataUsingEncoding:NSUTF8StringEncoding] attributes:nil];
+        if (!success || error) {
+            NSLog(@"Failed to create debug log file: %@", error.localizedDescription);
+        }
+    } else {
+        [fileHandle seekToEndOfFile];
+        [fileHandle writeData:[timeStampedLog dataUsingEncoding:NSUTF8StringEncoding]];
+        [fileHandle closeFile];
+    }
+}
+
 #ifdef DEBUG
-    #define DEBUG_LOG(fmt, ...) NSLog((@"DEBUG: " fmt), ##__VA_ARGS__)
+    #define DEBUG_LOG(fmt, ...) DebugLogToFile((@"DEBUG: " fmt), ##__VA_ARGS__)
 #else
     #define DEBUG_LOG(...)
 #endif
@@ -32,31 +64,25 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 }
 
 #pragma mark - ModQueueViewController Interface
-
 @interface ModQueueViewController : UITableViewController
 @property (nonatomic, strong) NSMutableArray *queue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
 @property (nonatomic, copy) void (^didFinishInstallation)(void);
 @end
 
 #pragma mark - ModQueueViewController Implementation
-
 @implementation ModQueueViewController
-
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Install Queue";
     self.tableView.tableFooterView = [UIView new];
     DEBUG_LOG(@"ModQueueViewController loaded.");
     
-    // "Install" button.
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Install"
                                                                               style:UIBarButtonItemStyleDone
                                                                              target:self
                                                                              action:@selector(installQueueAction)];
-    // Enable swipe-to-delete.
     self.navigationItem.leftBarButtonItem = self.editButtonItem;
 }
-
 - (void)installQueueAction {
     DEBUG_LOG(@"Install queue action triggered. Queue count: %lu", (unsigned long)self.queue.count);
     if (self.queue.count == 0) {
@@ -91,14 +117,10 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [self.tableView reloadData];
     presentAlertDialog(@"Installation Started", @"Queued mod installations have been triggered.");
 }
-
-#pragma mark - Table view data source
-
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     DEBUG_LOG(@"Queue table number of rows: %lu", (unsigned long)self.queue.count);
     return self.queue.count;
 }
-
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {    
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"QueueCell"];
     if (!cell) {
@@ -117,7 +139,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     DEBUG_LOG(@"Queue cell configured for mod: %@, version: %@", mod[@"title"], cell.detailTextLabel.text);
     return cell;
 }
-
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
  forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
@@ -126,11 +147,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
     }
 }
-
 @end
 
 #pragma mark - ModMenuViewController Interface
-
 @interface ModMenuViewController () <UISearchResultsUpdating, UITableViewDelegate, UITableViewDataSource>
 @property (nonatomic, strong) UISearchController *searchController;
 @property (nonatomic, strong) UISegmentedControl *apiSegmentedControl;
@@ -145,7 +164,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 @end
 
 #pragma mark - ModMenuViewController Implementation
-
 @implementation ModMenuViewController
 
 - (void)viewDidLoad {
@@ -188,7 +206,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 }
 
 #pragma mark - Profile Selection
-
 - (void)actionChooseProfile {
     NSDictionary *profiles = [PLProfiles current].profiles;
     if (!profiles || profiles.count == 0) {
@@ -206,8 +223,8 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction * _Nonnull action) {
             self.selectedProfileName = name;
-            // Parse the lastVersionId per Modrinth API convention: "<gameVersion>-<loader>-<loaderVersion>".
-            NSString *lastVersionId = [[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+            // Expecting lastVersionId to be formatted as "<gameVersion>-<loader>-<loaderVersion>"
+            NSString *lastVersionId = [[[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
             NSRange dashRange = [lastVersionId rangeOfString:@"-"];
             if (dashRange.location != NSNotFound) {
                 self.selectedMCVersion = [lastVersionId substringToIndex:dashRange.location];
@@ -215,6 +232,8 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 self.selectedMCVersion = lastVersionId;
             }
             DEBUG_LOG(@"Selected profile: %@, parsed Minecraft version: %@", self.selectedProfileName, self.selectedMCVersion);
+            // Update the search filters with the selected Minecraft version.
+            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
         }]];
     }
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
@@ -230,15 +249,17 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 }
 
 #pragma mark - Mod Search
-
 - (void)updateModsList {
     NSString *name = self.searchController.searchBar.text;
     DEBUG_LOG(@"Updating mods list with search term: %@", name);
     self.searchFilters[@"name"] = name ?: @"";
+    // Ensure the selected MC version is sent with the search filters.
+    if (self.selectedMCVersion && self.selectedMCVersion.length > 0) {
+        self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+    }
     [self.modsList removeAllObjects];
     [self refreshModsListWithPrevList:NO];
 }
-
 - (void)refreshModsListWithPrevList:(BOOL)prevList {
     DEBUG_LOG(@"Refreshing mods list. Previous list: %@", prevList ? @"YES" : @"NO");
     if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
@@ -270,14 +291,12 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         }];
     }
 }
-
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateModsList) object:nil];
     [self performSelector:@selector(updateModsList) withObject:nil afterDelay:0.5];
 }
 
 #pragma mark - UITableView DataSource
-
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return 1;
 }
@@ -302,7 +321,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 }
 
 #pragma mark - UITableView Delegate
-
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     NSDictionary *mod = self.modsList[indexPath.row];
     DEBUG_LOG(@"Selected mod: %@", mod[@"title"]);
@@ -313,7 +331,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [self loadModDetailsForMod:mod atIndexPath:indexPath];
     }
 }
-
 - (void)loadModDetailsForMod:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSMutableDictionary *modMutable = [mod mutableCopy];
     DEBUG_LOG(@"Loading details for mod: %@", mod[@"title"]);
@@ -350,7 +367,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 }
 
 #pragma mark - Version Filtering and Action Sheet
-
 - (void)showModDetails:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSArray *versionNames = mod[@"versionNames"];
     // Use 'gameVersions' for Modrinth; fallback to 'mcVersionNames' for CurseForge.
@@ -368,8 +384,8 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        // Correct logic per Modrinth API: use exact case-insensitive matching.
-        NSString *profileVersion = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+        // Use exact, case-insensitive matching per API docs.
+        NSString *profileVersion = [[[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
         DEBUG_LOG(@"Filtering versions for profile version: %@", profileVersion);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             id gvItem = gameVersionsArray[i];
@@ -377,7 +393,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             if (gv.count == 0) continue;
             BOOL match = NO;
             for (NSString *gameVer in gv) {
-                NSString *trimmedGameVer = [[gameVer stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                NSString *trimmedGameVer = [[[gameVer stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
                 DEBUG_LOG(@"Comparing game version '%@' with profile version '%@'", trimmedGameVer, profileVersion);
                 if ([trimmedGameVer isEqualToString:profileVersion]) {
                     match = YES;
@@ -409,7 +425,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [versionAlert addAction:[UIAlertAction actionWithTitle:displayName
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction * _Nonnull action) {
-            // Prompt the user to choose install now or add to queue.
+            // Prompt user to choose install now or add to queue.
             UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
                                                                                     message:@"Choose to install now or add to the install queue."
                                                                              preferredStyle:UIAlertControllerStyleAlert];
@@ -466,13 +482,11 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 }
 
 #pragma mark - Install Queue
-
 - (void)updateQueueButtonTitle {
     NSUInteger count = self.installQueue.count;
     self.navigationItem.rightBarButtonItem.title = [NSString stringWithFormat:@"Queue (%lu)", (unsigned long)count];
     DEBUG_LOG(@"Queue button updated, count: %lu", (unsigned long)count);
 }
-
 - (void)actionShowQueue {
     ModQueueViewController *queueVC = [ModQueueViewController new];
     queueVC.queue = self.installQueue;
