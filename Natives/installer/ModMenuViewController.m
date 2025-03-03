@@ -6,24 +6,7 @@
 #import "utils.h"
 #import "PLProfiles.h"
 
-// Helper to normalize version strings by stripping non-numeric and non-dot characters.
-static inline NSString *normalizedVersion(NSString *version) {
-    if (!version) return @"";
-    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"0123456789."];
-    NSMutableString *normalized = [NSMutableString string];
-    for (NSUInteger i = 0; i < version.length; i++) {
-        unichar c = [version characterAtIndex:i];
-        if ([allowed characterIsMember:c]) {
-            [normalized appendFormat:@"%C", c];
-        }
-    }
-    return normalized;
-}
-
-// Forward declaration for alert dialog helper.
-static inline void presentAlertDialog(NSString *title, NSString *message);
-
-// Helper to present alert dialogs.
+// Helper function to present alert dialogs.
 static inline void presentAlertDialog(NSString *title, NSString *message) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
                                                                    message:message
@@ -56,7 +39,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     self.title = @"Install Queue";
     self.tableView.tableFooterView = [UIView new];
     
-    // Add an "Install" button.
+    // "Install" button.
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Install"
                                                                               style:UIBarButtonItemStyleDone
                                                                              target:self
@@ -143,7 +126,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 @property (nonatomic, strong) NSMutableDictionary *searchFilters;
 @property (nonatomic, strong) NSString *selectedProfileName;
 @property (nonatomic, strong) NSString *selectedMCVersion;
-// Install queue for mods waiting for installation.
+// New install queue property.
 @property (nonatomic, strong) NSMutableArray *installQueue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
 @end
 
@@ -161,7 +144,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     self.modsList = [NSMutableArray new];
     self.installQueue = [NSMutableArray new];
     
-    // Setup search controller.
+    // Setup modern search controller.
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
@@ -207,7 +190,8 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction * _Nonnull action) {
             self.selectedProfileName = name;
-            NSString *lastVersionId = profile[@"lastVersionId"];
+            // Trim whitespace and extract the Minecraft version before the first dash.
+            NSString *lastVersionId = [profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
             NSRange dashRange = [lastVersionId rangeOfString:@"-"];
             if (dashRange.location != NSNotFound) {
                 self.selectedMCVersion = [lastVersionId substringToIndex:dashRange.location];
@@ -354,14 +338,17 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        NSString *profileNorm = normalizedVersion(self.selectedMCVersion);
+        NSString *profileVersion = [self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             id gvItem = gameVersionsArray[i];
+            // Ensure gv is an array.
             NSArray *gv = [gvItem isKindOfClass:[NSArray class]] ? gvItem : (@[gvItem]);
             if (gv.count == 0) continue;
             BOOL match = NO;
-            for (NSString *modVer in gv) {
-                if ([normalizedVersion(modVer) isEqualToString:profileNorm]) {
+            for (NSString *gameVer in gv) {
+                NSString *trimmedGameVer = [gameVer stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                // Compare using caseInsensitiveCompare.
+                if ([trimmedGameVer caseInsensitiveCompare:profileVersion] == NSOrderedSame) {
                     match = YES;
                     break;
                 }
