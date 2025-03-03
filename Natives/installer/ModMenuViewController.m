@@ -191,7 +191,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 self.selectedModLoader = components[0];
                 self.selectedMCVersion = [components lastObject];
             } else {
-                // Fallback if format unexpected.
                 self.selectedModLoader = @"";
                 self.selectedMCVersion = lastVersionId;
             }
@@ -331,7 +330,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSArray *versionNames = mod[@"versionNames"];
     // Use 'gameVersions' for Modrinth; fallback to 'mcVersionNames' for CurseForge.
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
-    // Also get loaders if available.
+    // Get loaders if available.
     NSArray *loadersArray = mod[@"versionLoaders"];
     NSLog(@"Mod %@ has versionNames: %@", mod[@"title"], versionNames);
     NSLog(@"Game versions: %@", gameVersionsArray);
@@ -341,7 +340,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
     if (self.selectedMCVersion.length == 0 || self.selectedModLoader.length == 0) {
-        // If no profile or mod loader selected, show all versions.
+        // If either is missing, show all versions.
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
@@ -352,6 +351,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         NSString *profileLoader = [[[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
         NSLog(@"Filtering versions for MC version: %@ and loader: %@", profileMCVer, profileLoader);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
+            // Check game version match.
             id gameVerItem = gameVersionsArray[i];
             NSArray *gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : (@[gameVerItem]);
             BOOL mcMatch = NO;
@@ -362,8 +362,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                     break;
                 }
             }
+            // Check loader match.
             id loaderItem = (loadersArray && loadersArray.count > i) ? loadersArray[i] : nil;
-            NSArray *versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (versionLoaders ? @[versionItem] : @[]);
+            NSArray *versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
             BOOL loaderMatch = NO;
             for (NSString *ld in versionLoaders) {
                 NSString *trimmedLD = [[[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
@@ -374,7 +375,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             }
             if (mcMatch && loaderMatch) {
                 [supportedIndices addObject:@(i)];
-                NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%@ / %@)", [gameVers componentsJoinedByString:@", "], (loaderItem ? [versionLoaders componentsJoinedByString:@", "] : @"")];
+                NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%@ / %@)",
+                                          [gameVers componentsJoinedByString:@", "],
+                                          versionLoaders.count > 0 ? [versionLoaders componentsJoinedByString:@", "] : @""];
                 [supportedDisplayNames addObject:displayName];
             }
         }
