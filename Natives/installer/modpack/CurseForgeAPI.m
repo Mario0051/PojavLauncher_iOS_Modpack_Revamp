@@ -56,7 +56,7 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
 - (instancetype)initWithAPIKey:(NSString *)apiKey {
     self = [super initWithURL:@"https://api.curseforge.com/v1"];
     if (self) {
-        // Use provided API key if available
+        // Use provided API key (user-provided only)
         self.apiKey = apiKey ?: @"";
         _networkQueue = dispatch_queue_create("com.curseforge.api.network", DISPATCH_QUEUE_SERIAL);
         self.sessionManager = [AFHTTPSessionManager manager];
@@ -69,16 +69,10 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
 
 - (void)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params completion:(void (^)(id, NSError *))completion {
     NSString *url = [self.baseURL stringByAppendingPathComponent:endpoint];
-    // Ensure we have an API key: use provided value, or check environment variable
+    // Use only the provided API key; no workflow or environment key lookup.
     NSString *key = self.apiKey;
     if (key.length == 0) {
-        char *envKey = getenv("CURSEFORGE_API_KEY");
-        if (envKey) {
-            key = [NSString stringWithUTF8String:envKey];
-            NSLog(@"getEndpoint: Using API key from environment: %@", key.length > 0 ? @"[redacted]" : @"(none)");
-        } else {
-            NSLog(@"getEndpoint: No API key provided or found in environment");
-        }
+        NSLog(@"getEndpoint: No API key provided");
     }
     // Always set the API key header
     [self.sessionManager.requestSerializer setValue:key forHTTPHeaderField:@"x-api-key"];
