@@ -143,16 +143,22 @@
 
 - (void)actionDone:(UIBarButtonItem *)sender {
     sender.enabled = NO;
-
+    
     NSDictionary *endpoint = self.endpoints[self.localKVO[@"loaderVendor"]];
     NSString *path = [NSString stringWithFormat:endpoint[@"json"], self.localKVO[@"gameVersion"], self.localKVO[@"loaderVersion"]];
     NSDebugLog(@"[%@ Installer] Downloading %@", self.localKVO[@"loaderVendor"], path);
-
+    
     AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
     [manager GET:path parameters:nil headers:nil progress:nil  success:^(NSURLSessionTask *task, NSDictionary *response) {
         sender.enabled = YES;
-
-        NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), response[@"id"]];
+        // Build the new game directory: Documents/custom_gamedir/(profileName)
+        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+        NSString *profileName = [PLProfiles current].selectedProfileName;
+        if (!profileName || profileName.length == 0) {
+            profileName = @"default";
+        }
+        NSString *defaultGameDir = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"custom_gamedir/%@", profileName]];
+        NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", defaultGameDir, response[@"id"]];
         [NSFileManager.defaultManager createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         NSError *error = saveJSONToFile(response, jsonPath);
         if (error) {
@@ -163,11 +169,11 @@
                 @"type": @"custom"}];
             // Jump to the profile editor
             LauncherProfileEditorViewController *vc = [LauncherProfileEditorViewController new];
-            vc.profile = @{
+            vc.profile = [@{
                 @"icon": endpoint[@"icon"],
                 @"name": response[@"id"],
                 @"lastVersionId": response[@"id"]
-            }.mutableCopy;
+            } mutableCopy];
             [self.navigationController pushViewController:vc animated:YES];
         }
     } failure:^(NSURLSessionTask *operation, NSError *error) {
@@ -176,6 +182,7 @@
         showDialog(localize(@"Error", nil), error.localizedDescription);
     }];
 }
+
 
 - (void)changeTypeToStable:(BOOL)stable forList:(NSMutableArray *)list fromMetadata:(NSArray *)metadata atRow:(int)row key:(NSString *)key {
     [list removeAllObjects];
