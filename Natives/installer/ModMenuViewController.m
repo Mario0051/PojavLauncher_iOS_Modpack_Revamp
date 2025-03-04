@@ -7,7 +7,6 @@
 #import "utils.h"
 #import "PLProfiles.h"
 
-
 #pragma mark - Alert Dialog Helper
 static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSLog(@"Presenting alert: %@ - %@", title, message);
@@ -89,7 +88,13 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
     cell.textLabel.text = mod[@"title"];
     NSArray *versionNames = mod[@"versionNames"];
-    cell.detailTextLabel.text = (versionIndex < versionNames.count ? versionNames[versionIndex] : @"Unknown Version");
+    // For queue display, extract mod file version only.
+    if (versionIndex < versionNames.count) {
+        NSDictionary *parsed = [ModpackUtils parseVersionString:versionNames[versionIndex]];
+        cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: versionNames[versionIndex];
+    } else {
+        cell.detailTextLabel.text = @"Unknown Version";
+    }
     return cell;
 }
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
@@ -333,7 +338,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:mod[@"imageUrl"]]];
     __weak UITableViewCell *weakCell = cell;
     [cell.imageView setImageWithURLRequest:request placeholderImage:placeholder success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
-        // Use placeholder if image dimensions are too small
         if (image.size.width < 50 || image.size.height < 50) {
             weakCell.imageView.image = placeholder;
         } else {
@@ -395,7 +399,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
     NSArray *loadersArray = mod[@"versionLoaders"];
     
-    // Debug: Log the counts of available arrays.
     NSLog(@"[DEBUG] versionNames count: %lu", (unsigned long)versionNames.count);
     NSLog(@"[DEBUG] gameVersionsArray count: %lu", (unsigned long)gameVersionsArray.count);
     NSLog(@"[DEBUG] loadersArray count: %lu", (unsigned long)loadersArray.count);
@@ -409,12 +412,14 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     
     if (profileMCVer.length == 0 || profileLoader.length == 0) {
         for (NSUInteger i = 0; i < versionNames.count; i++) {
+            // Extract only the mod file version for display
+            NSDictionary *parsed = [ModpackUtils parseVersionString:versionNames[i]];
+            NSString *modFileVersion = parsed[@"loaderVersion"] ?: versionNames[i];
             [supportedIndices addObject:@(i)];
-            [supportedDisplayNames addObject:versionNames[i]];
+            [supportedDisplayNames addObject:modFileVersion];
         }
     } else {
         for (NSUInteger i = 0; i < versionNames.count; i++) {
-            // Safe access for gameVersions
             NSArray *gameVers = @[];
             if (i < gameVersionsArray.count) {
                 id gameVerItem = gameVersionsArray[i];
@@ -431,7 +436,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 }
             }
             
-            // Safe access for loaders
             NSArray *versionLoaders = @[];
             if (loadersArray && i < loadersArray.count) {
                 id loaderItem = loadersArray[i];
@@ -448,10 +452,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
             if (mcMatch && loaderMatch) {
                 [supportedIndices addObject:@(i)];
-                NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%lu game versions, %lu loader entries)",
-                                          (unsigned long)[gameVers count],
-                                          (unsigned long)[versionLoaders count]];
-                [supportedDisplayNames addObject:displayName];
+                NSDictionary *parsed = [ModpackUtils parseVersionString:versionNames[i]];
+                NSString *modFileVersion = parsed[@"loaderVersion"] ?: versionNames[i];
+                [supportedDisplayNames addObject:modFileVersion];
             }
         }
         if (supportedIndices.count == 0) {
