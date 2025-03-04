@@ -202,11 +202,26 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSString *urlString = urls[index];
     NSString *modTitle = mod[@"title"] ?: @"Mod";
     NSString *fileName = [NSString stringWithFormat:@"%@.jar", modTitle];
+    
+    // Get the Documents directory.
     NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *modsDir = [docsPath stringByAppendingPathComponent:@"mods"];
+    // Build the instance directory based on the selected profile.
+    // If no profile is selected, fallback to "default".
+    NSString *instanceName = self.selectedProfileName ?: @"default";
+    NSString *instanceDir = [docsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@", instanceName]];
+    // Mods are stored inside the instance directory.
+    NSString *modsDir = [instanceDir stringByAppendingPathComponent:@"mods"];
+    
+    // Create mods directory if it doesn't exist.
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
-        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSError *error = nil;
+        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&error];
+        if (error) {
+            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to create mods directory: %@", error.localizedDescription]);
+            return;
+        }
     }
+    
     NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
     
     [self downloadModFromURL:urlString toDestination:destinationPath completion:^(BOOL success, NSError *error) {
