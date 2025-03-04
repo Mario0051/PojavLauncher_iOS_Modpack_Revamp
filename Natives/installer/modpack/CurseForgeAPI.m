@@ -56,10 +56,11 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
 - (instancetype)initWithAPIKey:(NSString *)apiKey {
     self = [super initWithURL:@"https://api.curseforge.com/v1"];
     if (self) {
+        // Use provided API key if available
         self.apiKey = apiKey ?: @"";
         _networkQueue = dispatch_queue_create("com.curseforge.api.network", DISPATCH_QUEUE_SERIAL);
         self.sessionManager = [AFHTTPSessionManager manager];
-        NSLog(@"CurseForgeAPI: Initialized with API key: %@", apiKey.length > 0 ? @"[redacted]" : @"(none)");
+        NSLog(@"CurseForgeAPI: Initialized with API key: %@", self.apiKey.length > 0 ? @"[redacted]" : @"(none)");
     }
     return self;
 }
@@ -68,6 +69,7 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
 
 - (void)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params completion:(void (^)(id, NSError *))completion {
     NSString *url = [self.baseURL stringByAppendingPathComponent:endpoint];
+    // Ensure we have an API key: use provided value, or check environment variable
     NSString *key = self.apiKey;
     if (key.length == 0) {
         char *envKey = getenv("CURSEFORGE_API_KEY");
@@ -78,6 +80,7 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
             NSLog(@"getEndpoint: No API key provided or found in environment");
         }
     }
+    // Always set the API key header
     [self.sessionManager.requestSerializer setValue:key forHTTPHeaderField:@"x-api-key"];
     NSLog(@"getEndpoint: Requesting %@ with params: %@", url, params);
     [self.sessionManager GET:url parameters:params headers:nil progress:nil success:^(NSURLSessionTask *task, id responseObject) {
@@ -288,7 +291,7 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
                     modLoaderVersion = loaderVer;
                 } else if ([loaderName isEqualToString:@"fabric"]) {
                     modLoaderId = @"fabric";
-                    modLoaderVersion = [NSString stringWithFormat:@"fabric-loader-%@-%@", loaderVer, vanillaVersion];
+                    modLoaderVersion = loaderVer;
                 } else {
                     modLoaderId = loaderName;
                     modLoaderVersion = loaderVer;
@@ -303,7 +306,7 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
     if ([modLoaderId isEqualToString:@"forge"]) {
         finalVersionString = [NSString stringWithFormat:@"%@-forge-%@", vanillaVersion, modLoaderVersion];
     } else if ([modLoaderId isEqualToString:@"fabric"]) {
-        finalVersionString = modLoaderVersion;
+        finalVersionString = [NSString stringWithFormat:@"fabric-%@-%@", modLoaderVersion, vanillaVersion];
     } else {
         finalVersionString = [NSString stringWithFormat:@"%@ | %@", vanillaVersion, modLoaderId];
     }
@@ -530,6 +533,7 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
             NSMutableArray *urls = [NSMutableArray new];
             NSMutableArray *hashes = [NSMutableArray new];
             NSMutableArray *sizes = [NSMutableArray new];
+            NSMutableArray *loaders = [NSMutableArray new];
             for (NSDictionary *file in files) {
                 [names addObject:[NSString stringWithFormat:@"%@", file[@"fileName"] ?: @""]];
                 id versions = file[@"gameVersion"] ?: file[@"gameVersionList"];
@@ -560,12 +564,16 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
                     }
                 }
                 [hashes addObject:sha1];
+                // Load loader info if available
+                NSArray *loaderInfo = file[@"loaders"] ?: @[];
+                [loaders addObject:loaderInfo];
             }
             item[@"versionNames"] = names;
             item[@"mcVersionNames"] = mcNames;
             item[@"versionUrls"] = urls;
             item[@"versionHashes"] = hashes;
             item[@"versionSizes"] = sizes;
+            item[@"versionLoaders"] = loaders;
             item[@"versionDetailsLoaded"] = @(YES);
             NSLog(@"loadDetailsOfMod: Loaded %lu versions for mod %@", (unsigned long)names.count, modId);
             dispatch_async(dispatch_get_main_queue(), ^{
