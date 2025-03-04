@@ -83,7 +83,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.queue.count;
 }
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {    
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"QueueCell"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"QueueCell"];
@@ -93,16 +93,13 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
     cell.textLabel.text = mod[@"title"];
     NSArray *versionNames = mod[@"versionNames"];
-    // Display only the mod file version (parsed loaderVersion)
-    if (versionIndex < versionNames.count) {
-        NSDictionary *parsed = [ModpackUtils parseVersionString:versionNames[versionIndex]];
-        cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: versionNames[versionIndex];
-    } else {
-        cell.detailTextLabel.text = @"Unknown Version";
-    }
+    // Ensure we have a string to parse:
+    NSString *verStr = (versionIndex < versionNames.count) ? ([versionNames[versionIndex] isKindOfClass:[NSString class]] ? versionNames[versionIndex] : [versionNames[versionIndex] description]) : @"";
+    NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+    cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
     return cell;
 }
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
  forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
         [self.queue removeObjectAtIndex:indexPath.row];
@@ -413,8 +410,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     
     if (profileMCVer.length == 0 || profileLoader.length == 0) {
         for (NSUInteger i = 0; i < versionNames.count; i++) {
-            NSDictionary *parsed = [ModpackUtils parseVersionString:versionNames[i]];
-            NSString *modFileVersion = parsed[@"loaderVersion"] ?: versionNames[i];
+            NSString *verStr = ([versionNames[i] isKindOfClass:[NSString class]] ? versionNames[i] : [versionNames[i] description]);
+            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+            NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:modFileVersion];
         }
@@ -452,8 +450,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
             if (mcMatch && loaderMatch) {
                 [supportedIndices addObject:@(i)];
-                NSDictionary *parsed = [ModpackUtils parseVersionString:versionNames[i]];
-                NSString *modFileVersion = parsed[@"loaderVersion"] ?: versionNames[i];
+                NSString *verStr = ([versionNames[i] isKindOfClass:[NSString class]] ? versionNames[i] : [versionNames[i] description]);
+                NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+                NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
                 [supportedDisplayNames addObject:modFileVersion];
             }
         }
