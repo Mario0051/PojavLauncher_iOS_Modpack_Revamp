@@ -162,7 +162,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     return SafeStringFromVersion(rawVersion);
 }
 
-// Implementation of the missing download method.
+// Implementation of the download method with file conflict resolution.
 - (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion {
     NSURL *url = [NSURL URLWithString:urlString];
     NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession] downloadTaskWithURL:url
@@ -171,8 +171,18 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                 if (completion) completion(NO, error);
                 return;
             }
+            NSFileManager *fm = [NSFileManager defaultManager];
+            // If a file already exists at destinationPath, remove it.
+            if ([fm fileExistsAtPath:destinationPath]) {
+                NSError *removeError = nil;
+                [fm removeItemAtPath:destinationPath error:&removeError];
+                if (removeError) {
+                    if (completion) completion(NO, removeError);
+                    return;
+                }
+            }
             NSError *fileError = nil;
-            [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&fileError];
+            [fm moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&fileError];
             if (fileError) {
                 if (completion) completion(NO, fileError);
             } else {
@@ -219,7 +229,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     self.modsList = [NSMutableArray new];
     self.installQueue = [NSMutableArray new];
     
-    // Auto-select the saved profile if available.
+    // Auto-select saved profile if available.
     [self updateProfileFromSavedSettings];
     
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -290,7 +300,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-// Always prompt for CurseForge API key when using CurseForge.
+// Always prompt for CurseForge API key when the CurseForge segment is active.
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
