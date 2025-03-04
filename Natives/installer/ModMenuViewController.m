@@ -25,6 +25,26 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [window.rootViewController presentViewController:alert animated:YES completion:nil];
 }
 
+#pragma mark - Private Methods
+- (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion {
+    NSURL *url = [NSURL URLWithString:urlString];
+    NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession] downloadTaskWithURL:url
+        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+            if (error) {
+                if (completion) completion(NO, error);
+                return;
+            }
+            NSError *fileError = nil;
+            [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&fileError];
+            if (fileError) {
+                if (completion) completion(NO, fileError);
+            } else {
+                if (completion) completion(YES, nil);
+            }
+    }];
+    [downloadTask resume];
+}
+
 #pragma mark - ModQueueViewController Interface
 @interface ModQueueViewController : UITableViewController
 @property (nonatomic, strong) NSMutableArray *queue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
