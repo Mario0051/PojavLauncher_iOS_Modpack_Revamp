@@ -199,15 +199,13 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         return;
     }
     NSString *urlString = urls[index];
-    NSString *modTitle = mod[@"title"] ?: @"Mod";
-    NSString *fileName = [NSString stringWithFormat:@"%@.jar", modTitle];
+    // Use the lastPathComponent of the URL to preserve the original file name.
+    NSString *fileName = [[NSURL URLWithString:urlString] lastPathComponent];
     
-    // Retrieve current profile from PLProfiles.
-    NSDictionary *profile = [PLProfiles current].profiles[self.selectedProfileName];
-    // Use profile's "gameDir" as instance name; if not set, use profile name.
-    NSString *instanceName = profile[@"gameDir"];
-    if (!instanceName || instanceName.length == 0) {
-        instanceName = self.selectedProfileName;
+    // Retrieve the instance name from the current profile using the PLProfiles helper.
+    NSString *instanceName = [PLProfiles resolveKeyForCurrentProfile:@"gameDir"];
+    if ([instanceName isEqualToString:@"."] || instanceName.length == 0) {
+        instanceName = self.selectedProfileName ?: @"default";
     }
     
     // Get the Documents directory.
@@ -216,7 +214,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSString *instanceDir = [docsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@", instanceName]];
     NSString *modsDir = [instanceDir stringByAppendingPathComponent:@"custom_gamedir/mods"];
     
-    // Create mods directory if it doesn't exist.
+    // Create the mods directory if it doesn't exist.
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
         NSError *createError = nil;
         [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
@@ -230,12 +228,13 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     
     [self downloadModFromURL:urlString toDestination:destinationPath completion:^(BOOL success, NSError *error) {
         if (success) {
-            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
+            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", fileName]);
         } else {
-            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to install %@: %@", modTitle, error.localizedDescription]);
+            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to install %@: %@", fileName, error.localizedDescription]);
         }
     }];
 }
+
 
 
 - (void)viewDidLoad {
