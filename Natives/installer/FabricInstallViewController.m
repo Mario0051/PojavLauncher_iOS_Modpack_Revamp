@@ -149,15 +149,25 @@
     NSDebugLog(@"[%@ Installer] Downloading %@", self.localKVO[@"loaderVendor"], path);
     
     AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
-    [manager GET:path parameters:nil headers:nil progress:nil  success:^(NSURLSessionTask *task, NSDictionary *response) {
+    [manager GET:path parameters:nil headers:nil progress:nil success:^(NSURLSessionTask *task, NSDictionary *response) {
         sender.enabled = YES;
-        // Build the new game directory: Documents/custom_gamedir/(profileName)
+        
+        // Retrieve Documents directory.
         NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+        // Get the selected profile name.
         NSString *profileName = [PLProfiles current].selectedProfileName;
         if (!profileName || profileName.length == 0) {
             profileName = @"default";
         }
-        NSString *defaultGameDir = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"custom_gamedir/%@", profileName]];
+        // Retrieve the instance name from the current profile's "gameDir" key.
+        NSDictionary *profile = [PLProfiles current].profiles[profileName];
+        NSString *instanceName = profile[@"gameDir"];
+        if (!instanceName || instanceName.length == 0) {
+            instanceName = @"default";
+        }
+        // Construct the desired path: Documents/instances/(instanceName)/custom_gamedir/(profileName)
+        NSString *defaultGameDir = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@/custom_gamedir/%@", instanceName, profileName]];
+        
         NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", defaultGameDir, response[@"id"], response[@"id"]];
         [NSFileManager.defaultManager createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         NSError *error = saveJSONToFile(response, jsonPath);
@@ -167,7 +177,7 @@
             [localVersionList addObject:@{
                 @"id": response[@"id"],
                 @"type": @"custom"}];
-            // Jump to the profile editor
+            // Jump to the profile editor.
             LauncherProfileEditorViewController *vc = [LauncherProfileEditorViewController new];
             vc.profile = [@{
                 @"icon": endpoint[@"icon"],
@@ -182,7 +192,6 @@
         showDialog(localize(@"Error", nil), error.localizedDescription);
     }];
 }
-
 
 - (void)changeTypeToStable:(BOOL)stable forList:(NSMutableArray *)list fromMetadata:(NSArray *)metadata atRow:(int)row key:(NSString *)key {
     [list removeAllObjects];
