@@ -143,32 +143,16 @@
 
 - (void)actionDone:(UIBarButtonItem *)sender {
     sender.enabled = NO;
-    
+
     NSDictionary *endpoint = self.endpoints[self.localKVO[@"loaderVendor"]];
     NSString *path = [NSString stringWithFormat:endpoint[@"json"], self.localKVO[@"gameVersion"], self.localKVO[@"loaderVersion"]];
     NSDebugLog(@"[%@ Installer] Downloading %@", self.localKVO[@"loaderVendor"], path);
-    
+
     AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
-    [manager GET:path parameters:nil headers:nil progress:nil success:^(NSURLSessionTask *task, NSDictionary *response) {
+    [manager GET:path parameters:nil headers:nil progress:nil  success:^(NSURLSessionTask *task, NSDictionary *response) {
         sender.enabled = YES;
-        
-        // Retrieve Documents directory.
-        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-        // Get the selected profile name.
-        NSString *profileName = [PLProfiles current].selectedProfileName;
-        if (!profileName || profileName.length == 0) {
-            profileName = @"default";
-        }
-        // Retrieve the instance name from the current profile's "gameDir" key.
-        NSDictionary *profile = [PLProfiles current].profiles[profileName];
-        NSString *instanceName = profile[@"gameDir"];
-        if (!instanceName || instanceName.length == 0) {
-            instanceName = @"default";
-        }
-        // Construct the desired path: Documents/instances/(instanceName)/custom_gamedir/(profileName)
-        NSString *defaultGameDir = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@/custom_gamedir/%@", instanceName, profileName]];
-        
-        NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", defaultGameDir, response[@"id"], response[@"id"]];
+
+        NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), response[@"id"]];
         [NSFileManager.defaultManager createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         NSError *error = saveJSONToFile(response, jsonPath);
         if (error) {
@@ -177,13 +161,13 @@
             [localVersionList addObject:@{
                 @"id": response[@"id"],
                 @"type": @"custom"}];
-            // Jump to the profile editor.
+            // Jump to the profile editor
             LauncherProfileEditorViewController *vc = [LauncherProfileEditorViewController new];
-            vc.profile = [@{
+            vc.profile = @{
                 @"icon": endpoint[@"icon"],
                 @"name": response[@"id"],
                 @"lastVersionId": response[@"id"]
-            } mutableCopy];
+            }.mutableCopy;
             [self.navigationController pushViewController:vc animated:YES];
         }
     } failure:^(NSURLSessionTask *operation, NSError *error) {
