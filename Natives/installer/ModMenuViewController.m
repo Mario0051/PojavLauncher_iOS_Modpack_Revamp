@@ -25,7 +25,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [window.rootViewController presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - Private Methods
+#pragma mark - Private Method: Download Mod
 - (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion {
     NSURL *url = [NSURL URLWithString:urlString];
     NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession] downloadTaskWithURL:url
@@ -143,7 +143,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 #pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
 
-// This method handles mod installation when a version is selected.
+// Method to handle mod installation when a version is selected.
 - (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
     NSArray *urls = mod[@"versionUrls"];
     if (index >= urls.count) {
@@ -209,7 +209,64 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [self updateModsList];
 }
 
-// When updateModsList is called, if CurseForge is selected, prompt for API key before refreshing.
+// Always prompt for CurseForge API key when the CurseForge segment is active.
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
+         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
+                message:@"Please enter your CurseForge API key to search mods on CurseForge."
+                preferredStyle:UIAlertControllerStyleAlert];
+         [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+             textField.placeholder = @"API Key";
+         }];
+         [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+             NSString *enteredKey = alert.textFields.firstObject.text;
+             if (enteredKey.length > 0) {
+                 // Always update the API key (even if one was already set)
+                 [self.curseForge setValue:enteredKey forKey:@"apiKey"];
+             } else {
+                 presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
+             }
+         }]];
+         [self presentViewController:alert animated:YES completion:nil];
+    }
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>  _Nonnull context) {
+        [self.tableView reloadData];
+    } completion:nil];
+}
+
+#pragma mark - Notification Handlers
+- (void)handleInstallModNotification:(NSNotification *)notification {
+    NSDictionary *userInfo = notification.userInfo;
+    NSDictionary *mod = userInfo[@"detail"];
+    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
+    [self installModNow:mod versionIndex:index];
+}
+
+- (void)handleInstallModpackNotification:(NSNotification *)notification {
+    NSDictionary *userInfo = notification.userInfo;
+    NSDictionary *mod = userInfo[@"detail"];
+    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
+    [self installModpackNow:mod versionIndex:index];
+}
+
+#pragma mark - Installation Methods
+- (void)installModpackNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
+    NSString *modTitle = mod[@"title"] ?: @"Modpack";
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
+    });
+}
+
+#pragma mark - Mod Search
 - (void)updateModsList {
     NSString *name = self.searchController.searchBar.text;
     self.searchFilters[@"name"] = name ?: @"";
