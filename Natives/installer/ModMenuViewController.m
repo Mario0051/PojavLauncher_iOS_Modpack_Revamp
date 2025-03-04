@@ -1,3 +1,4 @@
+// Filename: ModMenuViewController.m
 #import "ModMenuViewController.h"
 #import "modpack/ModrinthAPI.h"
 #import "modpack/CurseForgeAPI.h"
@@ -88,7 +89,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
     cell.textLabel.text = mod[@"title"];
     NSArray *versionNames = mod[@"versionNames"];
-    // For queue display, extract mod file version only.
+    // Display only the mod file version (parsed loaderVersion)
     if (versionIndex < versionNames.count) {
         NSDictionary *parsed = [ModpackUtils parseVersionString:versionNames[versionIndex]];
         cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: versionNames[versionIndex];
@@ -128,7 +129,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     
     self.title = @"Mods";
     self.modrinth = [ModrinthAPI new];
-    // Initialize CurseForgeAPI with an empty key to force user prompt.
+    // Initialize CurseForgeAPI with an empty key so the user is always prompted.
     self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:@""];
     self.searchFilters = [@{@"isModpack": @(NO), @"name": @""} mutableCopy];
     self.modsList = [NSMutableArray new];
@@ -162,11 +163,10 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [self updateModsList];
 }
 
-// Prompt the user to enter the CurseForge API key when using CurseForge.
+// Always prompt for CurseForge API key when the CurseForge segment is active.
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    if (self.apiSegmentedControl.selectedSegmentIndex == 1 &&
-        [[[self.curseForge valueForKey:@"apiKey"] ?: @"" lowercaseString] length] == 0) {
+    if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
          UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
                 message:@"Please enter your CurseForge API key to search mods on CurseForge."
                 preferredStyle:UIAlertControllerStyleAlert];
@@ -176,6 +176,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
          [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
              NSString *enteredKey = alert.textFields.firstObject.text;
              if (enteredKey.length > 0) {
+                 // Always update the API key (even if one was already set)
                  [self.curseForge setValue:enteredKey forKey:@"apiKey"];
              } else {
                  presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
