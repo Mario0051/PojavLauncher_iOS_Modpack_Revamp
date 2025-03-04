@@ -1,11 +1,12 @@
 #import "ModMenuViewController.h"
 #import "modpack/ModrinthAPI.h"
 #import "modpack/CurseForgeAPI.h"
+#import "modpack/ModpackUtils.h"
 #import "config.h"
 #import "UIKit+AFNetworking.h"
 #import "utils.h"
 #import "PLProfiles.h"
-#import "modpack/ModpackUtils.h"
+
 
 #pragma mark - Alert Dialog Helper
 static inline void presentAlertDialog(NSString *title, NSString *message) {
@@ -37,8 +38,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [super viewDidLoad];
     self.title = @"Install Queue";
     self.tableView.tableFooterView = [UIView new];
-    NSLog(@"ModQueueViewController loaded.");
-    
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Install"
                                                                               style:UIBarButtonItemStyleDone
                                                                              target:self
@@ -46,7 +45,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     self.navigationItem.leftBarButtonItem = self.editButtonItem;
 }
 - (void)installQueueAction {
-    NSLog(@"Install queue action triggered. Queue count: %lu", (unsigned long)self.queue.count);
     if (self.queue.count == 0) {
         presentAlertDialog(localize(@"Queue Empty", nil), @"There are no mods in the install queue.");
         return;
@@ -55,7 +53,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         NSDictionary *mod = entry[@"mod"];
         NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
         NSNumber *apiSource = mod[@"apiSource"];
-        NSLog(@"Installing mod: %@ at version index: %lu", mod[@"title"], (unsigned long)versionIndex);
         if ([apiSource integerValue] == 1) {
             [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
                                                                 object:nil
@@ -80,7 +77,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     presentAlertDialog(@"Installation Started", @"Queued mod installations have been triggered.");
 }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    NSLog(@"Queue table rows: %lu", (unsigned long)self.queue.count);
     return self.queue.count;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {    
@@ -99,7 +95,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
  forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
-        NSLog(@"Deleting queue entry at index: %ld", (long)indexPath.row);
         [self.queue removeObjectAtIndex:indexPath.row];
         [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
     }
@@ -115,7 +110,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 @property (nonatomic, strong) CurseForgeAPI *curseForge;
 @property (nonatomic, strong) NSMutableDictionary *searchFilters;
 @property (nonatomic, strong) NSString *selectedProfileName;
-// New properties for both Minecraft version and mod loader.
 @property (nonatomic, strong) NSString *selectedMCVersion;
 @property (nonatomic, strong) NSString *selectedModLoader;
 @property (nonatomic, strong) NSMutableArray *installQueue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
@@ -127,7 +121,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    NSLog(@"ModMenuViewController loaded.");
     self.title = @"Mods";
     self.modrinth = [ModrinthAPI new];
     self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:(CONFIG_CURSEFORGE_API_KEY ?: @"")];
@@ -157,7 +150,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     self.tableView.delegate = self;
     self.tableView.dataSource = self;
     
-    // Add observers for installation notifications
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInstallModNotification:) name:@"InstallMod" object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInstallModpackNotification:) name:@"InstallModpack" object:nil];
     
@@ -168,7 +160,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-// Handle device rotation for landscape and portrait support
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
     [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>  _Nonnull context) {
@@ -201,7 +192,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSString *urlString = urls[index];
     NSString *modTitle = mod[@"title"] ?: @"Mod";
     NSString *fileName = [NSString stringWithFormat:@"%@.jar", modTitle];
-    // Destination: Documents/mods/
     NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *modsDir = [docsPath stringByAppendingPathComponent:@"mods"];
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
@@ -219,7 +209,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 }
 
 - (void)installModpackNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
-    // For modpacks, installation logic can be more complex. For now, simulate installation.
     NSString *modTitle = mod[@"title"] ?: @"Modpack";
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
@@ -252,7 +241,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         presentAlertDialog(localize(@"Error", nil), @"No profiles available.");
         return;
     }
-    NSLog(@"Available profiles: %@", profiles);
     
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Profile"
                                                                    message:nil
@@ -278,15 +266,12 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
                                                                 CGRectGetMidY(self.view.bounds),
                                                                 1, 1);
-    [self presentViewController:alert animated:YES completion:^{
-        NSLog(@"Profile selection alert presented.");
-    }];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 #pragma mark - Mod Search
 - (void)updateModsList {
     NSString *name = self.searchController.searchBar.text;
-    NSLog(@"Updating mods list with search term: %@", name);
     self.searchFilters[@"name"] = name ?: @"";
     if (self.selectedMCVersion && self.selectedMCVersion.length > 0) {
         self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
@@ -295,12 +280,10 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [self refreshModsListWithPrevList:NO];
 }
 - (void)refreshModsListWithPrevList:(BOOL)prevList {
-    NSLog(@"Refreshing mods list. Previous list: %@", prevList ? @"YES" : @"NO");
     if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
         __weak typeof(self) weakSelf = self;
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             NSMutableArray *results = [weakSelf.modrinth searchModWithFilters:weakSelf.searchFilters previousPageResult:(prevList ? weakSelf.modsList : nil)];
-            NSLog(@"Modrinth search returned %lu results", (unsigned long)results.count);
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) strongSelf = weakSelf;
                 if (results) {
@@ -313,7 +296,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         });
     } else {
         [self.curseForge searchModWithFilters:self.searchFilters previousPageResult:(prevList ? self.modsList : nil) completion:^(NSMutableArray *results, NSError *error) {
-            NSLog(@"CurseForge search returned %lu results", (unsigned long)results.count);
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (results) {
                     self.modsList = results;
@@ -335,7 +317,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     return 1;
 }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    NSLog(@"Table view number of mods: %lu", (unsigned long)self.modsList.count);
     return self.modsList.count;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -352,6 +333,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:mod[@"imageUrl"]]];
     __weak UITableViewCell *weakCell = cell;
     [cell.imageView setImageWithURLRequest:request placeholderImage:placeholder success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
+        // Use placeholder if image dimensions are too small
         if (image.size.width < 50 || image.size.height < 50) {
             weakCell.imageView.image = placeholder;
         } else {
@@ -362,14 +344,12 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         weakCell.imageView.image = placeholder;
         [weakCell setNeedsLayout];
     }];
-    NSLog(@"Configured mod cell: %@", mod[@"title"]);
     return cell;
 }
 
 #pragma mark - UITableView Delegate
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     NSDictionary *mod = self.modsList[indexPath.row];
-    NSLog(@"Selected mod: %@", mod[@"title"]);
     if ([mod[@"versionDetailsLoaded"] boolValue]) {
         [self showModDetails:mod atIndexPath:indexPath];
     } else {
@@ -379,7 +359,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 }
 - (void)loadModDetailsForMod:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSMutableDictionary *modMutable = [mod mutableCopy];
-    NSLog(@"Loading details for mod: %@", mod[@"title"]);
     __weak typeof(self) weakSelf = self;
     if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -387,7 +366,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     __strong typeof(weakSelf) strongSelf = weakSelf;
                     if ([modMutable[@"versionDetailsLoaded"] boolValue]) {
-                        NSLog(@"Loaded %lu versions for mod: %@", (unsigned long)[modMutable[@"versionNames"] count], mod[@"title"]);
                         [strongSelf.modsList replaceObjectAtIndex:indexPath.row withObject:modMutable];
                         [strongSelf showModDetails:modMutable atIndexPath:indexPath];
                     } else {
@@ -401,7 +379,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) strongSelf = weakSelf;
                 if ([modMutable[@"versionDetailsLoaded"] boolValue]) {
-                    NSLog(@"Loaded %lu versions for mod: %@", (unsigned long)[modMutable[@"versionNames"] count], mod[@"title"]);
                     [strongSelf.modsList replaceObjectAtIndex:indexPath.row withObject:modMutable];
                     [strongSelf showModDetails:modMutable atIndexPath:indexPath];
                 } else {
@@ -411,27 +388,27 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         }];
     }
 }
+
 #pragma mark - Version Filtering and Action Sheet
 - (void)showModDetails:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSArray *versionNames = mod[@"versionNames"];
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
     NSArray *loadersArray = mod[@"versionLoaders"];
-    NSLog(@"Mod %@ has versionNames: %@", mod[@"title"], versionNames);
-    NSLog(@"Game versions: %@", gameVersionsArray);
-    NSLog(@"Loaders: %@", loadersArray);
+    
+    // Debug: Log filtering criteria.
+    NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    NSLog(@"Filtering for MC version: %@ and loader: %@", profileMCVer, profileLoader);
     
     NSMutableArray<NSNumber *> *supportedIndices = [NSMutableArray array];
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
-    if (self.selectedMCVersion.length == 0 || self.selectedModLoader.length == 0) {
+    if (profileMCVer.length == 0 || profileLoader.length == 0) {
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:versionNames[i]];
         }
     } else {
-        NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-        NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-        NSLog(@"Filtering for MC version: %@ and loader: %@", profileMCVer, profileLoader);
         for (NSUInteger i = 0; i < versionNames.count; i++) {
             id gameVerItem = gameVersionsArray[i];
             NSArray *gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : (@[gameVerItem]);
@@ -453,11 +430,12 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                     break;
                 }
             }
+            NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
             if (mcMatch && loaderMatch) {
                 [supportedIndices addObject:@(i)];
-                NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%@ / %@)",
-                                          [gameVers componentsJoinedByString:@", "],
-                                          (versionLoaders.count > 0 ? [versionLoaders componentsJoinedByString:@", "] : @"")];
+                NSString *displayName = [versionNames[i] stringByAppendingFormat:@" (%lu game versions, %lu loader entries)",
+                                          (unsigned long)[gameVers count],
+                                          (unsigned long)[versionLoaders count]];
                 [supportedDisplayNames addObject:displayName];
             }
         }
@@ -467,9 +445,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             return;
         }
     }
-    
-    NSLog(@"Supported indices: %@", supportedIndices);
-    NSLog(@"Supported display names: %@", supportedDisplayNames);
     
     UIAlertController *versionAlert = [UIAlertController alertControllerWithTitle:@"Select Version"
                                                                           message:nil
@@ -486,7 +461,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Install Now"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(UIAlertAction * _Nonnull action) {
-                NSLog(@"User chose to install mod: %@, version index: %lu", mod[@"title"], (unsigned long)idx);
                 [self installModNow:mod versionIndex:idx];
             }]];
             [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Add to Queue"
@@ -496,7 +470,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 [self.installQueue addObject:queueEntry];
                 [self updateQueueButtonTitle];
                 presentAlertDialog(@"Added to Queue", [NSString stringWithFormat:@"\"%@\" has been added to the install queue.", mod[@"title"]]);
-                NSLog(@"Mod added to install queue: %@, version index: %lu", mod[@"title"], (unsigned long)idx);
             }]];
             [choiceAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
                                                             style:UIAlertActionStyleCancel
@@ -527,7 +500,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 - (void)updateQueueButtonTitle {
     NSUInteger count = self.installQueue.count;
     self.navigationItem.rightBarButtonItem.title = [NSString stringWithFormat:@"Queue (%lu)", (unsigned long)count];
-    NSLog(@"Queue button updated, count: %lu", (unsigned long)count);
 }
 - (void)actionShowQueue {
     ModQueueViewController *queueVC = [ModQueueViewController new];
@@ -537,7 +509,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         [strongSelf.installQueue removeAllObjects];
         [strongSelf updateQueueButtonTitle];
-        NSLog(@"Install queue cleared after installation.");
     };
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:queueVC];
     nav.modalPresentationStyle = UIModalPresentationPopover;
