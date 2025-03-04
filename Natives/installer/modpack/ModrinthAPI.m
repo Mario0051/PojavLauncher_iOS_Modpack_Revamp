@@ -9,7 +9,8 @@
     return self;
 }
 
-- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters previousPageResult:(NSMutableArray *)modrinthSearchResult {
+- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters
+                       previousPageResult:(NSMutableArray *)modrinthSearchResult {
     NSString *projectType = [searchFilters[@"isModpack"] boolValue] ? @"modpack" : @"mod";
     NSString *mcVer = searchFilters[@"mcVersion"];
     NSMutableArray *outerFacets = [NSMutableArray array];
@@ -76,6 +77,7 @@
     NSMutableArray *versionUrls = [NSMutableArray new];
     NSMutableArray *versionSizes = [NSMutableArray new];
     NSMutableArray *versionHashes = [NSMutableArray new];
+    NSMutableArray *versionLoaders = [NSMutableArray new];
     
     for (NSDictionary *versionDict in response) {
         NSString *versionDisplay = versionDict[@"version_number"] ?: versionDict[@"name"] ?: @"";
@@ -89,18 +91,21 @@
         NSNumber *size = file[@"size"] ?: @0;
         NSDictionary *hashes = file[@"hashes"];
         NSString *sha1 = hashes[@"sha1"] ?: @"";
+        NSArray *loaders = versionDict[@"loaders"] ?: @[];
         
         [versionNames addObject:versionDisplay];
         [gameVersionsArray addObject:supportedGameVersions];
         [versionUrls addObject:url];
         [versionSizes addObject:size];
         [versionHashes addObject:sha1];
+        [versionLoaders addObject:loaders];
     }
     item[@"versionNames"] = versionNames;
     item[@"gameVersions"] = gameVersionsArray;
     item[@"versionUrls"] = versionUrls;
     item[@"versionSizes"] = versionSizes;
     item[@"versionHashes"] = versionHashes;
+    item[@"versionLoaders"] = versionLoaders;
     item[@"versionDetailsLoaded"] = @(YES);
 }
 
@@ -122,6 +127,7 @@
         NSMutableArray *versionUrls = [NSMutableArray new];
         NSMutableArray *versionSizes = [NSMutableArray new];
         NSMutableArray *versionHashes = [NSMutableArray new];
+        NSMutableArray *versionLoaders = [NSMutableArray new];
         
         for (NSDictionary *versionDict in response) {
             NSString *versionDisplay = versionDict[@"version_number"] ?: versionDict[@"name"] ?: @"";
@@ -135,12 +141,14 @@
             NSNumber *size = file[@"size"] ?: @0;
             NSDictionary *hashes = file[@"hashes"];
             NSString *sha1 = hashes[@"sha1"] ?: @"";
+            NSArray *loaders = versionDict[@"loaders"] ?: @[];
             
             [versionNames addObject:versionDisplay];
             [gameVersionsArray addObject:supportedGameVersions];
             [versionUrls addObject:url];
             [versionSizes addObject:size];
             [versionHashes addObject:sha1];
+            [versionLoaders addObject:loaders];
         }
         
         item[@"versionNames"] = versionNames;
@@ -148,6 +156,7 @@
         item[@"versionUrls"] = versionUrls;
         item[@"versionSizes"] = versionSizes;
         item[@"versionHashes"] = versionHashes;
+        item[@"versionLoaders"] = versionLoaders;
         item[@"versionDetailsLoaded"] = @(YES);
         NSLog(@"loadDetailsOfMod: Loaded %lu versions for mod %@", (unsigned long)versionNames.count, item[@"id"]);
         if (completion) completion(nil);
