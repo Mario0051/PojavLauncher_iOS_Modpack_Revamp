@@ -172,7 +172,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                 return;
             }
             NSFileManager *fm = [NSFileManager defaultManager];
-            // If a file already exists at destinationPath, remove it.
             if ([fm fileExistsAtPath:destinationPath]) {
                 NSError *removeError = nil;
                 [fm removeItemAtPath:destinationPath error:&removeError];
@@ -203,21 +202,25 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSString *modTitle = mod[@"title"] ?: @"Mod";
     NSString *fileName = [NSString stringWithFormat:@"%@.jar", modTitle];
     
-    // Get the Documents directory.
+    // Use the instance directory from the current profile.
+    // Retrieve the current profile from PLProfiles.
+    NSDictionary *profile = [PLProfiles current].profiles[self.selectedProfileName];
+    NSString *instanceDirRelative = profile[@"gameDir"];
+    if (!instanceDirRelative || instanceDirRelative.length == 0) {
+        // Fallback to profile name if no gameDir is set.
+        instanceDirRelative = self.selectedProfileName;
+    }
     NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    // Build the instance directory based on the selected profile.
-    // If no profile is selected, fallback to "default".
-    NSString *instanceName = self.selectedProfileName ?: @"default";
-    NSString *instanceDir = [docsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@", instanceName]];
-    // Mods are stored inside the instance directory.
+    // Build path: Documents/instances/<instanceDirRelative>/mods
+    NSString *instanceDir = [docsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@", instanceDirRelative]];
     NSString *modsDir = [instanceDir stringByAppendingPathComponent:@"mods"];
     
-    // Create mods directory if it doesn't exist.
+    // Create the directory if it doesn't exist.
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
-        NSError *error = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&error];
-        if (error) {
-            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to create mods directory: %@", error.localizedDescription]);
+        NSError *createError = nil;
+        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
+        if (createError) {
+            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription]);
             return;
         }
     }
