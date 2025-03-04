@@ -202,20 +202,21 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSString *modTitle = mod[@"title"] ?: @"Mod";
     NSString *fileName = [NSString stringWithFormat:@"%@.jar", modTitle];
     
-    // Use the instance directory from the current profile.
-    // Retrieve the current profile from PLProfiles.
+    // Retrieve current profile from PLProfiles.
     NSDictionary *profile = [PLProfiles current].profiles[self.selectedProfileName];
-    NSString *instanceDirRelative = profile[@"gameDir"];
-    if (!instanceDirRelative || instanceDirRelative.length == 0) {
-        // Fallback to profile name if no gameDir is set.
-        instanceDirRelative = self.selectedProfileName;
+    // Use profile's "gameDir" as instance name; if not set, use profile name.
+    NSString *instanceName = profile[@"gameDir"];
+    if (!instanceName || instanceName.length == 0) {
+        instanceName = self.selectedProfileName;
     }
-    NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    // Build path: Documents/instances/<instanceDirRelative>/mods
-    NSString *instanceDir = [docsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@", instanceDirRelative]];
-    NSString *modsDir = [instanceDir stringByAppendingPathComponent:@"mods"];
     
-    // Create the directory if it doesn't exist.
+    // Get the Documents directory.
+    NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    // Build destination: Documents/instances/(instanceName)/custom_gamedir/mods
+    NSString *instanceDir = [docsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@", instanceName]];
+    NSString *modsDir = [instanceDir stringByAppendingPathComponent:@"custom_gamedir/mods"];
+    
+    // Create mods directory if it doesn't exist.
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
         NSError *createError = nil;
         [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
@@ -235,6 +236,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         }
     }];
 }
+
 
 - (void)viewDidLoad {
     [super viewDidLoad];
