@@ -39,6 +39,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 #pragma mark - Private Method Declarations
 @interface ModMenuViewController ()
 - (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion;
+- (NSString *)stringFromVersionObject:(id)rawVersion;
+- (void)updateProfileFromSavedSettings;
 @end
 
 #pragma mark - ModQueueViewController Interface
@@ -109,7 +111,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
     return cell;
 }
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
  forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
         [self.queue removeObjectAtIndex:indexPath.row];
@@ -135,26 +137,13 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 #pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
 
-// Profile selection: Presents a sorted list of available profiles.
-- (void)actionChooseProfile {
-    NSDictionary *profiles = [PLProfiles current].profiles;
-    if (!profiles || profiles.count == 0) {
-        presentAlertDialog(localize(@"Error", nil), @"No profiles available.");
-        return;
-    }
-    // Sort profiles by name
-    NSArray *sortedProfiles = [[profiles allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *p1, NSDictionary *p2) {
-        return [p1[@"name"] compare:p2[@"name"] options:NSCaseInsensitiveSearch];
-    }];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Profile"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSDictionary *profile in sortedProfiles) {
-        NSString *profileName = profile[@"name"];
-        [alert addAction:[UIAlertAction actionWithTitle:profileName
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction * _Nonnull action) {
-            self.selectedProfileName = profileName;
+// Auto-update from PLProfiles if a selected profile exists.
+- (void)updateProfileFromSavedSettings {
+    NSString *savedProfile = [PLProfiles current].selectedProfileName;
+    if (savedProfile) {
+        NSDictionary *profile = [PLProfiles current].profiles[savedProfile];
+        if (profile) {
+            self.selectedProfileName = savedProfile;
             NSString *lastVersionId = profile[@"lastVersionId"];
             if (![lastVersionId isKindOfClass:[NSString class]]) {
                 lastVersionId = [lastVersionId description];
@@ -162,21 +151,13 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
             self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
             self.selectedModLoader = parsed[@"loader"] ?: @"";
-            NSLog(@"Selected profile: %@, mod loader: %@, MC version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
+            NSLog(@"Auto-selected profile: %@, mod loader: %@, MC version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
             self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
-        }]];
+        }
     }
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-    alert.popoverPresentationController.sourceView = self.view;
-    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
-                                                                CGRectGetMidY(self.view.bounds),
-                                                                1, 1);
-    [self presentViewController:alert animated:YES completion:nil];
 }
 
-// Helper: Safely convert a version object to NSString.
+// Helper: Return a safe string from a version object.
 - (NSString *)stringFromVersionObject:(id)rawVersion {
     return SafeStringFromVersion(rawVersion);
 }
@@ -212,11 +193,14 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     
     self.title = @"Mods";
     self.modrinth = [ModrinthAPI new];
-    // Always prompt for CurseForge API key by initializing with an empty key.
+    // Initialize CurseForgeAPI with an empty key so the user is always prompted.
     self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:@""];
     self.searchFilters = [@{@"isModpack": @(NO), @"name": @""} mutableCopy];
     self.modsList = [NSMutableArray new];
     self.installQueue = [NSMutableArray new];
+    
+    // Auto-select saved profile if available.
+    [self updateProfileFromSavedSettings];
     
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
@@ -244,6 +228,46 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInstallModpackNotification:) name:@"InstallModpack" object:nil];
     
     [self updateModsList];
+}
+
+// Profile selection: Present an action sheet allowing user to change profile.
+- (void)actionChooseProfile {
+    NSDictionary *profiles = [PLProfiles current].profiles;
+    if (!profiles || profiles.count == 0) {
+        presentAlertDialog(localize(@"Error", nil), @"No profiles available.");
+        return;
+    }
+    NSArray *sortedProfiles = [[profiles allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *p1, NSDictionary *p2) {
+        return [p1[@"name"] compare:p2[@"name"] options:NSCaseInsensitiveSearch];
+    }];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Profile"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSDictionary *profile in sortedProfiles) {
+        NSString *profileName = profile[@"name"];
+        [alert addAction:[UIAlertAction actionWithTitle:profileName
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            self.selectedProfileName = profileName;
+            NSString *lastVersionId = profile[@"lastVersionId"];
+            if (![lastVersionId isKindOfClass:[NSString class]]) {
+                lastVersionId = [lastVersionId description];
+            }
+            NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
+            self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
+            self.selectedModLoader = parsed[@"loader"] ?: @"";
+            NSLog(@"Selected profile: %@, mod loader: %@, MC version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
+            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    alert.popoverPresentationController.sourceView = self.view;
+    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
+                                                                CGRectGetMidY(self.view.bounds),
+                                                                1, 1);
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 // Always prompt for CurseForge API key when CurseForge is active.
@@ -485,6 +509,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                     break;
                 }
             }
+            
             NSArray *versionLoaders = @[];
             if (loadersArray && i < loadersArray.count) {
                 id loaderItem = loadersArray[i];
