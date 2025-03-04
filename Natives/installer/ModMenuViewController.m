@@ -1,4 +1,3 @@
-// Filename: ModMenuViewController.m
 #import "ModMenuViewController.h"
 #import "modpack/ModrinthAPI.h"
 #import "modpack/CurseForgeAPI.h"
@@ -142,6 +141,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     
     self.apiSegmentedControl = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
     self.apiSegmentedControl.selectedSegmentIndex = 0;
+    // When the segmented control changes, update the mods list.
     [self.apiSegmentedControl addTarget:self action:@selector(updateModsList) forControlEvents:UIControlEventValueChanged];
     self.tableView.tableHeaderView = self.apiSegmentedControl;
     
@@ -163,152 +163,39 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [self updateModsList];
 }
 
-// Always prompt for CurseForge API key when the CurseForge segment is active.
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
-         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
-                message:@"Please enter your CurseForge API key to search mods on CurseForge."
-                preferredStyle:UIAlertControllerStyleAlert];
-         [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-             textField.placeholder = @"API Key";
-         }];
-         [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-             NSString *enteredKey = alert.textFields.firstObject.text;
-             if (enteredKey.length > 0) {
-                 // Always update the API key (even if one was already set)
-                 [self.curseForge setValue:enteredKey forKey:@"apiKey"];
-             } else {
-                 presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
-             }
-         }]];
-         [self presentViewController:alert animated:YES completion:nil];
-    }
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
-- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
-    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
-    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>  _Nonnull context) {
-        [self.tableView reloadData];
-    } completion:nil];
-}
-
-#pragma mark - Notification Handlers
-- (void)handleInstallModNotification:(NSNotification *)notification {
-    NSDictionary *userInfo = notification.userInfo;
-    NSDictionary *mod = userInfo[@"detail"];
-    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
-    [self installModNow:mod versionIndex:index];
-}
-
-- (void)handleInstallModpackNotification:(NSNotification *)notification {
-    NSDictionary *userInfo = notification.userInfo;
-    NSDictionary *mod = userInfo[@"detail"];
-    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
-    [self installModpackNow:mod versionIndex:index];
-}
-
-#pragma mark - Installation Methods
-- (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
-    NSArray *urls = mod[@"versionUrls"];
-    if (index >= urls.count) {
-        presentAlertDialog(localize(@"Error", nil), @"Invalid version index for installation.");
-        return;
-    }
-    NSString *urlString = urls[index];
-    NSString *modTitle = mod[@"title"] ?: @"Mod";
-    NSString *fileName = [NSString stringWithFormat:@"%@.jar", modTitle];
-    NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *modsDir = [docsPath stringByAppendingPathComponent:@"mods"];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
-        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:nil];
-    }
-    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
-    
-    [self downloadModFromURL:urlString toDestination:destinationPath completion:^(BOOL success, NSError *error) {
-        if (success) {
-            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
-        } else {
-            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to install %@: %@", modTitle, error.localizedDescription]);
-        }
-    }];
-}
-
-- (void)installModpackNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
-    NSString *modTitle = mod[@"title"] ?: @"Modpack";
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
-    });
-}
-
-- (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion {
-    NSURL *url = [NSURL URLWithString:urlString];
-    NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession] downloadTaskWithURL:url
-        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
-        if (error) {
-            if (completion) completion(NO, error);
-            return;
-        }
-        NSError *fileError = nil;
-        [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&fileError];
-        if (fileError) {
-            if (completion) completion(NO, fileError);
-        } else {
-            if (completion) completion(YES, nil);
-        }
-    }];
-    [downloadTask resume];
-}
-
-#pragma mark - Profile Selection
-- (void)actionChooseProfile {
-    NSDictionary *profiles = [PLProfiles current].profiles;
-    if (!profiles || profiles.count == 0) {
-        presentAlertDialog(localize(@"Error", nil), @"No profiles available.");
-        return;
-    }
-    
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Profile"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSDictionary *profile in profiles.allValues) {
-        NSString *name = profile[@"name"];
-        [alert addAction:[UIAlertAction actionWithTitle:name
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction * _Nonnull action) {
-            self.selectedProfileName = name;
-            NSString *lastVersionId = [[[profile[@"lastVersionId"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString] copy];
-            NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
-            self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
-            self.selectedModLoader = parsed[@"loader"] ?: @"";
-            NSLog(@"Selected profile: %@, mod loader: %@, Minecraft version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
-            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
-        }]];
-    }
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-    alert.popoverPresentationController.sourceView = self.view;
-    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
-                                                                CGRectGetMidY(self.view.bounds),
-                                                                1, 1);
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-#pragma mark - Mod Search
+// This method is called when the segmented control value changes.
+// If the CurseForge segment is selected, always prompt for an API key.
 - (void)updateModsList {
     NSString *name = self.searchController.searchBar.text;
     self.searchFilters[@"name"] = name ?: @"";
     if (self.selectedMCVersion && self.selectedMCVersion.length > 0) {
         self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
     }
-    [self.modsList removeAllObjects];
-    [self refreshModsListWithPrevList:NO];
+    
+    if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
+        // Always prompt for API key when using CurseForge.
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
+                                                                       message:@"Please enter your CurseForge API key to search mods on CurseForge."
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+            textField.placeholder = @"API Key";
+        }];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            NSString *enteredKey = alert.textFields.firstObject.text;
+            if (enteredKey.length > 0) {
+                [self.curseForge setValue:enteredKey forKey:@"apiKey"];
+            } else {
+                presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
+            }
+            [self refreshModsListWithPrevList:NO];
+        }]];
+        [self presentViewController:alert animated:YES completion:nil];
+    } else {
+        [self.modsList removeAllObjects];
+        [self refreshModsListWithPrevList:NO];
+    }
 }
+
 - (void)refreshModsListWithPrevList:(BOOL)prevList {
     if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
         __weak typeof(self) weakSelf = self;
@@ -337,6 +224,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         }];
     }
 }
+
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateModsList) object:nil];
     [self performSelector:@selector(updateModsList) withObject:nil afterDelay:0.5];
