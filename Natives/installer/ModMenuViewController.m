@@ -123,6 +123,32 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 #pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
 
+// This method handles mod installation when a version is selected.
+- (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
+    NSArray *urls = mod[@"versionUrls"];
+    if (index >= urls.count) {
+        presentAlertDialog(localize(@"Error", nil), @"Invalid version index for installation.");
+        return;
+    }
+    NSString *urlString = urls[index];
+    NSString *modTitle = mod[@"title"] ?: @"Mod";
+    NSString *fileName = [NSString stringWithFormat:@"%@.jar", modTitle];
+    NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *modsDir = [docsPath stringByAppendingPathComponent:@"mods"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
+    
+    [self downloadModFromURL:urlString toDestination:destinationPath completion:^(BOOL success, NSError *error) {
+        if (success) {
+            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
+        } else {
+            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to install %@: %@", modTitle, error.localizedDescription]);
+        }
+    }];
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     
@@ -163,8 +189,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [self updateModsList];
 }
 
-// This method is called when the segmented control value changes.
-// If the CurseForge segment is selected, always prompt for an API key.
+// When updateModsList is called, if CurseForge is selected, prompt for API key before refreshing.
 - (void)updateModsList {
     NSString *name = self.searchController.searchBar.text;
     self.searchFilters[@"name"] = name ?: @"";
@@ -183,6 +208,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             NSString *enteredKey = alert.textFields.firstObject.text;
             if (enteredKey.length > 0) {
+                // Update the API key using KVC.
                 [self.curseForge setValue:enteredKey forKey:@"apiKey"];
             } else {
                 presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
