@@ -88,7 +88,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
     cell.textLabel.text = mod[@"title"];
     NSArray *versionNames = mod[@"versionNames"];
-    // Show only the mod file version using the parsed loaderVersion.
+    // For queue display, extract mod file version only.
     if (versionIndex < versionNames.count) {
         NSDictionary *parsed = [ModpackUtils parseVersionString:versionNames[versionIndex]];
         cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: versionNames[versionIndex];
@@ -128,7 +128,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     
     self.title = @"Mods";
     self.modrinth = [ModrinthAPI new];
-    // Initialize CurseForgeAPI without an API key to force user prompt.
+    // Initialize CurseForgeAPI with an empty key to force user prompt.
     self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:@""];
     self.searchFilters = [@{@"isModpack": @(NO), @"name": @""} mutableCopy];
     self.modsList = [NSMutableArray new];
@@ -162,11 +162,11 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     [self updateModsList];
 }
 
-// Prompt the user to enter the CurseForge API key if not already set.
+// Prompt the user to enter the CurseForge API key when using CurseForge.
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    // Only prompt if using CurseForge and the API key is empty.
-    if (self.apiSegmentedControl.selectedSegmentIndex == 1 && self.curseForge.apiKey.length == 0) {
+    if (self.apiSegmentedControl.selectedSegmentIndex == 1 &&
+        [[[self.curseForge valueForKey:@"apiKey"] ?: @"" lowercaseString] length] == 0) {
          UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
                 message:@"Please enter your CurseForge API key to search mods on CurseForge."
                 preferredStyle:UIAlertControllerStyleAlert];
@@ -176,7 +176,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
          [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
              NSString *enteredKey = alert.textFields.firstObject.text;
              if (enteredKey.length > 0) {
-                 self.curseForge.apiKey = enteredKey;
+                 [self.curseForge setValue:enteredKey forKey:@"apiKey"];
              } else {
                  presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
              }
