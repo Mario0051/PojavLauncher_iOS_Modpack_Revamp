@@ -28,6 +28,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 #pragma mark - Private Method Declarations
 @interface ModMenuViewController ()
 - (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion;
+- (NSString *)stringFromVersionObject:(id)rawVersion;
 @end
 
 #pragma mark - ModQueueViewController Interface
@@ -93,13 +94,12 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
     cell.textLabel.text = mod[@"title"];
     NSArray *versionNames = mod[@"versionNames"];
-    // Ensure we have a string to parse:
-    NSString *verStr = (versionIndex < versionNames.count) ? ([versionNames[versionIndex] isKindOfClass:[NSString class]] ? versionNames[versionIndex] : [versionNames[versionIndex] description]) : @"";
+    NSString *verStr = (versionIndex < versionNames.count) ? [self stringFromVersionObject:versionNames[versionIndex]] : @"";
     NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
     cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
     return cell;
 }
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
  forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
         [self.queue removeObjectAtIndex:indexPath.row];
@@ -124,6 +124,17 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 
 #pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
+
+// Helper method: Safely return a string from a version object.
+- (NSString *)stringFromVersionObject:(id)rawVersion {
+    if ([rawVersion isKindOfClass:[NSString class]]) {
+        return rawVersion;
+    } else if ([rawVersion respondsToSelector:@selector(stringValue)]) {
+        return [rawVersion stringValue];
+    } else {
+        return [rawVersion description];
+    }
+}
 
 // Method to handle mod installation when a version is selected.
 - (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
@@ -169,7 +180,6 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     
     self.apiSegmentedControl = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
     self.apiSegmentedControl.selectedSegmentIndex = 0;
-    // When the segmented control changes, update the mods list.
     [self.apiSegmentedControl addTarget:self action:@selector(updateModsList) forControlEvents:UIControlEventValueChanged];
     self.tableView.tableHeaderView = self.apiSegmentedControl;
     
@@ -410,7 +420,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     
     if (profileMCVer.length == 0 || profileLoader.length == 0) {
         for (NSUInteger i = 0; i < versionNames.count; i++) {
-            NSString *verStr = ([versionNames[i] isKindOfClass:[NSString class]] ? versionNames[i] : [versionNames[i] description]);
+            NSString *verStr = [self stringFromVersionObject:versionNames[i]];
             NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
             NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
             [supportedIndices addObject:@(i)];
@@ -450,7 +460,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
             if (mcMatch && loaderMatch) {
                 [supportedIndices addObject:@(i)];
-                NSString *verStr = ([versionNames[i] isKindOfClass:[NSString class]] ? versionNames[i] : [versionNames[i] description]);
+                NSString *verStr = [self stringFromVersionObject:versionNames[i]];
                 NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
                 NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
                 [supportedDisplayNames addObject:modFileVersion];
