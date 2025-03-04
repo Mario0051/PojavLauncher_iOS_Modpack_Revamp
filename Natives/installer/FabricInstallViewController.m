@@ -158,7 +158,7 @@
             profileName = @"default";
         }
         NSString *defaultGameDir = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"custom_gamedir/%@", profileName]];
-        NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", defaultGameDir, response[@"id"]];
+        NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", defaultGameDir, response[@"id"], response[@"id"]];
         [NSFileManager.defaultManager createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         NSError *error = saveJSONToFile(response, jsonPath);
         if (error) {
