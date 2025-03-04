@@ -111,7 +111,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
     return cell;
 }
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
  forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
         [self.queue removeObjectAtIndex:indexPath.row];
@@ -137,7 +137,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 #pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
 
-// Auto-update from PLProfiles if a selected profile exists.
+// Auto-update from saved profile settings if available.
 - (void)updateProfileFromSavedSettings {
     NSString *savedProfile = [PLProfiles current].selectedProfileName;
     if (savedProfile) {
@@ -160,6 +160,26 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 // Helper: Return a safe string from a version object.
 - (NSString *)stringFromVersionObject:(id)rawVersion {
     return SafeStringFromVersion(rawVersion);
+}
+
+// Implementation of the missing download method.
+- (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion {
+    NSURL *url = [NSURL URLWithString:urlString];
+    NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession] downloadTaskWithURL:url
+        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+            if (error) {
+                if (completion) completion(NO, error);
+                return;
+            }
+            NSError *fileError = nil;
+            [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&fileError];
+            if (fileError) {
+                if (completion) completion(NO, fileError);
+            } else {
+                if (completion) completion(YES, nil);
+            }
+    }];
+    [downloadTask resume];
 }
 
 // Method to handle mod installation when a version is selected.
@@ -199,7 +219,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     self.modsList = [NSMutableArray new];
     self.installQueue = [NSMutableArray new];
     
-    // Auto-select saved profile if available.
+    // Auto-select the saved profile if available.
     [self updateProfileFromSavedSettings];
     
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -230,7 +250,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self updateModsList];
 }
 
-// Profile selection: Present an action sheet allowing user to change profile.
+// Profile selection: Presents a sorted list of profiles for the user to choose from.
 - (void)actionChooseProfile {
     NSDictionary *profiles = [PLProfiles current].profiles;
     if (!profiles || profiles.count == 0) {
@@ -270,7 +290,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-// Always prompt for CurseForge API key when CurseForge is active.
+// Always prompt for CurseForge API key when using CurseForge.
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
@@ -509,7 +529,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                     break;
                 }
             }
-            
             NSArray *versionLoaders = @[];
             if (loadersArray && i < loadersArray.count) {
                 id loaderItem = loadersArray[i];
