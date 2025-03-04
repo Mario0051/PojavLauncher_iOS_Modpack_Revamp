@@ -43,7 +43,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 #pragma mark - ModQueueViewController Interface
 @interface ModQueueViewController : UITableViewController
-@property (nonatomic, strong) NSMutableArray *queue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
+@property (nonatomic, strong) NSMutableArray *queue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
 @property (nonatomic, copy) void (^didFinishInstallation)(void);
 @end
 
@@ -109,7 +109,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
     return cell;
 }
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
  forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
         [self.queue removeObjectAtIndex:indexPath.row];
@@ -129,11 +129,57 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 @property (nonatomic, strong) NSString *selectedProfileName;
 @property (nonatomic, strong) NSString *selectedMCVersion;
 @property (nonatomic, strong) NSString *selectedModLoader;
-@property (nonatomic, strong) NSMutableArray *installQueue; // Array of dictionaries: @{@"mod": modDictionary, @"versionIndex": @(index)}
+@property (nonatomic, strong) NSMutableArray *installQueue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
 @end
 
 #pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
+
+// Profile selection: Presents a sorted list of available profiles.
+- (void)actionChooseProfile {
+    NSDictionary *profiles = [PLProfiles current].profiles;
+    if (!profiles || profiles.count == 0) {
+        presentAlertDialog(localize(@"Error", nil), @"No profiles available.");
+        return;
+    }
+    // Sort profiles by name
+    NSArray *sortedProfiles = [[profiles allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *p1, NSDictionary *p2) {
+        return [p1[@"name"] compare:p2[@"name"] options:NSCaseInsensitiveSearch];
+    }];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Profile"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSDictionary *profile in sortedProfiles) {
+        NSString *profileName = profile[@"name"];
+        [alert addAction:[UIAlertAction actionWithTitle:profileName
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            self.selectedProfileName = profileName;
+            NSString *lastVersionId = profile[@"lastVersionId"];
+            if (![lastVersionId isKindOfClass:[NSString class]]) {
+                lastVersionId = [lastVersionId description];
+            }
+            NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
+            self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
+            self.selectedModLoader = parsed[@"loader"] ?: @"";
+            NSLog(@"Selected profile: %@, mod loader: %@, MC version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
+            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    alert.popoverPresentationController.sourceView = self.view;
+    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
+                                                                CGRectGetMidY(self.view.bounds),
+                                                                1, 1);
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+// Helper: Safely convert a version object to NSString.
+- (NSString *)stringFromVersionObject:(id)rawVersion {
+    return SafeStringFromVersion(rawVersion);
+}
 
 // Method to handle mod installation when a version is selected.
 - (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
@@ -166,7 +212,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     
     self.title = @"Mods";
     self.modrinth = [ModrinthAPI new];
-    // Initialize CurseForgeAPI with an empty key so the user is always prompted.
+    // Always prompt for CurseForge API key by initializing with an empty key.
     self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:@""];
     self.searchFilters = [@{@"isModpack": @(NO), @"name": @""} mutableCopy];
     self.modsList = [NSMutableArray new];
@@ -200,7 +246,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self updateModsList];
 }
 
-// Always prompt for CurseForge API key when the CurseForge segment is active.
+// Always prompt for CurseForge API key when CurseForge is active.
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
@@ -213,7 +259,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
          [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
              NSString *enteredKey = alert.textFields.firstObject.text;
              if (enteredKey.length > 0) {
-                 // Always update the API key (even if one was already set)
                  [self.curseForge setValue:enteredKey forKey:@"apiKey"];
              } else {
                  presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
@@ -266,7 +311,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     }
     
     if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
-        // Always prompt for API key when using CurseForge.
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
                                                                        message:@"Please enter your CurseForge API key to search mods on CurseForge."
                                                                 preferredStyle:UIAlertControllerStyleAlert];
@@ -276,7 +320,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             NSString *enteredKey = alert.textFields.firstObject.text;
             if (enteredKey.length > 0) {
-                // Update the API key using KVC.
                 [self.curseForge setValue:enteredKey forKey:@"apiKey"];
             } else {
                 presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
@@ -442,7 +485,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                     break;
                 }
             }
-            
             NSArray *versionLoaders = @[];
             if (loadersArray && i < loadersArray.count) {
                 id loaderItem = loadersArray[i];
