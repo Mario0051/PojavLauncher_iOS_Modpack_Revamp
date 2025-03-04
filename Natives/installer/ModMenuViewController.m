@@ -395,7 +395,11 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
     NSArray *loadersArray = mod[@"versionLoaders"];
     
-    // Debug: Log filtering criteria.
+    // Debug: Log the counts of available arrays.
+    NSLog(@"[DEBUG] versionNames count: %lu", (unsigned long)versionNames.count);
+    NSLog(@"[DEBUG] gameVersionsArray count: %lu", (unsigned long)gameVersionsArray.count);
+    NSLog(@"[DEBUG] loadersArray count: %lu", (unsigned long)loadersArray.count);
+    
     NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     NSLog(@"Filtering for MC version: %@ and loader: %@", profileMCVer, profileLoader);
@@ -410,18 +414,29 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         }
     } else {
         for (NSUInteger i = 0; i < versionNames.count; i++) {
-            id gameVerItem = gameVersionsArray[i];
-            NSArray *gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : (@[gameVerItem]);
+            // Safe access for gameVersions
+            NSArray *gameVers = @[];
+            if (i < gameVersionsArray.count) {
+                id gameVerItem = gameVersionsArray[i];
+                gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : @[gameVerItem];
+            }
             BOOL mcMatch = NO;
             for (NSString *gv in gameVers) {
                 NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                if ([trimmedGV isEqualToString:profileMCVer] || [trimmedGV hasPrefix:profileMCVer] || [profileMCVer hasPrefix:trimmedGV]) {
+                if ([trimmedGV isEqualToString:profileMCVer] ||
+                    [trimmedGV hasPrefix:profileMCVer] ||
+                    [profileMCVer hasPrefix:trimmedGV]) {
                     mcMatch = YES;
                     break;
                 }
             }
-            id loaderItem = (loadersArray && loadersArray.count > i) ? loadersArray[i] : nil;
-            NSArray *versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
+            
+            // Safe access for loaders
+            NSArray *versionLoaders = @[];
+            if (loadersArray && i < loadersArray.count) {
+                id loaderItem = loadersArray[i];
+                versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
+            }
             BOOL loaderMatch = NO;
             for (NSString *ld in versionLoaders) {
                 NSString *trimmedLD = [[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
