@@ -202,40 +202,49 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     // Use the lastPathComponent of the URL to preserve the original file name.
     NSString *fileName = [[NSURL URLWithString:urlString] lastPathComponent];
     
-    // Retrieve the instance name from the current profile using the PLProfiles helper.
-    NSString *instanceName = [PLProfiles resolveKeyForCurrentProfile:@"gameDir"];
-    if ([instanceName isEqualToString:@"."] || instanceName.length == 0) {
-        instanceName = self.selectedProfileName ?: @"default";
+    // Get the profile-specific game directory path
+    NSString *rawGameDir = [PLProfiles resolveKeyForCurrentProfile:@"gameDir"];
+    NSString *profileDir;
+    
+    if ([rawGameDir hasPrefix:@"./"]) {
+        // Resolve relative paths
+        profileDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
+                      getenv("POJAV_HOME"), 
+                      getPrefObject(@"general.game_directory"),
+                      rawGameDir];
+    } else {
+        // Absolute path or other format (should be rare)
+        profileDir = rawGameDir;
     }
     
-    // Get the Documents directory.
-    NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    // Build destination: Documents/instances/(instanceName)/custom_gamedir/mods
-    NSString *instanceDir = [docsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@", instanceName]];
-    NSString *modsDir = [instanceDir stringByAppendingPathComponent:@"custom_gamedir/mods"];
+    profileDir = [profileDir stringByStandardizingPath];
     
-    // Create the mods directory if it doesn't exist.
+    // Create the mods directory in the profile if it doesn't exist
+    NSString *modsDir = [profileDir stringByAppendingPathComponent:@"mods"];
+    NSError *dirError = nil;
+    
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
-        NSError *createError = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
-        if (createError) {
-            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription]);
+        BOOL created = [[NSFileManager defaultManager] createDirectoryAtPath:modsDir 
+                                                  withIntermediateDirectories:YES 
+                                                                   attributes:nil 
+                                                                        error:&dirError];
+        if (!created || dirError) {
+            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to create mods directory: %@", dirError.localizedDescription]);
             return;
         }
     }
     
     NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
+    NSLog(@"[ModMenu] Installing mod %@ to %@", fileName, destinationPath);
     
     [self downloadModFromURL:urlString toDestination:destinationPath completion:^(BOOL success, NSError *error) {
         if (success) {
-            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", fileName]);
+            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully to %@.", fileName, modsDir.lastPathComponent]);
         } else {
             presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to install %@: %@", fileName, error.localizedDescription]);
         }
     }];
 }
-
-
 
 - (void)viewDidLoad {
     [super viewDidLoad];
