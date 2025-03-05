@@ -1,6 +1,7 @@
 #import "ModrinthAPI.h"
 #import "MinecraftResourceDownloadTask.h"
 #import "PLProfiles.h"
+#import "AFNetworking.h"
 #import "UIAlertUtilities.h"
 
 @interface ModrinthAPI ()
