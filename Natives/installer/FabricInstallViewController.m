@@ -11,14 +11,14 @@
 #include <objc/runtime.h>
 
 @interface FabricInstallViewController()
-@property(nonatomic) NSDictionary *endpoints;
-@property(nonatomic) NSMutableDictionary *localKVO;
+@property(nonatomic, strong) NSDictionary *endpoints;
+@property(nonatomic, strong) NSMutableDictionary *localKVO;
 // Loader metadata
-@property(nonatomic) NSArray<NSDictionary *> *loaderMetadata;
-@property(nonatomic) NSMutableArray<NSString *> *loaderList;
+@property(nonatomic, strong) NSArray<NSDictionary *> *loaderMetadata;
+@property(nonatomic, strong) NSMutableArray<NSString *> *loaderList;
 // Game metadata
-@property(nonatomic) NSArray<NSDictionary *> *versionMetadata;
-@property(nonatomic) NSMutableArray<NSString *> *versionList;
+@property(nonatomic, strong) NSArray<NSDictionary *> *versionMetadata;
+@property(nonatomic, strong) NSMutableArray<NSString *> *versionList;
 @end
 
 @implementation FabricInstallViewController
@@ -46,13 +46,14 @@
         weakSelf.localKVO[key] = value;
     };
 
-    id typePickSegment = ^void(UITableViewCell *cell, NSString *section, NSString *key, NSDictionary *item) {
+    id typePickSegment = ^(UITableViewCell *cell, NSString *section, NSString *key, NSDictionary *item) {
         UISegmentedControl *view = [[UISegmentedControl alloc] initWithItems:item[@"pickList"]];
         [view addTarget:weakSelf action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
         if (view.selectedSegmentIndex == UISegmentedControlNoSegment) {
             view.selectedSegmentIndex = 0;
         }
         cell.accessoryView = view;
+        objc_setAssociatedObject(view, @"item", item, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     };
 
     self.versionList = [NSMutableArray new];
@@ -89,7 +90,6 @@
               @"title": @"preference.profile.title.loader_type",
               @"type": typePickSegment,
               @"pickList": @[localize(@"Release", nil), @"Unstable"],
-              //localize(@"Unstable", nil)
               @"action": ^(int type) {
                   [weakSelf changeLoaderTypeTo:type];
               }
@@ -119,19 +119,23 @@
         if (!errorShown) {
             errorShown = YES;
             NSDebugLog(@"Error: %@", error);
-            showDialog(localize(@"Error", nil), error.localizedDescription);
-            [self actionClose];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                showDialog(localize(@"Error", nil), error.localizedDescription);
+                [self actionClose];
+            });
         }
     };
     AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
     NSDictionary *endpoint = self.endpoints[self.localKVO[@"loaderVendor"]];
-    [manager GET:endpoint[@"game"] parameters:nil headers:nil progress:nil  success:^(NSURLSessionTask *task, NSArray *response) {
-        NSDebugLog(@"[%@ Installer] Got %d game versions", self.localKVO[@"loaderVendor"], response.count);
+    
+    [manager GET:endpoint[@"game"] parameters:nil headers:nil progress:nil success:^(NSURLSessionTask *task, NSArray *response) {
+        NSDebugLog(@"[%@ Installer] Got %lu game versions", self.localKVO[@"loaderVendor"], (unsigned long)response.count);
         self.versionMetadata = response;
         [self changeVersionTypeTo:[self.localKVO[@"gameType_index"] intValue]];
     } failure:errorCallback];
+    
     [manager GET:endpoint[@"loader"] parameters:nil headers:nil progress:nil success:^(NSURLSessionTask *task, NSArray *response) {
-        NSDebugLog(@"[%@ Installer] Got %d loader versions", self.localKVO[@"loaderVendor"], response.count);
+        NSDebugLog(@"[%@ Installer] Got %lu loader versions", self.localKVO[@"loaderVendor"], (unsigned long)response.count);
         self.loaderMetadata = response;
         [self changeLoaderTypeTo:[self.localKVO[@"loaderType_index"] intValue]];
     } failure:errorCallback];
@@ -149,31 +153,35 @@
     NSDebugLog(@"[%@ Installer] Downloading %@", self.localKVO[@"loaderVendor"], path);
 
     AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
-    [manager GET:path parameters:nil headers:nil progress:nil  success:^(NSURLSessionTask *task, NSDictionary *response) {
-        sender.enabled = YES;
+    [manager GET:path parameters:nil headers:nil progress:nil success:^(NSURLSessionTask *task, NSDictionary *response) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sender.enabled = YES;
 
-        NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), response[@"id"]];
-        [NSFileManager.defaultManager createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
-        NSError *error = saveJSONToFile(response, jsonPath);
-        if (error) {
-            showDialog(localize(@"Error", nil), error.localizedDescription);
-        } else {
-            [localVersionList addObject:@{
-                @"id": response[@"id"],
-                @"type": @"custom"}];
-            // Jump to the profile editor
-            LauncherProfileEditorViewController *vc = [LauncherProfileEditorViewController new];
-            vc.profile = @{
-                @"icon": endpoint[@"icon"],
-                @"name": response[@"id"],
-                @"lastVersionId": response[@"id"]
-            }.mutableCopy;
-            [self.navigationController pushViewController:vc animated:YES];
-        }
+            NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), response[@"id"]];
+            [NSFileManager.defaultManager createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+            NSError *error = saveJSONToFile(response, jsonPath);
+            if (error) {
+                showDialog(localize(@"Error", nil), error.localizedDescription);
+            } else {
+                [localVersionList addObject:@{
+                    @"id": response[@"id"],
+                    @"type": @"custom"}];
+                // Jump to the profile editor
+                LauncherProfileEditorViewController *vc = [LauncherProfileEditorViewController new];
+                vc.profile = @{
+                    @"icon": endpoint[@"icon"],
+                    @"name": response[@"id"],
+                    @"lastVersionId": response[@"id"]
+                }.mutableCopy;
+                [self.navigationController pushViewController:vc animated:YES];
+            }
+        });
     } failure:^(NSURLSessionTask *operation, NSError *error) {
-        sender.enabled = YES;
-        NSDebugLog(@"Error: %@", error);
-        showDialog(localize(@"Error", nil), error.localizedDescription);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sender.enabled = YES;
+            NSDebugLog(@"Error: %@", error);
+            showDialog(localize(@"Error", nil), error.localizedDescription);
+        });
     }];
 }
 
@@ -193,9 +201,11 @@
     self.localKVO[key] = list.firstObject;
     [self.tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:row inSection:0]] withRowAnimation:UITableViewRowAnimationNone];
 }
+
 - (void)changeLoaderTypeTo:(int)type {
     [self changeTypeToStable:type==0 forList:self.loaderList fromMetadata:self.loaderMetadata atRow:4 key:@"loaderVersion"];
 }
+
 - (void)changeVersionTypeTo:(int)type {
     [self changeTypeToStable:type==0 forList:self.versionList fromMetadata:self.versionMetadata atRow:1 key:@"gameVersion"];
 }
@@ -206,7 +216,7 @@
     self.localKVO[[item[@"key"] stringByAppendingString:@"_index"]] = @(sender.selectedSegmentIndex);
     void(^invokeAction)(int selected) = item[@"action"];
     if (invokeAction) {
-        invokeAction(sender.selectedSegmentIndex);
+        invokeAction((int)sender.selectedSegmentIndex);
     }
 }
 
