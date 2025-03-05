@@ -306,8 +306,14 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
     NSLog(@"downloader: Determined version string: %@", finalVersionString);
     NSString *profileName = manifestDict[@"name"] ?: @"Unknown Modpack";
     if (profileName.length > 0) {
+        // Generate a unique game directory path
+        NSString *gameDir = [ModpackUtils getUniqueProfileDirectory:profileName];
+    
+        // Create the profile directory structure
+        [ModpackUtils createProfileDirectory:gameDir];
+    
         NSDictionary *profileInfo = @{
-            @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent],
+            @"gameDir": gameDir,
             @"name": profileName,
             @"lastVersionId": finalVersionString,
             @"icon": @""
