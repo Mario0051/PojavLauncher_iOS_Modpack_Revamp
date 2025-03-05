@@ -175,6 +175,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 @property (nonatomic, strong) NSString *selectedMCVersion;
 @property (nonatomic, strong) NSString *selectedModLoader;
 @property (nonatomic, strong) NSMutableArray *installQueue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
+- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx;
+- (void)showVersionSelectorTableForMod:(NSDictionary *)mod withVersions:(NSArray<NSString *> *)versions indices:(NSArray<NSNumber *> *)indices;
 @end
 
 #pragma mark - ModMenuViewController Implementation
