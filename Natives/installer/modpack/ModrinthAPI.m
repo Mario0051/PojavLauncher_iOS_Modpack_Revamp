@@ -13,8 +13,16 @@
 
 #pragma mark - Initialization
 
++ (instancetype)defaultAPI {
+    return [[self alloc] initWithURL:@"https://api.modrinth.com/v2"];
+}
+
 - (instancetype)init {
-    self = [super initWithURL:@"https://api.modrinth.com/v2"];
+    return [self initWithURL:@"https://api.modrinth.com/v2"];
+}
+
+- (instancetype)initWithURL:(NSString *)url {
+    self = [super initWithURL:url];
     if (self) {
         // Initialize session manager
         _sessionManager = [AFHTTPSessionManager manager];
