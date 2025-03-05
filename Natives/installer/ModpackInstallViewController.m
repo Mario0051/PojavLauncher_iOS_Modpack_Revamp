@@ -50,7 +50,7 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
     self.navigationItem.searchController = self.searchController;
     
     // Only load modpacks (isModpack = YES)
-    self.modrinth = [ModrinthAPI new];
+    self.modrinth = [ModrinthAPI defaultAPI];
     self.filters = [@{@"isModpack": @(YES), @"name": @" "} mutableCopy];
     
     [self updateSearchResults];
