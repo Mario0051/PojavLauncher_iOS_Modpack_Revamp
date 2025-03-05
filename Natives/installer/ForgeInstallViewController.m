@@ -6,14 +6,14 @@
 #import "utils.h"
 #include <dlfcn.h>
 
-@interface ForgeInstallViewController()<NSXMLParserDelegate>
+@interface ForgeInstallViewController()
 @property(atomic) AFURLSessionManager *afManager;
-@property(nonatomic) WFWorkflowProgressView *progressView;
+@property(nonatomic, strong) WFWorkflowProgressView *progressView;
 
-@property(nonatomic) NSDictionary *endpoints;
-@property(nonatomic) NSMutableArray<NSNumber *> *visibilityList;
-@property(nonatomic) NSMutableArray<NSString *> *versionList;
-@property(nonatomic) NSMutableArray<NSMutableArray *> *forgeList;
+@property(nonatomic, strong) NSDictionary *endpoints;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *visibilityList;
+@property(nonatomic, strong) NSMutableArray<NSString *> *versionList;
+@property(nonatomic, strong) NSMutableArray<NSMutableArray *> *forgeList;
 @property(nonatomic, assign) BOOL isVersionElement;
 @end
 
@@ -28,10 +28,17 @@
 
     // Load WFWorkflowProgressView
     dlopen("/System/Library/PrivateFrameworks/WorkflowUIServices.framework/WorkflowUIServices", RTLD_GLOBAL);
-    self.progressView = [[NSClassFromString(@"WFWorkflowProgressView") alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
-    self.progressView.resolvedTintColor = self.view.tintColor;
-    [self.progressView addTarget:self
-        action:@selector(actionCancelDownload) forControlEvents:UIControlEventTouchUpInside];
+    Class progressViewClass = NSClassFromString(@"WFWorkflowProgressView");
+    if (progressViewClass) {
+        self.progressView = [[progressViewClass alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+        self.progressView.resolvedTintColor = self.view.tintColor;
+        [self.progressView addTarget:self
+            action:@selector(actionCancelDownload) forControlEvents:UIControlEventTouchUpInside];
+    } else {
+        // Fallback to UIActivityIndicatorView if WFWorkflowProgressView is not available
+        UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        self.progressView = (WFWorkflowProgressView *)indicator;
+    }
 
     self.endpoints = @{
         @"Forge": @{
@@ -54,7 +61,9 @@
 }
 
 - (void)actionClose {
-    [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+    });
 }
 
 - (void)loadMetadataFromVendor:(NSString *)vendor {
@@ -73,17 +82,21 @@
 }
 
 - (void)switchToLoadingState {
-    UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:indicator];
-    [indicator startAnimating];
-    self.navigationController.modalInPresentation = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:indicator];
+        [indicator startAnimating];
+        self.navigationController.modalInPresentation = YES;
+    });
 }
 
 - (void)switchToReadyState {
-    UIActivityIndicatorView *indicator = (id)self.navigationItem.rightBarButtonItem.customView;
-    [indicator stopAnimating];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
-    self.navigationController.modalInPresentation = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIActivityIndicatorView *indicator = (id)self.navigationItem.rightBarButtonItem.customView;
+        [indicator stopAnimating];
+        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
+        self.navigationController.modalInPresentation = NO;
+    });
 }
 
 - (void)segmentChanged:(UISegmentedControl *)segment {
@@ -117,13 +130,18 @@
 
 - (void)tableViewDidSelectSection:(UITapGestureRecognizer *)sender {
     UITableViewHeaderFooterView *view = (id)sender.view;
-    int section = [self.versionList indexOfObject:view.textLabel.text];
-    self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
-    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationAutomatic];
+    NSUInteger section = [self.versionList indexOfObject:view.textLabel.text];
+    if (section < self.visibilityList.count) {
+        self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationAutomatic];
+    }
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.visibilityList[section].boolValue ? self.forgeList[section].count : 0;
+    if (section < self.visibilityList.count && section < self.forgeList.count) {
+        return self.visibilityList[section].boolValue ? self.forgeList[section].count : 0;
+    }
+    return 0;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -132,7 +150,9 @@
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"cell"];
     }
 
-    cell.textLabel.text = self.forgeList[indexPath.section][indexPath.row];
+    if (indexPath.section < self.forgeList.count && indexPath.row < self.forgeList[indexPath.section].count) {
+        cell.textLabel.text = self.forgeList[indexPath.section][indexPath.row];
+    }
     return cell;
 }
 
@@ -154,9 +174,12 @@
 
     self.afManager = [AFURLSessionManager new];
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:jarURL]];
+    __weak typeof(self) weakSelf = self;
     NSURLSessionDownloadTask *downloadTask = [self.afManager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull progress){
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.progressView.fractionCompleted = progress.fractionCompleted;
+            if ([weakSelf.progressView respondsToSelector:@selector(setFractionCompleted:)]) {
+                weakSelf.progressView.fractionCompleted = progress.fractionCompleted;
+            }
         });
     } destination:^NSURL *(NSURL *targetPath, NSURLResponse *response) {
         [NSFileManager.defaultManager removeItemAtPath:outPath error:nil];
@@ -170,12 +193,15 @@
                     NSDebugLog(@"Error: %@", error);
                     showDialog(localize(@"Error", nil), error.localizedDescription);
                 }
-                [self switchToReadyState];
+                [weakSelf switchToReadyState];
                 return;
             }
-            LauncherNavigationController *navVC = (id)((UISplitViewController *)self.presentingViewController).viewControllers[1];
-            [self dismissViewControllerAnimated:YES completion:^{
-                [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
+            
+            LauncherNavigationController *navVC = (id)((UISplitViewController *)weakSelf.presentingViewController).viewControllers[1];
+            [weakSelf dismissViewControllerAnimated:YES completion:^{
+                if ([navVC respondsToSelector:@selector(enterModInstallerWithPath:hitEnterAfterWindowShown:)]) {
+                    [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
+                }
             }];
         });
     }];
@@ -190,7 +216,7 @@
     }
     NSRange range = [version rangeOfString:@"-"];
     NSString *gameVersion = [version substringToIndex:range.location];
-    //NSString *forgeVersion = [version substringFromIndex:range.location + 1];
+    
     if (![self.versionList containsObject:gameVersion]) {
         [self.visibilityList addObject:@(NO)];
         [self.versionList addObject:gameVersion];
@@ -202,7 +228,7 @@
 #pragma mark NSXMLParser
 
 - (void)parserDidEndDocument:(NSXMLParser *)unused {
-        dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
         [self switchToReadyState];
         [self.tableView reloadData];
     });
