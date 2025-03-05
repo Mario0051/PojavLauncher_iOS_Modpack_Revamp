@@ -530,4 +530,28 @@ dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     return YES;
 }
 
+- (void)ensureIsolatedModpackDirectory:(NSString *)modpackName {
+    // Generate a unique directory name for this modpack
+    NSString *profileName = [NSString stringWithFormat:@"modpack-%@", 
+                           [[modpackName stringByDeletingPathExtension] lastPathComponent]];
+    NSString *gameDir = [ModpackUtils getUniqueProfileDirectory:profileName];
+    
+    // Create the directory structure
+    [ModpackUtils createProfileDirectory:gameDir];
+    
+    // Create a profile for this modpack
+    NSMutableDictionary *profile = [@{
+        @"name": profileName,
+        @"lastVersionId": @"latest-release", // This will be updated later when we know the version
+        @"gameDir": gameDir,
+        @"icon": @""
+    } mutableCopy];
+    
+    PLProfiles.current.profiles[profileName] = profile;
+    PLProfiles.current.selectedProfileName = profileName;
+    [PLProfiles.current save];
+    
+    NSLog(@"[JavaGUI] Created isolated modpack profile: %@", profileName);
+}
+
 @end
