@@ -1,6 +1,8 @@
 #import "AFNetworking.h"
 #import "ForgeInstallViewController.h"
 #import "LauncherNavigationController.h"
+#import "ModpackUtils.h"
+#import "PLProfiles.h"
 #import "WFWorkflowProgressView.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
@@ -72,11 +74,33 @@
     });
 }
 
+- (void)createForgeProfileWithVersion:(NSString *)versionId {
+    // Create a unique game directory for this profile
+    NSString *profileName = [NSString stringWithFormat:@"forge-%@", versionId];
+    NSString *gameDir = [ModpackUtils getUniqueProfileDirectory:profileName];
+    [ModpackUtils createProfileDirectory:gameDir];
+    
+    // Create the profile in launcher_profiles.json
+    NSMutableDictionary *profile = [@{
+        @"name": profileName,
+        @"lastVersionId": versionId,
+        @"gameDir": gameDir,
+        @"icon": @""
+    } mutableCopy];
+    
+    PLProfiles.current.profiles[profileName] = profile;
+    PLProfiles.current.selectedProfileName = profileName;
+    [PLProfiles.current save];
+    
+    NSLog(@"[ForgeInstall] Created isolated Forge profile: %@", profileName);
+}
+
 - (void)switchToLoadingState {
     UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:indicator];
     [indicator startAnimating];
     self.navigationController.modalInPresentation = YES;
+    self.tableView.allowsSelection = NO;
 }
 
 - (void)switchToReadyState {
@@ -84,6 +108,7 @@
     [indicator stopAnimating];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
     self.navigationController.modalInPresentation = NO;
+    self.tableView.allowsSelection = YES;
 }
 
 - (void)segmentChanged:(UISegmentedControl *)segment {
@@ -173,6 +198,10 @@
                 [self switchToReadyState];
                 return;
             }
+            
+            // Create an isolated profile for this Forge version
+            [self createForgeProfileWithVersion:cell.textLabel.text];
+            
             LauncherNavigationController *navVC = (id)((UISplitViewController *)self.presentingViewController).viewControllers[1];
             [self dismissViewControllerAnimated:YES completion:^{
                 [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
