@@ -213,31 +213,43 @@ void init_setupMultiDir() {
     const char *home = getenv("POJAV_HOME");
     NSString *lasmPath = [NSString stringWithFormat:@"%s/Library/Application Support/minecraft", home];
     NSString *multidirPath = [NSString stringWithFormat:@"%s/instances/%@", home, multidir];
-
+    NSString *profilesPath = [multidirPath stringByAppendingPathComponent:@"profiles"];
+    NSString *defaultProfilePath = [profilesPath stringByAppendingPathComponent:@"default"];
 
     NSArray *dirsToCreate = @[
         [NSString stringWithFormat:@"%s/.demo", home],
         [NSString stringWithFormat:@"%s/java_runtimes", home],
         lasmPath.stringByDeletingLastPathComponent,
-        multidirPath
+        multidirPath,
+        profilesPath,
+        defaultProfilePath
     ];
+    
     for (NSString *dir in dirsToCreate) {
-        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSError *error = nil;
+        BOOL created = [NSFileManager.defaultManager createDirectoryAtPath:dir 
+                                               withIntermediateDirectories:YES 
+                                                                attributes:nil 
+                                                                     error:&error];
+        if (!created) {
+            NSLog(@"[Pre-init] Failed to create directory %@: %@", dir, error);
+        }
     }
-    [fm removeItemAtPath:lasmPath error:nil];
-    [fm createSymbolicLinkAtPath:lasmPath withDestinationPath:multidirPath error:nil];
-    [fm changeCurrentDirectoryPath:lasmPath];
+    
+// Create subdirectories in the default profile
+    NSArray *subDirs = @[@"mods", @"config", @"resourcepacks", @"shaderpacks", @"saves"];
+    for (NSString *subDir in subDirs) {
+        NSString *subDirPath = [defaultProfilePath stringByAppendingPathComponent:subDir];
+        [NSFileManager.defaultManager createDirectoryAtPath:subDirPath 
+                                withIntermediateDirectories:NO 
+                                                 attributes:nil 
+                                                      error:nil];
+    }
+    
+    [NSFileManager.defaultManager removeItemAtPath:lasmPath error:nil];
+    [NSFileManager.defaultManager createSymbolicLinkAtPath:lasmPath withDestinationPath:multidirPath error:nil];
+    [NSFileManager.defaultManager changeCurrentDirectoryPath:lasmPath];
     setenv("POJAV_GAME_DIR", lasmPath.UTF8String, 1);
-}
-
-void init_setupResolvConf() {
-    // Write known DNS servers to the config
-    NSString *path = [NSString stringWithFormat:@"%s/resolv.conf", getenv("POJAV_HOME")];
-    if (![fm fileExistsAtPath:path]) {
-        [@"nameserver 8.8.8.8\n"
-         @"nameserver 8.8.4.4"
-        writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    }
 }
 
 void init_setupHomeDirectory() {
