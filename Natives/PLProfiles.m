@@ -1,5 +1,6 @@
 #import "LauncherPreferences.h"
 #import "PLProfiles.h"
+#import "ModpackUtils.h"
 #import "utils.h"
 
 static PLProfiles* current;
@@ -14,7 +15,8 @@ static PLProfiles* current;
         @"profiles": @{
             @"(Default)": @{
                 @"name": @"(Default)",
-                @"lastVersionId": @"latest-release"
+                @"lastVersionId": @"latest-release",
+                @"gameDir": @"./profiles/default"  // Use isolated directory by default
             }
         },
         @"selectedProfile": @"(Default)"
@@ -39,9 +41,18 @@ static PLProfiles* current;
         return value;
     }
 
+    if ([key isEqualToString:@"gameDir"]) {
+        // Generate a profile directory if none exists
+        NSString *profileDir = [ModpackUtils getUniqueProfileDirectory:profile[@"name"]];
+        [ModpackUtils createProfileDirectory:profileDir];
+        profile[@"gameDir"] = profileDir;
+        [self.current save];
+        NSLog(@"[PLProfiles] Generated gameDir for profile %@: %@", profile[@"name"], profileDir);
+        return profileDir;
+    }
+    
     NSDictionary *valueDefaults = @{
-        @"javaVersion": @"0",
-        @"gameDir": @"."
+        @"javaVersion": @"0"
     };
     if (valueDefaults[key]) {
         return valueDefaults[key];
@@ -68,8 +79,37 @@ static PLProfiles* current;
         self.profileDict = PLProfiles.defaultProfiles;
         [self save];
     }
+    
+    // Ensure all profiles have a proper gameDir
+    [self ensureProfileIsolation];
 
     return self;
+}
+
+- (void)ensureProfileIsolation {
+    BOOL needsSave = NO;
+    
+    // Check all profiles
+    for (NSString *profileName in self.profiles) {
+        NSMutableDictionary *profile = self.profiles[profileName];
+        
+        // Check if gameDir exists or is the default "."
+        if (![profile[@"gameDir"] length] || [profile[@"gameDir"] isEqualToString:@"."]) {
+            // Set a properly isolated gameDir
+            NSString *profileDir = [ModpackUtils getUniqueProfileDirectory:profileName];
+            profile[@"gameDir"] = profileDir;
+            
+            // Create the directory structure
+            [ModpackUtils createProfileDirectory:profileDir];
+            
+            NSLog(@"[PLProfiles] Updated profile %@ with isolated gameDir: %@", profileName, profileDir);
+            needsSave = YES;
+        }
+    }
+    
+    if (needsSave) {
+        [self save];
+    }
 }
 
 - (id)profiles {
@@ -87,6 +127,15 @@ static PLProfiles* current;
 - (void)setSelectedProfileName:(NSString *)name {
     self.profileDict[@"selectedProfile"] = (id)name;
     [self save];
+    
+    // Make sure the profile has a proper gameDir
+    NSMutableDictionary *profile = self.profiles[name];
+    if (![profile[@"gameDir"] length] || [profile[@"gameDir"] isEqualToString:@"."]) {
+        NSString *profileDir = [ModpackUtils getUniqueProfileDirectory:name];
+        profile[@"gameDir"] = profileDir;
+        [ModpackUtils createProfileDirectory:profileDir];
+        [self save];
+    }
 }
 
 - (void)save {
