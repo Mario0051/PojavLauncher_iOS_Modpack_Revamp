@@ -6,6 +6,7 @@
 #import "LauncherProfileEditorViewController.h"
 #import "PickTextField.h"
 #import "PLProfiles.h"
+#import "ModpackUtils.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
 #include <objc/runtime.h>
@@ -161,12 +162,21 @@
             [localVersionList addObject:@{
                 @"id": response[@"id"],
                 @"type": @"custom"}];
-            // Jump to the profile editor
+            
+            // Create a unique game directory for this profile
+            NSString *profileName = [NSString stringWithFormat:@"%@-%@", 
+                                     self.localKVO[@"loaderVendor"], 
+                                     self.localKVO[@"gameVersion"]];
+            NSString *gameDir = [ModpackUtils getUniqueProfileDirectory:profileName];
+            [ModpackUtils createProfileDirectory:gameDir];
+            
+            // Jump to the profile editor with the isolated directory
             LauncherProfileEditorViewController *vc = [LauncherProfileEditorViewController new];
             vc.profile = @{
                 @"icon": endpoint[@"icon"],
                 @"name": response[@"id"],
-                @"lastVersionId": response[@"id"]
+                @"lastVersionId": response[@"id"],
+                @"gameDir": gameDir
             }.mutableCopy;
             [self.navigationController pushViewController:vc animated:YES];
         }
