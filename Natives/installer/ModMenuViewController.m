@@ -6,23 +6,12 @@
 #import "UIKit+AFNetworking.h"
 #import "utils.h"
 #import "PLProfiles.h"
+#import "UIAlertUtilities.h"
 
 #pragma mark - Alert Dialog Helper
 static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSLog(@"Presenting alert: %@ - %@", title, message);
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"OK", nil)
-                                              style:UIAlertActionStyleDefault
-                                            handler:nil]];
-    UIWindow *window = nil;
-    if (@available(iOS 13.0, *)) {
-        window = [UIApplication sharedApplication].windows.firstObject;
-    } else {
-        window = [UIApplication sharedApplication].keyWindow;
-    }
-    [window.rootViewController presentViewController:alert animated:YES completion:nil];
+    [UIAlertUtilities presentAlertWithTitle:title message:message viewController:nil];
 }
 
 #pragma mark - Helper Function
@@ -118,6 +107,60 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
     }
 }
+@end
+
+#pragma mark - VersionSelectorDataSource Interface and Implementation
+@interface VersionSelectorDataSource : NSObject <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSArray<NSString *> *versions;
+@property (nonatomic, strong) NSArray<NSNumber *> *indices;
+@property (nonatomic, strong) NSDictionary *mod;
+@property (nonatomic, weak) ModMenuViewController *delegate;
+@end
+
+@implementation VersionSelectorDataSource
+
+- (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
+                             mod:(NSDictionary *)mod 
+                         indices:(NSArray<NSNumber *> *)indices 
+                        delegate:(ModMenuViewController *)delegate {
+    if (self = [super init]) {
+        _versions = versions;
+        _mod = mod;
+        _indices = indices;
+        _delegate = delegate;
+    }
+    return self;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.versions.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"VersionCell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"VersionCell"];
+    }
+    
+    if (indexPath.row < self.versions.count) {
+        cell.textLabel.text = self.versions[indexPath.row];
+    }
+    
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    if (indexPath.row < self.indices.count) {
+        NSUInteger versionIndex = [self.indices[indexPath.row] unsignedIntegerValue];
+        
+        [self.delegate.presentedViewController dismissViewControllerAnimated:YES completion:^{
+            [self.delegate handleVersionSelection:self.mod selectedVersion:versionIndex];
+        }];
+    }
+}
+
 @end
 
 #pragma mark - ModMenuViewController Interface
@@ -234,7 +277,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         }
     }];
 }
-
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -521,9 +563,10 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
     NSArray *loadersArray = mod[@"versionLoaders"];
     
-    NSLog(@"[DEBUG] versionNames count: %lu", (unsigned long)versionNames.count);
-    NSLog(@"[DEBUG] gameVersionsArray count: %lu", (unsigned long)gameVersionsArray.count);
-    NSLog(@"[DEBUG] loadersArray count: %lu", (unsigned long)loadersArray.count);
+    NSLog(@"[DEBUG] About to show version selector with %lu versions", (unsigned long)versionNames.count);
+    
+    // Limit number of versions to prevent UI freezing
+    const NSUInteger MAX_VERSIONS_TO_SHOW = 50;
     
     NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
@@ -533,8 +576,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
     if (profileMCVer.length == 0 || profileLoader.length == 0) {
-        for (NSUInteger i = 0; i < versionNames.count; i++) {
-            NSString *verStr = SafeStringFromVersion(versionNames[i]);
+        for (NSUInteger i = 0; i < MIN(versionNames.count, MAX_VERSIONS_TO_SHOW); i++) {
+            NSString *verStr = [self stringFromVersionObject:versionNames[i]];
             NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
             NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
             [supportedIndices addObject:@(i)];
@@ -549,6 +592,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             }
             BOOL mcMatch = NO;
             for (NSString *gv in gameVers) {
+                if (![gv isKindOfClass:[NSString class]]) continue;
+                
                 NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
                 if ([trimmedGV isEqualToString:profileMCVer] ||
                     [trimmedGV hasPrefix:profileMCVer] ||
@@ -564,6 +609,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             }
             BOOL loaderMatch = NO;
             for (NSString *ld in versionLoaders) {
+                if (![ld isKindOfClass:[NSString class]]) continue;
+                
                 NSString *trimmedLD = [[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
                 if ([trimmedLD isEqualToString:profileLoader]) {
                     loaderMatch = YES;
@@ -573,54 +620,49 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
             if (mcMatch && loaderMatch) {
                 [supportedIndices addObject:@(i)];
-                NSString *verStr = SafeStringFromVersion(versionNames[i]);
+                NSString *verStr = [self stringFromVersionObject:versionNames[i]];
                 NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
                 NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
                 [supportedDisplayNames addObject:modFileVersion];
+                
+                // Limit to prevent UI freezing with too many options
+                if (supportedIndices.count >= MAX_VERSIONS_TO_SHOW) {
+                    break;
+                }
             }
         }
         if (supportedIndices.count == 0) {
             NSLog(@"No supported versions found for mod: %@", mod[@"title"]);
-            presentAlertDialog(localize(@"Error", nil), @"No supported versions available for your selected profile.");
+            [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                           message:@"No supported versions available for your selected profile." 
+                                   viewController:self];
             return;
         }
     }
     
-    UIAlertController *versionAlert = [UIAlertController alertControllerWithTitle:@"Select Version"
-                                                                          message:nil
-                                                                   preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSUInteger j = 0; j < supportedIndices.count; j++) {
-        NSUInteger idx = [supportedIndices[j] unsignedIntegerValue];
-        NSString *displayName = supportedDisplayNames[j];
-        [versionAlert addAction:[UIAlertAction actionWithTitle:displayName
+    NSLog(@"[DEBUG] Found %lu filtered versions to display", (unsigned long)supportedIndices.count);
+    
+    // Use action sheet for iPad
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        UIAlertController *versionAlert = [UIAlertController alertControllerWithTitle:@"Select Version"
+                                                                             message:nil
+                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
+        
+        for (NSUInteger j = 0; j < supportedIndices.count; j++) {
+            NSUInteger idx = [supportedIndices[j] unsignedIntegerValue];
+            NSString *displayName = supportedDisplayNames[j];
+            
+            [versionAlert addAction:[UIAlertAction actionWithTitle:displayName
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction * _Nonnull action) {
-            UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
-                                                                                    message:@"Choose to install now or add to the install queue."
-                                                                             preferredStyle:UIAlertControllerStyleAlert];
-            [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Install Now"
-                                                            style:UIAlertActionStyleDefault
-                                                          handler:^(UIAlertAction * _Nonnull action) {
-                [self installModNow:mod versionIndex:idx];
+                [self handleVersionSelection:mod selectedVersion:idx];
             }]];
-            [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Add to Queue"
-                                                            style:UIAlertActionStyleDefault
-                                                          handler:^(UIAlertAction * _Nonnull action) {
-                NSDictionary *queueEntry = @{@"mod": mod, @"versionIndex": @(idx)};
-                [self.installQueue addObject:queueEntry];
-                [self updateQueueButtonTitle];
-                presentAlertDialog(@"Added to Queue", [NSString stringWithFormat:@"\"%@\" has been added to the install queue.", mod[@"title"]]);
-            }]];
-            [choiceAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                                            style:UIAlertActionStyleCancel
-                                                          handler:nil]];
-            [self presentViewController:choiceAlert animated:YES completion:nil];
-        }]];
-    }
-    [versionAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+        }
+        
+        [versionAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
                                                      style:UIAlertActionStyleCancel
                                                    handler:nil]];
-    if (versionAlert.popoverPresentationController) {
+        
         UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
         if (cell) {
             versionAlert.popoverPresentationController.sourceView = cell;
@@ -628,12 +670,59 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         } else {
             versionAlert.popoverPresentationController.sourceView = self.view;
             versionAlert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
-                                                                             CGRectGetMidY(self.view.bounds), 1, 1);
+                                                                                CGRectGetMidY(self.view.bounds), 1, 1);
         }
+        
+        [self presentViewController:versionAlert animated:YES completion:^{
+            NSLog(@"Version selection alert presented for mod: %@", mod[@"title"]);
+        }];
+    } else {
+        // For iPhone and smaller devices, use a table-based approach
+        [self showVersionSelectorTableForMod:mod withVersions:supportedDisplayNames indices:supportedIndices];
     }
-    [self presentViewController:versionAlert animated:YES completion:^{
-        NSLog(@"Version selection alert presented for mod: %@", mod[@"title"]);
-    }];
+}
+
+// Helper method for version selection
+- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx {
+    UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
+                                                                        message:@"Choose to install now or add to the install queue."
+                                                                 preferredStyle:UIAlertControllerStyleAlert];
+    [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Install Now"
+                                                style:UIAlertActionStyleDefault
+                                              handler:^(UIAlertAction * _Nonnull action) {
+        [self installModNow:mod versionIndex:idx];
+    }]];
+    [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Add to Queue"
+                                                style:UIAlertActionStyleDefault
+                                              handler:^(UIAlertAction * _Nonnull action) {
+        NSDictionary *queueEntry = @{@"mod": mod, @"versionIndex": @(idx)};
+        [self.installQueue addObject:queueEntry];
+        [self updateQueueButtonTitle];
+        [UIAlertUtilities presentAlertWithTitle:@"Added to Queue" 
+                                       message:[NSString stringWithFormat:@"\"%@\" has been added to the install queue.", mod[@"title"]]
+                               viewController:self];
+    }]];
+    [choiceAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                                style:UIAlertActionStyleCancel
+                                              handler:nil]];
+    [self presentViewController:choiceAlert animated:YES completion:nil];
+}
+
+// Table-based version selection for iPhone
+- (void)showVersionSelectorTableForMod:(NSDictionary *)mod 
+                          withVersions:(NSArray<NSString *> *)versions 
+                               indices:(NSArray<NSNumber *> *)indices {
+    UITableViewController *versionTableVC = [[UITableViewController alloc] initWithStyle:UITableViewStylePlain];
+    versionTableVC.title = @"Select Version";
+    
+    versionTableVC.tableView.dataSource = ^id<UITableViewDataSource>() {
+        return [[VersionSelectorDataSource alloc] initWithVersions:versions mod:mod indices:indices delegate:self];
+    }();
+    
+    versionTableVC.tableView.delegate = versionTableVC.tableView.dataSource;
+    
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:versionTableVC];
+    [self presentViewController:navController animated:YES completion:nil];
 }
 
 #pragma mark - Install Queue
