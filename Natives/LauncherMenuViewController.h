@@ -1,24 +1,26 @@
 #import <UIKit/UIKit.h>
 
-#define sidebarNavController ((UINavigationController *)self.splitViewController.viewControllers[0])
-#define sidebarViewController ((LauncherMenuViewController *)sidebarNavController.viewControllers[0])
+typedef NS_ENUM(NSInteger, InstanceType) {
+    InstanceTypeVanilla = 0,
+    InstanceTypeFabric,
+    InstanceTypeForge,
+    InstanceTypeQuilt,
+    InstanceTypeNeoForge
+};
 
-@interface LauncherMenuCustomItem : NSObject
-@property(nonatomic) NSString *title, *imageName;
-@property(nonatomic, copy) void (^action)(void);
-@property(nonatomic) NSArray<UIViewController *> *vcArray;
-@end
+@interface LauncherViewController : UIViewController
 
-@interface LauncherMenuViewController : UITableViewController
+@property (weak, nonatomic) IBOutlet UISegmentedControl *instanceSelector;
+@property (weak, nonatomic) IBOutlet UIButton *launchButton;
+@property (weak, nonatomic) IBOutlet UIButton *installButton;
 
-@property NSString* listPath;
-@property(nonatomic) UIButton *accountButton;
-@property(nonatomic) UIBarButtonItem *accountBtnItem;
-@property(nonatomic) BOOL isInitialVc;
+// Saves the selected Minecraft version for the current instance (writes config_ver.txt)
+- (void)saveSelectedVersion:(NSString *)version;
 
-- (void)restoreHighlightedSelection;
-- (void)selectAccount:(UIButton *)sender;
-- (void)updateAccountInfo;
-- (UIBarButtonItem *)drawAccountButton;
+// IBAction to launch the game with the selected instance
+- (IBAction)launchGame:(id)sender;
+
+// IBAction to install the mod loader for the selected instance (Fabric/Forge/Quilt/NeoForge)
+- (IBAction)installModLoader:(id)sender;
 
 @end
