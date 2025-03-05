@@ -11,6 +11,11 @@
 //+ (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key;
 + (NSString *)resolveKeyForCurrentProfile:(id)key;
 
+// New methods for profile isolation
++ (NSString *)uniqueGameDirForProfileName:(NSString *)profileName;
++ (NSString *)fullPathForProfileWithName:(NSString *)profileName gameDir:(NSString *)gameDir;
++ (BOOL)ensureProfileDirectoryExists:(NSString *)profileName gameDir:(NSString *)gameDir;
+
 - (id)initWithCurrentInstance;
 - (NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, NSString *> *> *)profiles;
 
