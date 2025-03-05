@@ -202,19 +202,19 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     // Use the lastPathComponent of the URL to preserve the original file name.
     NSString *fileName = [[NSURL URLWithString:urlString] lastPathComponent];
     
-    // Retrieve the instance name from the current profile using the PLProfiles helper.
-    NSString *instanceName = [PLProfiles resolveKeyForCurrentProfile:@"gameDir"];
-    if ([instanceName isEqualToString:@"."] || instanceName.length == 0) {
-        instanceName = self.selectedProfileName ?: @"default";
-    }
+    // Retrieve the actual gameDir path for the current profile
+    NSString *profileName = [PLProfiles current].selectedProfileName;
+    NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
+    NSString *gameDir = profile[@"gameDir"];
     
-    // Get the Documents directory.
-    NSString *docsPath = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    // Build destination: Documents/instances/(instanceName)/custom_gamedir/mods
-    NSString *instanceDir = [docsPath stringByAppendingPathComponent:[NSString stringWithFormat:@"instances/%@", instanceName]];
-    NSString *modsDir = [instanceDir stringByAppendingPathComponent:@"custom_gamedir/mods"];
+    // Ensure the profile directory exists
+    [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
     
-    // Create the mods directory if it doesn't exist.
+    // Get the full path to the profile directory
+    NSString *profileDir = [PLProfiles fullPathForProfileWithName:profileName gameDir:gameDir];
+    NSString *modsDir = [profileDir stringByAppendingPathComponent:@"mods"];
+    
+    // Create the mods directory if it doesn't exist
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
         NSError *createError = nil;
         [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
@@ -234,7 +234,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         }
     }];
 }
-
 
 
 - (void)viewDidLoad {
