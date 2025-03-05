@@ -8,6 +8,20 @@
 #import "PLProfiles.h"
 #import "UIAlertUtilities.h"
 
+@class ModMenuViewController;
+
+@interface VersionSelectorDataSource : NSObject <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSArray<NSString *> *versions;
+@property (nonatomic, strong) NSArray<NSNumber *> *indices;
+@property (nonatomic, strong) NSDictionary *mod;
+@property (nonatomic, weak) ModMenuViewController *delegate;
+
+- (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
+                             mod:(NSDictionary *)mod 
+                         indices:(NSArray<NSNumber *> *)indices 
+                        delegate:(ModMenuViewController *)delegate;
+@end
+
 #pragma mark - Alert Dialog Helper
 static inline void presentAlertDialog(NSString *title, NSString *message) {
     NSLog(@"Presenting alert: %@ - %@", title, message);
