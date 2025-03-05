@@ -9,6 +9,12 @@ NS_ASSUME_NONNULL_BEGIN
 @interface ModrinthAPI : ModpackAPI
 
 /**
+ * Initializes a Modrinth API instance with the default base URL
+ * @return An initialized ModrinthAPI instance
+ */
++ (instancetype)defaultAPI;
+
+/**
  * Searches for mods or modpacks on Modrinth
  * @param searchFilters Dictionary of search filters
  * @param modrinthSearchResult Previous search results for pagination
