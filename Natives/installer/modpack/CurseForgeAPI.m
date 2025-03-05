@@ -306,12 +306,23 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
     NSLog(@"downloader: Determined version string: %@", finalVersionString);
     NSString *profileName = manifestDict[@"name"] ?: @"Unknown Modpack";
     if (profileName.length > 0) {
+        // Create a unique gameDir for this modpack
+        NSString *safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+        safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+        safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+        
+        NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", safeProfileName];
+        
         NSDictionary *profileInfo = @{
-            @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent],
+            @"gameDir": gameDir,
             @"name": profileName,
             @"lastVersionId": finalVersionString,
             @"icon": @""
         };
+        
+        // Ensure the profile directory exists
+        [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
+        
         dispatch_async(dispatch_get_main_queue(), ^{
             NSLog(@"downloader: Setting profile: %@", profileName);
             PLProfiles.current.profiles[profileName] = [profileInfo mutableCopy];
@@ -319,6 +330,7 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
             [PLProfiles.current save];
         });
     }
+    
     NSError *error = nil;
     [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
     if (error) {
