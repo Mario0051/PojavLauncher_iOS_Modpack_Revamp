@@ -10,16 +10,21 @@
 
 @class ModMenuViewController;
 
+// Add protocol definition for version selection
+@protocol VersionSelectorDelegate <NSObject>
+- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx;
+@end
+
 @interface VersionSelectorDataSource : NSObject <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) NSArray<NSString *> *versions;
 @property (nonatomic, strong) NSArray<NSNumber *> *indices;
 @property (nonatomic, strong) NSDictionary *mod;
-@property (nonatomic, weak) ModMenuViewController *delegate;
+@property (nonatomic, weak) id<VersionSelectorDelegate> delegate;
 
 - (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
                              mod:(NSDictionary *)mod 
                          indices:(NSArray<NSNumber *> *)indices 
-                        delegate:(ModMenuViewController *)delegate;
+                        delegate:(id<VersionSelectorDelegate>)delegate;
 @end
 
 #pragma mark - Alert Dialog Helper
@@ -129,7 +134,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 - (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
                              mod:(NSDictionary *)mod 
                          indices:(NSArray<NSNumber *> *)indices 
-                        delegate:(ModMenuViewController *)delegate {
+                        delegate:(id<VersionSelectorDelegate>)delegate {
     if (self = [super init]) {
         _versions = versions;
         _mod = mod;
@@ -171,7 +176,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 @end
 
 #pragma mark - ModMenuViewController Interface
-@interface ModMenuViewController () <UISearchResultsUpdating, UITableViewDelegate, UITableViewDataSource>
+@interface ModMenuViewController () <UISearchResultsUpdating, UITableViewDelegate, UITableViewDataSource, VersionSelectorDelegate>
 @property (nonatomic, strong) UISearchController *searchController;
 @property (nonatomic, strong) UISegmentedControl *apiSegmentedControl;
 @property (nonatomic, strong) NSMutableArray *modsList;
@@ -182,7 +187,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 @property (nonatomic, strong) NSString *selectedMCVersion;
 @property (nonatomic, strong) NSString *selectedModLoader;
 @property (nonatomic, strong) NSMutableArray *installQueue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
-- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx;
 - (void)showVersionSelectorTableForMod:(NSDictionary *)mod withVersions:(NSArray<NSString *> *)versions indices:(NSArray<NSNumber *> *)indices;
 @end
 
@@ -584,7 +588,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSMutableArray<NSNumber *> *supportedIndices = [NSMutableArray array];
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
-if (profileMCVer.length == 0 || profileLoader.length == 0) {
+    if (profileMCVer.length == 0 || profileLoader.length == 0) {
         for (NSUInteger i = 0; i < MIN(versionNames.count, MAX_VERSIONS_TO_SHOW); i++) {
             NSString *verStr = [self stringFromVersionObject:versionNames[i]];
             NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
@@ -652,7 +656,7 @@ if (profileMCVer.length == 0 || profileLoader.length == 0) {
     NSLog(@"[DEBUG] Found %lu filtered versions to display", (unsigned long)supportedIndices.count);
     
     // Use action sheet for iPad
-    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad) {
         UIAlertController *versionAlert = [UIAlertController alertControllerWithTitle:@"Select Version"
                                                                              message:nil
                                                                       preferredStyle:UIAlertControllerStyleActionSheet];
@@ -691,7 +695,7 @@ if (profileMCVer.length == 0 || profileLoader.length == 0) {
     }
 }
 
-// Helper method for version selection
+#pragma mark - VersionSelectorDelegate Implementation
 - (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx {
     UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
                                                                         message:@"Choose to install now or add to the install queue."
@@ -724,13 +728,14 @@ if (profileMCVer.length == 0 || profileLoader.length == 0) {
     UITableViewController *versionTableVC = [[UITableViewController alloc] initWithStyle:UITableViewStylePlain];
     versionTableVC.title = @"Select Version";
     
-    versionTableVC.tableView.dataSource = [[VersionSelectorDataSource alloc] 
-                                          initWithVersions:versions 
-                                                       mod:mod 
-                                                   indices:indices 
-                                                  delegate:self];
+    VersionSelectorDataSource *dataSource = [[VersionSelectorDataSource alloc] 
+                                         initWithVersions:versions 
+                                                      mod:mod 
+                                                  indices:indices 
+                                                 delegate:self];
     
-    versionTableVC.tableView.delegate = versionTableVC.tableView.dataSource;
+    versionTableVC.tableView.dataSource = dataSource;
+    versionTableVC.tableView.delegate = dataSource;
     
     UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:versionTableVC];
     [self presentViewController:navController animated:YES completion:nil];
