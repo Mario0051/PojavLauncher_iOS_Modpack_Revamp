@@ -178,6 +178,7 @@ add_executable(PojavLauncher
   input_bridge_v3.m
   ios_uikit_bridge.m
   utils.m
+  UIAlertUtilities.m
 )
 
 if("${CMAKE_HOST_SYSTEM_NAME}" MATCHES "Linux|^GNU$|Android")
