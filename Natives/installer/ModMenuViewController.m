@@ -123,6 +123,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 }
 @end
 
+#pragma mark - VersionSelectorDataSource Implementation
 @implementation VersionSelectorDataSource
 
 - (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
@@ -583,7 +584,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSMutableArray<NSNumber *> *supportedIndices = [NSMutableArray array];
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
-    if (profileMCVer.length == 0 || profileLoader.length == 0) {
+if (profileMCVer.length == 0 || profileLoader.length == 0) {
         for (NSUInteger i = 0; i < MIN(versionNames.count, MAX_VERSIONS_TO_SHOW); i++) {
             NSString *verStr = [self stringFromVersionObject:versionNames[i]];
             NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
@@ -723,9 +724,11 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     UITableViewController *versionTableVC = [[UITableViewController alloc] initWithStyle:UITableViewStylePlain];
     versionTableVC.title = @"Select Version";
     
-    versionTableVC.tableView.dataSource = ^id<UITableViewDataSource>() {
-        return [[VersionSelectorDataSource alloc] initWithVersions:versions mod:mod indices:indices delegate:self];
-    }();
+    versionTableVC.tableView.dataSource = [[VersionSelectorDataSource alloc] 
+                                          initWithVersions:versions 
+                                                       mod:mod 
+                                                   indices:indices 
+                                                  delegate:self];
     
     versionTableVC.tableView.delegate = versionTableVC.tableView.dataSource;
     
