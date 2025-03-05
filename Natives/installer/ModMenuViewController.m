@@ -13,6 +13,7 @@
 // Add protocol definition for version selection
 @protocol VersionSelectorDelegate <NSObject>
 - (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx;
+@property (nonatomic, readonly) UIViewController *presentedViewController;
 @end
 
 @interface VersionSelectorDataSource : NSObject <UITableViewDataSource, UITableViewDelegate>
