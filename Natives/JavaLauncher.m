@@ -15,6 +15,7 @@
 #import "JavaLauncher.h"
 #import "LauncherPreferences.h"
 #import "PLProfiles.h"
+#import "ModpackUtils.h"
 
 #define fm NSFileManager.defaultManager
 
@@ -98,7 +99,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         init_bypassDyldLibValidation();
     }
 
-
     init_loadDefaultEnv();
     init_loadCustomEnv();
 
@@ -106,6 +106,43 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     NSString *gameDir;
     NSString *defaultJRETag;
     if ([launchTarget isKindOfClass:NSDictionary.class]) {
+        // Setup gameDir correctly using the profile's gameDir
+        NSString *rawGameDir = [PLProfiles resolveKeyForCurrentProfile:@"gameDir"];
+        if (rawGameDir && rawGameDir.length > 0) {
+            NSString *resolvedGameDir;
+            if ([rawGameDir hasPrefix:@"./"]) {
+                // Resolve relative paths
+                resolvedGameDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
+                    getenv("POJAV_HOME"), getPrefObject(@"general.game_directory"),
+                    rawGameDir];
+            } else {
+                // Absolute path or other format (should be rare)
+                resolvedGameDir = rawGameDir;
+            }
+            
+            resolvedGameDir = [resolvedGameDir stringByStandardizingPath];
+            gameDir = resolvedGameDir;
+            
+            // Ensure the directory exists
+            if (![NSFileManager.defaultManager fileExistsAtPath:gameDir]) {
+                NSError *error = nil;
+                [NSFileManager.defaultManager createDirectoryAtPath:gameDir
+                                       withIntermediateDirectories:YES
+                                                        attributes:nil
+                                                             error:&error];
+                if (error) {
+                    NSLog(@"[JavaLauncher] Error creating gameDir: %@", error);
+                }
+            }
+            
+            NSLog(@"[JavaLauncher] Using gameDir: %@", gameDir);
+        } else {
+            // Setup gameDir with the older approach if no gameDir specified
+            gameDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
+                getenv("POJAV_HOME"), getPrefObject(@"general.game_directory"),
+                [PLProfiles resolveKeyForCurrentProfile:@"gameDir"]].stringByStandardizingPath;
+        }
+        
         // Get preferred Java version from current profile
         int preferredJavaVersion = [PLProfiles resolveKeyForCurrentProfile:@"javaVersion"].intValue;
         if (preferredJavaVersion > 0) {
@@ -126,11 +163,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         NSString *renderer = [PLProfiles resolveKeyForCurrentProfile:@"renderer"];
         NSLog(@"[JavaLauncher] RENDERER is set to %@\n", renderer);
         setenv("POJAV_RENDERER", renderer.UTF8String, 1);
-        // Setup gameDir
-        gameDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
-            getenv("POJAV_HOME"), getPrefObject(@"general.game_directory"),
-            [PLProfiles resolveKeyForCurrentProfile:@"gameDir"]]
-            .stringByStandardizingPath;
     } else {
         defaultJRETag = @"execute_jar";
         gameDir = @(getenv("POJAV_GAME_DIR"));
