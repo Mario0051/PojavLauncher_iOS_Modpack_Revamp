@@ -50,6 +50,10 @@
     self.oldName = self.getPreference(nil, @"name");
     if ([self.oldName length] == 0) {
         self.setPreference(nil, @"name", @"New Profile");
+        
+        // Set a unique gameDir for new profiles
+        NSString *uniqueGameDir = [PLProfiles uniqueGameDirForProfileName:@"New Profile"];
+        self.setPreference(nil, @"gameDir", uniqueGameDir);
     }
     NSArray *rendererKeys = getRendererKeys(YES);
     NSArray *rendererList = getRendererNames(YES);
@@ -106,7 +110,7 @@
               @"icon": @"folder",
               @"title": @"preference.title.game_directory",
               @"type": self.typeTextField,
-              @"placeholder": [NSString stringWithFormat:@". -> /Documents/instances/%@", getPrefObject(@"general.game_directory")]
+              @"placeholder": [NSString stringWithFormat:@"./profiles/%@", self.getPreference(nil, @"name")]
             },
             // Video and renderer settings
             @{@"key": @"renderer",
@@ -165,6 +169,15 @@
         // Return to its old name
         self.profile[@"name"] = self.oldName;
     }
+
+    // Ensure a valid gameDir
+    if (!self.profile[@"gameDir"] || [self.profile[@"gameDir"] isEqualToString:@"."]) {
+        NSString *uniqueGameDir = [PLProfiles uniqueGameDirForProfileName:self.profile[@"name"]];
+        self.profile[@"gameDir"] = uniqueGameDir;
+    }
+    
+    // Ensure the profile directory exists
+    [PLProfiles ensureProfileDirectoryExists:self.profile[@"name"] gameDir:self.profile[@"gameDir"]];
 
     if ([self.oldName isEqualToString:self.profile[@"name"]]) {
         // Not a rename, directly create/replace
