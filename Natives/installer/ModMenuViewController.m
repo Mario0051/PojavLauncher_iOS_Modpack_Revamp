@@ -240,7 +240,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [super viewDidLoad];
     
     self.title = @"Mods";
-    self.modrinth = [ModrinthAPI new];
+    self.modrinth = [ModrinthAPI defaultAPI];
     // Initialize CurseForgeAPI with an empty key so the user is always prompted.
     self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:@""];
     self.searchFilters = [@{@"isModpack": @(NO), @"name": @""} mutableCopy];
