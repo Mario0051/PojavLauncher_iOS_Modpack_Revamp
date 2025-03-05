@@ -123,14 +123,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 }
 @end
 
-#pragma mark - VersionSelectorDataSource Interface and Implementation
-@interface VersionSelectorDataSource : NSObject <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, strong) NSArray<NSString *> *versions;
-@property (nonatomic, strong) NSArray<NSNumber *> *indices;
-@property (nonatomic, strong) NSDictionary *mod;
-@property (nonatomic, weak) ModMenuViewController *delegate;
-@end
-
 @implementation VersionSelectorDataSource
 
 - (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
