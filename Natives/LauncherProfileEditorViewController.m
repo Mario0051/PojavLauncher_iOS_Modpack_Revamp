@@ -85,6 +85,9 @@
         self.versionSelectedAt = -1;
         [self changeVersionType:nil];
     };
+    
+    // Determine suggested unique game directory based on profile name
+    NSString *suggestedGameDir = [NSString stringWithFormat:@"./profiles/%@", self.profile[@"name"]];
 
     self.prefContents = @[
         @[
@@ -106,7 +109,7 @@
               @"icon": @"folder",
               @"title": @"preference.title.game_directory",
               @"type": self.typeTextField,
-              @"placeholder": [NSString stringWithFormat:@". -> /Documents/instances/%@", getPrefObject(@"general.game_directory")]
+              @"placeholder": suggestedGameDir
             },
             // Video and renderer settings
             @{@"key": @"renderer",
@@ -165,6 +168,27 @@
         // Return to its old name
         self.profile[@"name"] = self.oldName;
     }
+    
+    // Ensure the profile has a unique gameDir if not specified or is default "."
+    if ([self.profile[@"gameDir"] length] == 0 || [self.profile[@"gameDir"] isEqualToString:@"."]) {
+        self.profile[@"gameDir"] = [NSString stringWithFormat:@"./profiles/%@", self.profile[@"name"]];
+        NSLog(@"[ProfileEditor] Setting unique gameDir for profile %@: %@", 
+              self.profile[@"name"], self.profile[@"gameDir"]);
+        
+        // Create the directory structure
+        NSString *fullGameDir = [NSString stringWithFormat:@"%s/instances/%@/%@", 
+                                 getenv("POJAV_HOME"), 
+                                 getPrefObject(@"general.game_directory"),
+                                 self.profile[@"gameDir"]];
+        
+        NSError *error = nil;
+        if (![NSFileManager.defaultManager createDirectoryAtPath:fullGameDir 
+                                     withIntermediateDirectories:YES 
+                                                      attributes:nil 
+                                                           error:&error]) {
+            NSLog(@"[ProfileEditor] Error creating directory: %@", error);
+        }
+    }
 
     if ([self.oldName isEqualToString:self.profile[@"name"]]) {
         // Not a rename, directly create/replace
@@ -192,24 +216,6 @@
     // Call LauncherProfilesViewController's viewWillAppear
     UINavigationController *navVC = (id) ((UISplitViewController *)self.presentingViewController).viewControllers[1];
     [navVC.viewControllers[0] viewWillAppear:NO];
-}
-
-- (BOOL)isPickFieldAtSection:(NSString *)section key:(NSString *)key {
-    NSDictionary *pref = [self.prefContents[0] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(key == %@)", key]].firstObject;
-    return pref[@"type"] == self.typePickField;
-}
-
-- (NSArray *)listFilesAtPath:(NSString *)path {
-    NSMutableArray *files = [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:nil].mutableCopy;
-    for (int i = 0; i < files.count;) {
-        if ([files[i] hasSuffix:@".json"]) {
-            i++;
-        } else {
-            [files removeObjectAtIndex:i];
-        }
-    }
-    [files insertObject:@"(default)" atIndex:0];
-    return files;
 }
 
 #pragma mark Version picker
