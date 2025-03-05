@@ -218,6 +218,24 @@
     [navVC.viewControllers[0] viewWillAppear:NO];
 }
 
+- (BOOL)isPickFieldAtSection:(NSString *)section key:(NSString *)key {
+    NSDictionary *pref = [self.prefContents[0] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(key == %@)", key]].firstObject;
+    return pref[@"type"] == self.typePickField;
+}
+
+- (NSArray *)listFilesAtPath:(NSString *)path {
+    NSMutableArray *files = [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:nil].mutableCopy;
+    for (int i = 0; i < files.count;) {
+        if ([files[i] hasSuffix:@".json"]) {
+            i++;
+        } else {
+            [files removeObjectAtIndex:i];
+        }
+    }
+    [files insertObject:@"(default)" atIndex:0];
+    return files;
+}
+
 #pragma mark Version picker
 
 - (void)setupVersionPicker {
@@ -260,7 +278,7 @@
 - (NSString *)pickerView:(UIPickerView *)pickerView titleForRow:(NSInteger)row forComponent:(NSInteger)component {
     if (self.versionList.count <= row) return nil;
     NSObject *object = self.versionList[row];
-    if ([object isKindOfClass:[NSString class]]) {
+    if ([object isKindOfClass:NSString.class]) {
         return (NSString*) object;
     } else {
         return [object valueForKey:@"id"];
