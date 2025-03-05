@@ -69,6 +69,8 @@
 @property (nonatomic, strong) NSMutableArray *list;
 @property (nonatomic, strong) NSMutableDictionary *filters;
 @property (nonatomic, strong) ModrinthAPI *modrinth;
+- (void)installModpackFromDetail:(NSDictionary *)details atIndex:(NSUInteger)index;
+- (void)showVersionSelectorTableForModpack:(NSDictionary *)modpack withVersions:(NSArray<UIAction *> *)versionActions;
 @end
 
 @implementation ModpackInstallViewController
