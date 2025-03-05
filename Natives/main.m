@@ -12,7 +12,6 @@
 #import "PLProfiles.h"
 #import "SurfaceViewController.h"
 #import "UIKit+hook.h"
-#import "config.h"
 
 #include <libgen.h>
 #include <pthread.h>
@@ -213,13 +212,14 @@ void init_setupMultiDir() {
     const char *home = getenv("POJAV_HOME");
     NSString *lasmPath = [NSString stringWithFormat:@"%s/Library/Application Support/minecraft", home];
     NSString *multidirPath = [NSString stringWithFormat:@"%s/instances/%@", home, multidir];
-
+    NSString *profilesPath = [NSString stringWithFormat:@"%s/instances/%@/profiles", home, multidir];
 
     NSArray *dirsToCreate = @[
         [NSString stringWithFormat:@"%s/.demo", home],
         [NSString stringWithFormat:@"%s/java_runtimes", home],
         lasmPath.stringByDeletingLastPathComponent,
-        multidirPath
+        multidirPath,
+        profilesPath  // Create the profiles directory within the instance
     ];
     for (NSString *dir in dirsToCreate) {
         [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
@@ -228,6 +228,9 @@ void init_setupMultiDir() {
     [fm createSymbolicLinkAtPath:lasmPath withDestinationPath:multidirPath error:nil];
     [fm changeCurrentDirectoryPath:lasmPath];
     setenv("POJAV_GAME_DIR", lasmPath.UTF8String, 1);
+    
+    // Update existing profiles to use isolated directories if needed
+    [PLProfiles updateCurrent];
 }
 
 void init_setupResolvConf() {
