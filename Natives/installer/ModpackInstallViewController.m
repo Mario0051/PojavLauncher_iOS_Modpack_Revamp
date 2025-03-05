@@ -12,24 +12,57 @@
 #import "utils.h"
 #import "PLProfiles.h"
 #import "modpack/ModpackUtils.h"
+#import "UIAlertUtilities.h"
 #include <dlfcn.h>
 
-// Inline helper to display alerts.
-static inline void presentAlertDialog(NSString *title, NSString *message) {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"OK", nil)
-                                              style:UIAlertActionStyleDefault
-                                            handler:nil]];
-    UIWindow *window = nil;
-    if (@available(iOS 13.0, *)) {
-         window = [UIApplication sharedApplication].windows.firstObject;
-    } else {
-         window = [UIApplication sharedApplication].keyWindow;
+#pragma mark - ModpackVersionSelectorDataSource Interface and Implementation
+@interface ModpackVersionSelectorDataSource : NSObject <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) NSArray<UIAction *> *versionActions;
+@property (nonatomic, strong) NSDictionary *modpack;
+@property (nonatomic, weak) ModpackInstallViewController *delegate;
+@end
+
+@implementation ModpackVersionSelectorDataSource
+
+- (instancetype)initWithVersionActions:(NSArray<UIAction *> *)versionActions 
+                               modpack:(NSDictionary *)modpack 
+                              delegate:(ModpackInstallViewController *)delegate {
+    if (self = [super init]) {
+        _versionActions = versionActions;
+        _modpack = modpack;
+        _delegate = delegate;
     }
-    [window.rootViewController presentViewController:alert animated:YES completion:nil];
+    return self;
 }
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.versionActions.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"VersionCell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"VersionCell"];
+    }
+    
+    if (indexPath.row < self.versionActions.count) {
+        cell.textLabel.text = self.versionActions[indexPath.row].title;
+    }
+    
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    if (indexPath.row < self.versionActions.count) {
+        [self.delegate.presentedViewController dismissViewControllerAnimated:YES completion:^{
+            [self.delegate installModpackFromDetail:self.modpack atIndex:indexPath.row];
+        }];
+    }
+}
+
+@end
 
 @interface ModpackInstallViewController () <UISearchResultsUpdating, UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UISearchController *searchController;
@@ -79,7 +112,9 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
                 [self switchToReadyState];
                 [self.tableView reloadData];
             } else {
-                presentAlertDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                               message:self.modrinth.lastError.localizedDescription 
+                                       viewController:self];
                 [self actionClose];
             }
         });
@@ -135,29 +170,108 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 
 #pragma mark - UIContextMenu Interaction
 
+- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
+    // This is a stub for the protocol
+    return nil;
+}
+
 - (void)showModpackDetails:(NSDictionary *)details atIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+    
+    // Check for valid version data
+    NSArray *versionNames = details[@"versionNames"];
+    NSArray *mcVersionNames = details[@"mcVersionNames"];
+    
+    if (!versionNames || ![versionNames isKindOfClass:[NSArray class]] || versionNames.count == 0) {
+        [UIAlertUtilities presentAlertWithTitle:@"Error" 
+                                      message:@"No versions available for this modpack." 
+                              viewController:self];
+        return;
+    }
+
+    // Limit number of versions to prevent UI freezing
+    const NSUInteger MAX_VERSIONS_TO_SHOW = 50;
+    NSUInteger versionsToShow = MIN(versionNames.count, MAX_VERSIONS_TO_SHOW);
+    
+    NSLog(@"[DEBUG] About to show modpack version selector with %lu versions (limiting to %lu)", 
+          (unsigned long)versionNames.count, (unsigned long)versionsToShow);
+    
     NSMutableArray<UIAction *> *versionActions = [NSMutableArray new];
-    [details[@"versionNames"] enumerateObjectsUsingBlock:^(NSString *version, NSUInteger i, BOOL *stop) {
-        NSString *displayName = version;
-        NSString *mcVersion = details[@"mcVersionNames"][i];
-        if (![version hasSuffix:mcVersion]) {
-            displayName = [NSString stringWithFormat:@"%@ - %@", version, mcVersion];
+    
+    for (NSUInteger i = 0; i < versionsToShow; i++) {
+        NSString *version = versionNames[i];
+        if (![version isKindOfClass:[NSString class]]) {
+            continue;
         }
-        [versionActions addObject:[UIAction actionWithTitle:displayName image:nil identifier:nil handler:^(UIAction *action) {
-            [self actionClose];
-            [self.modrinth installModpackFromDetail:self.list[indexPath.row] atIndex:i];
-        }]];
-    }];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Version" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    for (UIAction *action in versionActions) {
-        [alert addAction:[UIAlertAction actionWithTitle:action.title style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
-            NSUInteger index = [versionActions indexOfObject:action];
-            [self.modrinth installModpackFromDetail:details atIndex:index];
+        
+        NSString *displayName = version;
+        if (i < mcVersionNames.count && [mcVersionNames[i] isKindOfClass:[NSString class]]) {
+            NSString *mcVersion = mcVersionNames[i];
+            if (![version hasSuffix:mcVersion]) {
+                displayName = [NSString stringWithFormat:@"%@ - %@", version, mcVersion];
+            }
+        }
+        
+        NSUInteger capturedIndex = i; // Capture i for the block
+        [versionActions addObject:[UIAction actionWithTitle:displayName 
+                                                     image:nil 
+                                                identifier:nil 
+                                                   handler:^(UIAction *action) {
+            [self installModpackFromDetail:details atIndex:capturedIndex];
         }]];
     }
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    
+    // For iPad and large displays, use action sheet
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Version" 
+                                                                      message:nil 
+                                                               preferredStyle:UIAlertControllerStyleActionSheet];
+        
+        for (UIAction *action in versionActions) {
+            [alert addAction:[UIAlertAction actionWithTitle:action.title 
+                                                     style:UIAlertActionStyleDefault 
+                                                   handler:^(UIAlertAction * _Nonnull alertAction) {
+                NSUInteger index = [versionActions indexOfObject:action];
+                [self installModpackFromDetail:details atIndex:index];
+            }]];
+        }
+        
+        [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) 
+                                                 style:UIAlertActionStyleCancel 
+                                               handler:nil]];
+        
+        alert.popoverPresentationController.sourceView = cell ?: self.view;
+        alert.popoverPresentationController.sourceRect = cell ? cell.bounds : CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+        
+        [self presentViewController:alert animated:YES completion:nil];
+    } else {
+        // For iPhone and smaller displays, use a table view controller
+        [self showVersionSelectorTableForModpack:details withVersions:versionActions];
+    }
+}
+
+// Helper method for installing modpack
+- (void)installModpackFromDetail:(NSDictionary *)details atIndex:(NSUInteger)index {
+    [self actionClose];
+    [self.modrinth installModpackFromDetail:details atIndex:index];
+}
+
+// Table-based version selection for iPhone
+- (void)showVersionSelectorTableForModpack:(NSDictionary *)modpack withVersions:(NSArray<UIAction *> *)versionActions {
+    UITableViewController *versionTableVC = [[UITableViewController alloc] initWithStyle:UITableViewStylePlain];
+    versionTableVC.title = @"Select Version";
+    
+    versionTableVC.tableView.dataSource = [[ModpackVersionSelectorDataSource alloc] 
+                                          initWithVersionActions:versionActions 
+                                                        modpack:modpack 
+                                                       delegate:self];
+    
+    versionTableVC.tableView.delegate = versionTableVC.tableView.dataSource;
+    
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:versionTableVC];
+    navController.modalPresentationStyle = UIModalPresentationFullScreen;
+    
+    [self presentViewController:navController animated:YES completion:nil];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -168,15 +282,18 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [tableView deselectRowAtIndexPath:indexPath animated:NO];
         [self switchToLoadingState];
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            [self.modrinth loadDetailsOfMod:self.list[indexPath.row]];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self switchToReadyState];
-                if ([item[@"versionDetailsLoaded"] boolValue]) {
-                    [self showModpackDetails:item atIndexPath:indexPath];
-                } else {
-                    presentAlertDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
-                }
-            });
+            [self.modrinth loadDetailsOfMod:self.list[indexPath.row] completion:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self switchToReadyState];
+                    if ([item[@"versionDetailsLoaded"] boolValue]) {
+                        [self showModpackDetails:item atIndexPath:indexPath];
+                    } else {
+                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                       message:self.modrinth.lastError.localizedDescription 
+                                               viewController:self];
+                    }
+                });
+            }];
         });
     }
 }
