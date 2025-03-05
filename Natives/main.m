@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
+#include "config.h"
 #include "utils.h"
 #include "codesign.h"
 
