@@ -129,15 +129,24 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     
-    // Add API selection segmented control
+    // Set up segmented control directly - SIMPLIFIED APPROACH
     self.apiSegmentedControl = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
-    self.apiSegmentedControl.selectedSegmentIndex = ModpackSourceModrinth;
+    self.apiSegmentedControl.selectedSegmentIndex = 0;
     [self.apiSegmentedControl addTarget:self action:@selector(apiSourceChanged:) forControlEvents:UIControlEventValueChanged];
     
-    // Configure table header
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 50)];
-    self.apiSegmentedControl.frame = CGRectInset(headerView.bounds, 10, 10);
-    self.apiSegmentedControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    // Create a simple header view with fixed height
+    CGFloat headerHeight = 50;
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, headerHeight)];
+    
+    // Position the segmented control in the header
+    CGFloat padding = 10;
+    self.apiSegmentedControl.frame = CGRectMake(
+        padding,
+        (headerHeight - 30) / 2, // 30 is approximate height of segmented control
+        headerView.bounds.size.width - (padding * 2),
+        30
+    );
+    
     [headerView addSubview:self.apiSegmentedControl];
     self.tableView.tableHeaderView = headerView;
     
@@ -156,15 +165,27 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
     [self searchModpacks];
 }
 
-- (void)viewWillAppear:(BOOL)animated {
-    [super viewWillAppear:animated];
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
     
-    // Ensure proper segmented control width
-    CGRect frame = self.tableView.tableHeaderView.frame;
-    frame.size.height = 50;
-    self.tableView.tableHeaderView.frame = frame;
-    [self.tableView.tableHeaderView setNeedsLayout];
-    [self.tableView.tableHeaderView layoutIfNeeded];
+    // Make sure the header view has the correct width
+    if (self.tableView.tableHeaderView) {
+        CGRect headerFrame = self.tableView.tableHeaderView.frame;
+        headerFrame.size.width = self.tableView.bounds.size.width;
+        self.tableView.tableHeaderView.frame = headerFrame;
+        
+        // Update the segmented control
+        CGFloat padding = 10;
+        self.apiSegmentedControl.frame = CGRectMake(
+            padding,
+            (headerFrame.size.height - 30) / 2,
+            headerFrame.size.width - (padding * 2),
+            30
+        );
+        
+        // Force a refresh of the header
+        self.tableView.tableHeaderView = self.tableView.tableHeaderView;
+    }
 }
 
 - (void)dealloc {
