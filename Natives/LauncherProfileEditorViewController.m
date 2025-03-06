@@ -192,7 +192,6 @@
     // Always ensure the profile directory exists
     [PLProfiles ensureProfileDirectoryExists:newProfileName gameDir:self.profile[@"gameDir"]];
 
-    // Rest of the method remains the same...
     if ([self.oldName isEqualToString:self.profile[@"name"]]) {
         // Not a rename, directly create/replace
         PLProfiles.current.profiles[self.oldName] = self.profile;
