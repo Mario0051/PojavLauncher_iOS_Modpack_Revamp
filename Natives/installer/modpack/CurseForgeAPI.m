@@ -853,13 +853,60 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                         isModpack = ([mod[@"classId"] integerValue] == kCurseForgeClassIDModpack);
                     }
                     
+                    // Safely handle all possible field types
+                    NSString *idString = @"0";
+                    if (mod[@"id"]) {
+                        if ([mod[@"id"] isKindOfClass:[NSString class]]) {
+                            idString = mod[@"id"];
+                        } else {
+                            idString = [NSString stringWithFormat:@"%@", mod[@"id"]];
+                        }
+                    }
+                    
+                    NSString *title = @"";
+                    if (mod[@"name"]) {
+                        if ([mod[@"name"] isKindOfClass:[NSString class]]) {
+                            title = mod[@"name"];
+                        } else {
+                            title = [NSString stringWithFormat:@"%@", mod[@"name"]];
+                        }
+                    }
+                    
+                    NSString *description = @"";
+                    if (mod[@"summary"]) {
+                        if ([mod[@"summary"] isKindOfClass:[NSString class]]) {
+                            description = mod[@"summary"];
+                        } else {
+                            description = [NSString stringWithFormat:@"%@", mod[@"summary"]];
+                        }
+                    }
+                    
+                    NSString *imageUrl = @"";
+                    if (mod[@"logo"]) {
+                        if ([mod[@"logo"] isKindOfClass:[NSString class]]) {
+                            imageUrl = mod[@"logo"];
+                        } else if ([mod[@"logo"] isKindOfClass:[NSDictionary class]]) {
+                            // Handle logo as a dictionary that might contain a URL field
+                            NSDictionary *logoDict = mod[@"logo"];
+                            if (logoDict[@"url"] && [logoDict[@"url"] isKindOfClass:[NSString class]]) {
+                                imageUrl = logoDict[@"url"];
+                            } else if (logoDict[@"thumbnailUrl"] && [logoDict[@"thumbnailUrl"] isKindOfClass:[NSString class]]) {
+                                imageUrl = logoDict[@"thumbnailUrl"];
+                            } else {
+                                imageUrl = @""; // No usable URL found
+                            }
+                        } else {
+                            imageUrl = [NSString stringWithFormat:@"%@", mod[@"logo"]];
+                        }
+                    }
+                    
                     NSMutableDictionary *entry = [@{
                         @"apiSource": @(1),
                         @"isModpack": @(isModpack),
-                        @"id": [NSString stringWithFormat:@"%@", mod[@"id"] ?: @"0"],
-                        @"title": (mod[@"name"] ?: @""),
-                        @"description": (mod[@"summary"] ?: @""),
-                        @"imageUrl": (mod[@"logo"] ?: @"")
+                        @"id": idString,
+                        @"title": title,
+                        @"description": description,
+                        @"imageUrl": imageUrl
                     } mutableCopy];
                     
                     [result addObject:entry];
