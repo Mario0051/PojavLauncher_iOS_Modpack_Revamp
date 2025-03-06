@@ -43,24 +43,52 @@
     NSString *name = altName ?: path.lastPathComponent;
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:url]];
     __block NSProgress *progress;
+    __weak typeof(self) weakSelf = self;
+    __block NSInteger retryCount = 0;
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
         NSLog(@"[MCDL] Downloading %@", name);
-        progress = [self.manager downloadProgressForTask:task];
+        progress = [weakSelf.manager downloadProgressForTask:task];
         if (!size && task) {
-            [self addDownloadTaskToProgress:task size:response.expectedContentLength];
-            [self.fileList addObject:name];
+            [weakSelf addDownloadTaskToProgress:task size:response.expectedContentLength];
+            [weakSelf.fileList addObject:name];
         }
         [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         [NSFileManager.defaultManager removeItemAtPath:path error:nil];
         return [NSURL fileURLWithPath:path];
     } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
-        if (self.progress.cancelled) {
+        if (weakSelf.progress.cancelled) {
             // Ignore any further errors
         } else if (error != nil) {
-            [self finishDownloadWithError:error file:name];
-        } else if (![self checkSHA:sha forFile:path altName:altName]) {
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+            // Check if we should retry (up to 3 times)
+            if (retryCount < 3 && (error.code == NSURLErrorTimedOut || 
+                                   error.code == NSURLErrorNetworkConnectionLost ||
+                                   error.code == NSURLErrorNotConnectedToInternet)) {
+                retryCount++;
+                NSLog(@"[MCDL] Retrying download for %@ (attempt %ld): %@", name, (long)retryCount, error);
+                
+                // Create a new task with the same parameters and try again
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    NSURLSessionDownloadTask *retryTask = [weakSelf.manager downloadTaskWithRequest:request progress:nil destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
+                        return [NSURL fileURLWithPath:path];
+                    } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
+                        if (error) {
+                            [weakSelf finishDownloadWithError:error file:name];
+                        } else if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
+                            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+                        } else {
+                            progress.totalUnitCount = progress.completedUnitCount;
+                            if (success) success();
+                        }
+                    }];
+                    [retryTask resume];
+                });
+                return;
+            }
+            
+            [weakSelf finishDownloadWithError:error file:name];
+        } else if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
+            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
         } else {
             progress.totalUnitCount = progress.completedUnitCount;
             if (success) success();
