@@ -691,7 +691,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     
     NSString *urlString = versionUrls[selectedVersion];
     
-    // Create a download task
+    // Create a download task that will be visible in the download progress view
     MinecraftResourceDownloadTask *downloadTask = [[MinecraftResourceDownloadTask alloc] init];
     
     // Initialize progress tracking data - alternative to prepareForDownload
@@ -705,20 +705,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     downloadTask.progress.totalUnitCount = 1;
     downloadTask.fileList = [NSMutableArray new];
     downloadTask.progressList = [NSMutableArray new];
-    
-    // Present download progress view controller
-    DownloadProgressViewController *progressVC = [[DownloadProgressViewController alloc] initWithTask:downloadTask];
-    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:progressVC];
-    if (self.parentViewController) {
-        [self.parentViewController presentViewController:navController animated:YES completion:nil];
-    } else {
-        // Try to find a root view controller to present from
-        UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
-        while (rootVC.presentedViewController) {
-            rootVC = rootVC.presentedViewController;
-        }
-        [rootVC presentViewController:navController animated:YES completion:nil];
-    }
     
     // Check if we need to resolve a placeholder URL
     if ([urlString hasPrefix:@"placeholder:"]) {
@@ -757,9 +743,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                                    completion:completion];
     }
 }
-
-// Replace this method in CurseForgeAPI.m
-// This improved method better handles the modpack download process with progress reporting
 
 - (void)downloadAndInstallModpackWithURL:(NSString *)downloadUrl 
                                modDetail:(NSDictionary *)modDetail 
@@ -814,9 +797,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     [downloadTask.progressList addObject:fileProgress];
     [downloadTask.progress addChild:fileProgress withPendingUnitCount:1];
     
-    // Update task description
-    downloadTask.textProgress.localizedDescription = [NSString stringWithFormat:@"Downloading %@", modDetail[@"title"]];
-    
     __weak typeof(self) weakSelf = self;
     NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:downloadUrl]] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         if (error) {
@@ -847,7 +827,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         
         // Update file list for extraction
         dispatch_async(dispatch_get_main_queue(), ^{
-            downloadTask.textProgress.localizedDescription = @"Extracting modpack";
             [downloadTask.fileList addObject:@"Extracting modpack"];
             
             // Create progress for extraction
@@ -958,7 +937,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 }
             }
             
-            // Setup profile
+            // Setup profile with the same approach as Modrinth
             NSString *profileName = manifestDict[@"name"] ?: @"Unknown Modpack";
             
             // Create profile with basic icon
@@ -970,11 +949,10 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             };
             
             // Ensure the profile directory exists
+            [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
+            
+            // Save the profile
             dispatch_async(dispatch_get_main_queue(), ^{
-                downloadTask.textProgress.localizedDescription = @"Creating profile";
-                [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
-                
-                // Save the profile
                 NSLog(@"[CurseForge-Modpack] Setting profile: %@", profileName);
                 PLProfiles.current.profiles[safeProfileName] = [profileInfo mutableCopy];
                 PLProfiles.current.selectedProfileName = safeProfileName;
@@ -992,10 +970,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             
             // Extract overrides
             NSLog(@"[CurseForge-Modpack] Extracting overrides");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                downloadTask.textProgress.localizedDescription = @"Extracting overrides";
-            });
-            
             NSString *overridesDir = manifestDict[@"overrides"];
             if (overridesDir) {
                 NSError *overridesError = nil;
@@ -1007,23 +981,10 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             
             // Download mod files
             NSLog(@"[CurseForge-Modpack] Downloading mod files");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                downloadTask.textProgress.localizedDescription = @"Downloading mod files";
-            });
-            
             NSArray *files = manifestDict[@"files"];
             __block NSInteger totalFiles = files.count;
             __block NSInteger completedFiles = 0;
             __block NSInteger failedFiles = 0;
-            
-            // Update progress for mod downloads
-            NSProgress *modsProgress = [NSProgress progressWithTotalUnitCount:totalFiles];
-            modsProgress.kind = NSProgressKindFile;
-            
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [downloadTask.progress removeChild:fileProgress];
-                [downloadTask.progress addChild:modsProgress withPendingUnitCount:100];
-            });
             
             dispatch_group_t group = dispatch_group_create();
             dispatch_semaphore_t semaphore = dispatch_semaphore_create(5); // Limit concurrent downloads
@@ -1037,24 +998,20 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 BOOL required = [file[@"required"] boolValue];
                 
                 // Update progress
-                NSString *modName = [NSString stringWithFormat:@"Mod %@_%@", projectID, fileID];
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [downloadTask.fileList addObject:modName];
+                    [downloadTask.fileList addObject:[NSString stringWithFormat:@"Mod: %@_%@", projectID, fileID]];
                     
                     // Create progress for this mod file
                     NSProgress *modProgress = [NSProgress progressWithTotalUnitCount:1];
                     modProgress.kind = NSProgressKindFile;
                     [downloadTask.progressList addObject:modProgress];
-                    [modsProgress addChild:modProgress withPendingUnitCount:1];
+                    [downloadTask.progress addChild:modProgress withPendingUnitCount:1];
                 });
                 
                 [strongSelf getDownloadUrlForProject:[projectID unsignedLongLongValue] fileID:[fileID unsignedLongLongValue] completion:^(NSString *url, NSError *error) {
                     if (!url) {
                         NSLog(@"[CurseForge-Modpack] Failed to get download URL for project %@, file %@: %@", projectID, fileID, error);
                         failedFiles++;
-                        completedFiles++;
-                        modsProgress.completedUnitCount = completedFiles;
-                        
                         dispatch_semaphore_signal(semaphore);
                         dispatch_group_leave(group);
                         
@@ -1074,9 +1031,10 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                     // Download directly to final mods directory
                     NSString *modPath = [modsDir stringByAppendingPathComponent:fileName];
                     
-                    NSProgress *modProgress = [downloadTask.progressList lastObject];
                     NSURL *modURL = [NSURL URLWithString:url];
                     NSURLSessionDownloadTask *modTask = [[NSURLSession sharedSession] downloadTaskWithURL:modURL completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
+                        NSProgress *modProgress = downloadTask.progressList.lastObject;
+                        
                         if (downloadError) {
                             NSLog(@"[CurseForge-Modpack] Failed to download mod %@: %@", fileName, downloadError);
                             failedFiles++;
@@ -1102,22 +1060,12 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                                      fileName, modPath, (long)completedFiles+1, (long)totalFiles);
                                 
                                 // Update progress
-                                dispatch_async(dispatch_get_main_queue(), ^{
-                                    modProgress.totalUnitCount = 1;
-                                    modProgress.completedUnitCount = 1;
-                                });
+                                modProgress.totalUnitCount = 1;
+                                modProgress.completedUnitCount = 1;
                             }
                         }
                         
                         completedFiles++;
-                        modsProgress.completedUnitCount = completedFiles;
-                        
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            // Update overall progress percentage
-                            NSInteger percentage = (completedFiles * 100) / totalFiles;
-                            downloadTask.textProgress.localizedDescription = [NSString stringWithFormat:@"Downloading mods (%ld%%)", (long)percentage];
-                        });
-                        
                         dispatch_semaphore_signal(semaphore);
                         dispatch_group_leave(group);
                     }];
@@ -1130,12 +1078,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             dispatch_group_notify(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                 NSLog(@"[CurseForge-Modpack] All downloads completed (%ld/%ld, %ld failed)", 
                       (long)completedFiles, (long)totalFiles, (long)failedFiles);
-                
-                // Final update to progress display
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    downloadTask.textProgress.localizedDescription = @"Modpack installation complete";
-                    downloadTask.textProgress.completedUnitCount = downloadTask.textProgress.totalUnitCount;
-                });
                 
                 // Create a log file in the destination directory to help with troubleshooting
                 NSString *logContent = [NSString stringWithFormat:@"CurseForge modpack installation completed\n"
@@ -1162,6 +1104,9 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                     completion(nil);
                 }
             });
+        });
+    }];
+    
     [task resume];
 }
 
