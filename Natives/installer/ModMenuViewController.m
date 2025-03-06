@@ -7,8 +7,6 @@
 #import "utils.h"
 #import "PLProfiles.h"
 #import "UIAlertUtilities.h"
-#import "MinecraftResourceDownloadTask.h"
-#import "DownloadProgressViewController.h"
 
 @class ModMenuViewController;
 
@@ -72,19 +70,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                                                                              target:self
                                                                              action:@selector(installQueueAction)];
     self.navigationItem.leftBarButtonItem = self.editButtonItem;
-    
-    // Add close button
-    UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose 
-                                                                               target:self 
-                                                                               action:@selector(actionClose)];
-    
-    self.navigationItem.leftBarButtonItems = @[self.editButtonItem, closeButton];
 }
-
-- (void)actionClose {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
 - (void)installQueueAction {
     if (self.queue.count == 0) {
         presentAlertDialog(localize(@"Queue Empty", nil), @"There are no mods in the install queue.");
@@ -121,69 +107,43 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     return self.queue.count;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    // This is the correct implementation for ModMenuViewController
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"modCell"];
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"QueueCell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"modCell"];
-        cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
-        cell.imageView.clipsToBounds = YES;
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"QueueCell"];
     }
-    
-    // Clear any existing image to prevent flicker
-    UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
-    cell.imageView.image = placeholder;
-    
-    if (self.modsList.count == 0 && !self.isLoading) {
-        // Show "No results" cell
-        cell.textLabel.text = @"No modpacks found";
-        cell.detailTextLabel.text = @"Try a different search or switch sources";
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        return cell;
-    }
-    
-    // Configure cell with mod info
-    NSDictionary *mod = self.modsList[indexPath.row];
+    NSDictionary *entry = self.queue[indexPath.row];
+    NSDictionary *mod = entry[@"mod"];
+    NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
     cell.textLabel.text = mod[@"title"];
-    cell.detailTextLabel.text = mod[@"description"];
-    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    
-    // Load image with proper caching and sizing
-    NSString *imageUrlString = mod[@"imageUrl"];
-    if (imageUrlString.length > 0) {
-        NSURL *imageUrl = [NSURL URLWithString:imageUrlString];
-        UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
-        
-        // Create a properly sized placeholder
-        UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
-        [placeholder drawInRect:CGRectMake(0, 0, 40, 40)];
-        UIImage *resizedPlaceholder = UIGraphicsGetImageFromCurrentImageContext();
-        UIGraphicsEndImageContext();
-        
-        __weak typeof(cell) weakCell = cell;
-        
-        [cell.imageView setImageWithURL:imageUrl 
-                       placeholderImage:resizedPlaceholder 
-                                success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
-            // Resize the downloaded image properly
-            if (image) {
-                UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
-                [image drawInRect:CGRectMake(0, 0, 40, 40)];
-                UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
-                UIGraphicsEndImageContext();
-                
-                weakCell.imageView.image = resizedImage;
-            } else {
-                weakCell.imageView.image = resizedPlaceholder;
-            }
-            [weakCell setNeedsLayout];
-        } failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
-            weakCell.imageView.image = resizedPlaceholder;
-            [weakCell setNeedsLayout];
-        }];
-    }
-    
+    NSArray *versionNames = mod[@"versionNames"];
+    NSString *verStr = (versionIndex < versionNames.count) ? SafeStringFromVersion(versionNames[versionIndex]) : @"";
+    NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+    cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
     return cell;
+}
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
+ forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle == UITableViewCellEditingStyleDelete) {
+        [self.queue removeObjectAtIndex:indexPath.row];
+        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+    }
+}
+@end
+
+#pragma mark - VersionSelectorDataSource Implementation
+@implementation VersionSelectorDataSource
+
+- (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
+                             mod:(NSDictionary *)mod 
+                         indices:(NSArray<NSNumber *> *)indices 
+                        delegate:(id<VersionSelectorDelegate>)delegate {
+    if (self = [super init]) {
+        _versions = versions;
+        _mod = mod;
+        _indices = indices;
+        _delegate = delegate;
+    }
+    return self;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -293,12 +253,9 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 - (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
     NSArray *urls = mod[@"versionUrls"];
     if (index >= urls.count) {
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                        message:@"Invalid version index for installation." 
-                                viewController:self];
+        presentAlertDialog(localize(@"Error", nil), @"Invalid version index for installation.");
         return;
     }
-    
     NSString *urlString = urls[index];
     // Use the lastPathComponent of the URL to preserve the original file name.
     NSString *fileName = [[NSURL URLWithString:urlString] lastPathComponent];
@@ -320,71 +277,20 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         NSError *createError = nil;
         [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
         if (createError) {
-            [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                            message:[NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription] 
-                                    viewController:self];
+            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription]);
             return;
         }
     }
     
     NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
     
-    // Create a download task for progress tracking
-    MinecraftResourceDownloadTask *downloadTask = [[MinecraftResourceDownloadTask alloc] init];
-    [downloadTask prepareForDownload];
-    
-    // Add to file list
-    [downloadTask.fileList addObject:fileName];
-    
-    // Create progress
-    NSProgress *fileProgress = [NSProgress progressWithTotalUnitCount:1];
-    fileProgress.kind = NSProgressKindFile;
-    [downloadTask.progressList addObject:fileProgress];
-    [downloadTask.progress addChild:fileProgress withPendingUnitCount:1];
-    
-    // Show progress view controller
-    DownloadProgressViewController *progressVC = [[DownloadProgressViewController alloc] initWithTask:downloadTask];
-    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:progressVC];
-    [self presentViewController:navController animated:YES completion:nil];
-    
-    // Start download
-    NSURL *url = [NSURL URLWithString:urlString];
-    NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:url completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
-        if (error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                                message:[NSString stringWithFormat:@"Failed to download %@: %@", fileName, error.localizedDescription] 
-                                        viewController:self];
-            });
-            return;
-        }
-        
-        // Update progress
-        fileProgress.totalUnitCount = response.expectedContentLength > 0 ? response.expectedContentLength : 1;
-        fileProgress.completedUnitCount = response.expectedContentLength > 0 ? response.expectedContentLength : 1;
-        
-        // Move download to destination
-        NSError *fileError = nil;
-        if ([[NSFileManager defaultManager] fileExistsAtPath:destinationPath]) {
-            [[NSFileManager defaultManager] removeItemAtPath:destinationPath error:nil];
-        }
-        
-        [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&fileError];
-        
-        if (fileError) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                                message:[NSString stringWithFormat:@"Failed to save %@: %@", fileName, fileError.localizedDescription] 
-                                        viewController:self];
-            });
+    [self downloadModFromURL:urlString toDestination:destinationPath completion:^(BOOL success, NSError *error) {
+        if (success) {
+            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", fileName]);
         } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                // No popup needed, progress UI already shows completion
-            });
+            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to install %@: %@", fileName, error.localizedDescription]);
         }
     }];
-    
-    [task resume];
 }
 
 - (void)viewDidLoad {
@@ -411,22 +317,14 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self.apiSegmentedControl addTarget:self action:@selector(updateModsList) forControlEvents:UIControlEventValueChanged];
     self.tableView.tableHeaderView = self.apiSegmentedControl;
     
-    // Fix for profiles button - ensure it has correct title and action
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Profile"
                                                                              style:UIBarButtonItemStylePlain
                                                                             target:self
                                                                             action:@selector(actionChooseProfile)];
-    
-    // Fix for exit button - add close button
-    self.navigationItem.rightBarButtonItems = @[
-        [[UIBarButtonItem alloc] initWithTitle:@"Queue (0)"
-                                         style:UIBarButtonItemStylePlain
-                                        target:self
-                                        action:@selector(actionShowQueue)],
-        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                                                      target:self
-                                                      action:@selector(actionClose)]
-    ];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Queue (0)"
+                                                                              style:UIBarButtonItemStylePlain
+                                                                             target:self
+                                                                             action:@selector(actionShowQueue)];
     
     self.tableView.delegate = self;
     self.tableView.dataSource = self;
@@ -437,18 +335,11 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self updateModsList];
 }
 
-// Add explicit close action
-- (void)actionClose {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
 // Profile selection: Presents a sorted list of profiles for the user to choose from.
 - (void)actionChooseProfile {
     NSDictionary *profiles = [PLProfiles current].profiles;
     if (!profiles || profiles.count == 0) {
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                        message:@"No profiles available." 
-                                viewController:self];
+        presentAlertDialog(localize(@"Error", nil), @"No profiles available.");
         return;
     }
     NSArray *sortedProfiles = [[profiles allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *p1, NSDictionary *p2) {
@@ -519,36 +410,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 #pragma mark - Installation Methods
 - (void)installModpackNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
     NSString *modTitle = mod[@"title"] ?: @"Modpack";
-    
-    // Create a download task for progress tracking
-    MinecraftResourceDownloadTask *downloadTask = [[MinecraftResourceDownloadTask alloc] init];
-    [downloadTask prepareForDownload];
-    
-    // Add to file list
-    [downloadTask.fileList addObject:[NSString stringWithFormat:@"Installing %@", modTitle]];
-    
-    // Create progress
-    NSProgress *progress = [NSProgress progressWithTotalUnitCount:100];
-    progress.kind = NSProgressKindFile;
-    [downloadTask.progressList addObject:progress];
-    [downloadTask.progress addChild:progress withPendingUnitCount:100];
-    
-    // Show progress view controller
-    DownloadProgressViewController *progressVC = [[DownloadProgressViewController alloc] initWithTask:downloadTask];
-    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:progressVC];
-    [self presentViewController:navController animated:YES completion:nil];
-    
-    // Update progress periodically to show activity
-    NSTimer *progressTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer * _Nonnull timer) {
-        if (progress.completedUnitCount < 95) {
-            progress.completedUnitCount += 5;
-        }
-    }];
-    
-    // Simulate completion after a delay
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [progressTimer invalidate];
-        progress.completedUnitCount = 100;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
     });
 }
 
@@ -574,9 +437,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                 if (enteredKey.length > 0) {
                     [self.curseForge setValue:enteredKey forKey:@"apiKey"];
                 } else {
-                    [UIAlertUtilities presentAlertWithTitle:@"API Key Missing" 
-                                                    message:@"No API key entered. Some functionality may not work." 
-                                            viewController:self];
+                    presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
                 }
                 [self refreshModsListWithPrevList:NO];
             }]];
@@ -606,9 +467,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                     strongSelf.modsList = results;
                     [strongSelf.tableView reloadData];
                 } else {
-                    [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                                    message:strongSelf.modrinth.lastError.localizedDescription 
-                                            viewController:strongSelf];
+                    presentAlertDialog(localize(@"Error", nil), strongSelf.modrinth.lastError.localizedDescription);
                 }
             });
         });
@@ -619,9 +478,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                     self.modsList = results;
                     [self.tableView reloadData];
                 } else {
-                    [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                                    message:error.localizedDescription 
-                                            viewController:self];
+                    presentAlertDialog(localize(@"Error", nil), error.localizedDescription);
                 }
             });
         }];
@@ -697,9 +554,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                         [strongSelf.modsList replaceObjectAtIndex:indexPath.row withObject:modMutable];
                         [strongSelf showModDetails:modMutable atIndexPath:indexPath];
                     } else {
-                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                                        message:strongSelf.modrinth.lastError.localizedDescription 
-                                                viewController:strongSelf];
+                        presentAlertDialog(localize(@"Error", nil), strongSelf.modrinth.lastError.localizedDescription);
                     }
                 });
             }];
@@ -712,9 +567,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                     [strongSelf.modsList replaceObjectAtIndex:indexPath.row withObject:modMutable];
                     [strongSelf showModDetails:modMutable atIndexPath:indexPath];
                 } else {
-                    [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                                    message:strongSelf.curseForge.lastError.localizedDescription 
-                                            viewController:strongSelf];
+                    presentAlertDialog(localize(@"Error", nil), strongSelf.curseForge.lastError.localizedDescription);
                 }
             });
         }];
@@ -732,8 +585,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     
     if (!versionNames || ![versionNames isKindOfClass:[NSArray class]] || versionNames.count == 0) {
         [UIAlertUtilities presentAlertWithTitle:@"Error" 
-                                        message:@"No versions available for this mod." 
-                                viewController:self];
+                                      message:@"No versions available for this mod." 
+                              viewController:self];
         return;
     }
 
@@ -949,10 +802,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 #pragma mark - Install Queue
 - (void)updateQueueButtonTitle {
     NSUInteger count = self.installQueue.count;
-    UIBarButtonItem *queueButton = self.navigationItem.rightBarButtonItems[0];
-    queueButton.title = [NSString stringWithFormat:@"Queue (%lu)", (unsigned long)count];
+    self.navigationItem.rightBarButtonItem.title = [NSString stringWithFormat:@"Queue (%lu)", (unsigned long)count];
 }
-
 - (void)actionShowQueue {
     ModQueueViewController *queueVC = [ModQueueViewController new];
     queueVC.queue = self.installQueue;
@@ -965,9 +816,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:queueVC];
     nav.modalPresentationStyle = UIModalPresentationPopover;
     if (nav.popoverPresentationController) {
-        nav.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItems[0];
+        nav.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
     }
     [self presentViewController:nav animated:YES completion:nil];
 }
-
 @end
