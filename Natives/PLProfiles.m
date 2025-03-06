@@ -36,6 +36,11 @@ static PLProfiles* current;
 
 + (NSString *)uniqueGameDirForProfileName:(NSString *)profileName {
     // Create a normalized directory name from profile name
+    // If it's the default "New Profile", don't create directory yet - wait for final name
+    if ([profileName isEqualToString:@"New Profile"] || profileName.length == 0) {
+        return @"./profiles/pending_profile";
+    }
+    
     NSString *safeName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
     safeName = [safeName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
     safeName = [safeName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
@@ -89,6 +94,47 @@ static PLProfiles* current;
                                withIntermediateDirectories:YES 
                                                 attributes:nil 
                                                      error:nil];
+    }
+    
+    return YES;
+}
+
++ (BOOL)renameProfileDirectory:(NSString *)oldProfileName to:(NSString *)newProfileName gameDir:(NSString *)oldGameDir {
+    if ([oldProfileName isEqualToString:newProfileName]) {
+        return YES; // Nothing to rename
+    }
+    
+    // If the old profile was using the pending directory
+    BOOL isPending = [oldGameDir hasSuffix:@"pending_profile"];
+    
+    // Create the new game directory path
+    NSString *newGameDir = [self uniqueGameDirForProfileName:newProfileName];
+    
+    // Get full paths
+    NSString *oldPath = [self fullPathForProfileWithName:oldProfileName gameDir:oldGameDir];
+    NSString *newPath = [self fullPathForProfileWithName:newProfileName gameDir:newGameDir];
+    
+    // Check if directory exists and needs to be moved
+    if ([[NSFileManager defaultManager] fileExistsAtPath:oldPath] && ![oldPath isEqualToString:newPath]) {
+        NSError *error = nil;
+        
+        // Create parent directory for new path if needed
+        [[NSFileManager defaultManager] createDirectoryAtPath:[newPath stringByDeletingLastPathComponent]
+                               withIntermediateDirectories:YES
+                                                attributes:nil
+                                                     error:nil];
+        
+        // Move directory
+        BOOL success = [[NSFileManager defaultManager] moveItemAtPath:oldPath toPath:newPath error:&error];
+        if (!success) {
+            NSLog(@"[PLProfiles] Failed to rename profile directory: %@", error);
+            return NO;
+        }
+        
+        return YES;
+    } else if (isPending || ![[NSFileManager defaultManager] fileExistsAtPath:oldPath]) {
+        // For pending profiles or if old path doesn't exist, just create the new directory
+        return [self ensureProfileDirectoryExists:newProfileName gameDir:newGameDir];
     }
     
     return YES;
