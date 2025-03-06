@@ -520,30 +520,49 @@
     NSError *error;
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:packagePath error:&error];
     if (error) {
-        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to open modpack package: %@", error.localizedDescription]];
+        NSLog(@"[ModrinthAPI] Failed to open modpack package: %@", error.localizedDescription);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            downloader.textProgress.localizedDescription = [NSString stringWithFormat:@"Error: %@", error.localizedDescription];
+        });
         return;
     }
 
+    // Extract and parse the index file
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
     if (!indexData) {
-        [downloader finishDownloadWithErrorString:@"Failed to extract modrinth.index.json from package"];
+        NSLog(@"[ModrinthAPI] Failed to extract modrinth.index.json: %@", error.localizedDescription);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            downloader.textProgress.localizedDescription = @"Error: Failed to extract modpack index";
+        });
         return;
     }
     
     NSDictionary* indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:0 error:&error];
     if (error) {
-        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to parse modrinth.index.json: %@", error.localizedDescription]];
+        NSLog(@"[ModrinthAPI] Failed to parse modrinth.index.json: %@", error.localizedDescription);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            downloader.textProgress.localizedDescription = @"Error: Failed to parse modpack index";
+        });
         return;
     }
 
     // Set up progress tracking
     NSArray *files = indexDict[@"files"];
     if (!files || ![files isKindOfClass:[NSArray class]]) {
-        [downloader finishDownloadWithErrorString:@"Invalid files list in modpack index"];
+        NSLog(@"[ModrinthAPI] Invalid files list in modpack index");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            downloader.textProgress.localizedDescription = @"Error: Invalid files list in modpack";
+        });
         return;
     }
     
-    downloader.progress.totalUnitCount = [files count];
+    // Update progress display
+    dispatch_async(dispatch_get_main_queue(), ^{
+        downloader.progress.totalUnitCount = [files count] + 2; // Files + extraction + setup
+        downloader.textProgress.localizedDescription = [NSString stringWithFormat:@"Installing %@ (%lu files)", 
+                                                        indexDict[@"name"] ?: @"Modpack", 
+                                                        (unsigned long)files.count];
+    });
     
     // Download each file
     for (NSDictionary *indexFile in files) {
@@ -553,13 +572,13 @@
         
         NSArray *downloads = indexFile[@"downloads"];
         if (![downloads isKindOfClass:[NSArray class]] || downloads.count == 0) {
-            NSLog(@"Missing download URLs for file, skipping");
+            NSLog(@"[ModrinthAPI] Missing download URLs for file, skipping");
             continue;
         }
         
         NSString *url = [downloads firstObject];
         if (![url isKindOfClass:[NSString class]] || url.length == 0) {
-            NSLog(@"Invalid download URL for file, skipping");
+            NSLog(@"[ModrinthAPI] Invalid download URL for file, skipping");
             continue;
         }
         
@@ -576,22 +595,58 @@
             [NSFileManager.defaultManager createDirectoryAtPath:dirPath withIntermediateDirectories:YES attributes:nil error:nil];
         }
         
+        // Get a file name for display (just the last component)
+        NSString *fileName = [path lastPathComponent];
+        
+        // Add to file list for progress tracking
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [downloader.fileList addObject:fileName];
+            
+            // Create progress for this file
+            NSProgress *fileProgress = [NSProgress progressWithTotalUnitCount:1];
+            fileProgress.kind = NSProgressKindFile;
+            [downloader.progressList addObject:fileProgress];
+            [downloader.progress addChild:fileProgress withPendingUnitCount:1];
+        });
+        
+        // Create and start download task
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:url size:size sha:sha altName:nil toPath:path];
         if (task) {
-            [downloader.fileList addObject:indexFile[@"path"]];
             [task resume];
         } else if (!downloader.progress.cancelled) {
             downloader.progress.completedUnitCount++;
         } else {
+            NSLog(@"[ModrinthAPI] Download cancelled");
             return; // cancelled
         }
     }
 
+    // Show extraction progress
+    dispatch_async(dispatch_get_main_queue(), ^{
+        downloader.textProgress.localizedDescription = @"Extracting overrides";
+        [downloader.fileList addObject:@"Extracting overrides"];
+        
+        // Create progress for extraction
+        NSProgress *extractProgress = [NSProgress progressWithTotalUnitCount:1];
+        extractProgress.kind = NSProgressKindFile;
+        [downloader.progressList addObject:extractProgress];
+        [downloader.progress addChild:extractProgress withPendingUnitCount:1];
+    });
+    
     // Extract overrides
     [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
     if (error) {
-        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to extract overrides from modpack package: %@", error.localizedDescription]];
-        return;
+        NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", error.localizedDescription);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            downloader.textProgress.localizedDescription = [NSString stringWithFormat:@"Warning: %@", error.localizedDescription];
+        });
+        // Continue anyway - don't return here as it's not fatal
+    } else {
+        // Mark extraction as complete
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSProgress *extractProgress = [downloader.progressList lastObject];
+            extractProgress.completedUnitCount = 1;
+        });
     }
 
     // Extract client-overrides if present
@@ -600,6 +655,18 @@
     
     // Delete package cache
     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
+    
+    // Show profile setup progress
+    dispatch_async(dispatch_get_main_queue(), ^{
+        downloader.textProgress.localizedDescription = @"Setting up profile";
+        [downloader.fileList addObject:@"Setting up profile"];
+        
+        // Create progress for profile setup
+        NSProgress *setupProgress = [NSProgress progressWithTotalUnitCount:1];
+        setupProgress.kind = NSProgressKindFile;
+        [downloader.progressList addObject:setupProgress];
+        [downloader.progress addChild:setupProgress withPendingUnitCount:1];
+    });
 
     // Download dependency client json (if available)
     NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
@@ -610,9 +677,9 @@
         [NSFileManager.defaultManager createDirectoryAtPath:[jsonPath stringByDeletingLastPathComponent] 
                               withIntermediateDirectories:YES attributes:nil error:nil];
                               
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath];
-        if (task) {
-            [task resume];
+        NSURLSessionDownloadTask *jsonTask = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath];
+        if (jsonTask) {
+            [jsonTask resume];
         }
     }
 
@@ -624,17 +691,43 @@
         iconBase64 = [iconData base64EncodedStringWithOptions:0];
     }
     
-    PLProfiles.current.profiles[indexDict[@"name"]] = @{
-        @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent],
-        @"name": indexDict[@"name"],
-        @"lastVersionId": depInfo[@"id"],
-        @"icon": iconBase64.length > 0 ? [NSString stringWithFormat:@"data:image/png;base64,%@", iconBase64] : @""
-    }.mutableCopy;
+    // Update the profile
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Create the profile with the modpack info
+        PLProfiles.current.profiles[indexDict[@"name"]] = @{
+            @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent],
+            @"name": indexDict[@"name"],
+            @"lastVersionId": depInfo[@"id"],
+            @"icon": iconBase64.length > 0 ? [NSString stringWithFormat:@"data:image/png;base64,%@", iconBase64] : @""
+        }.mutableCopy;
+        
+        PLProfiles.current.selectedProfileName = indexDict[@"name"];
+        [PLProfiles.current save];
+        
+        // Mark profile setup as complete
+        NSProgress *setupProgress = [downloader.progressList lastObject];
+        setupProgress.completedUnitCount = 1;
+        
+        // Update progress to show completion
+        downloader.textProgress.localizedDescription = @"Modpack installation complete";
+    });
     
-    PLProfiles.current.selectedProfileName = indexDict[@"name"];
-    [PLProfiles.current save];
+    // Create installation log
+    NSString *logContent = [NSString stringWithFormat:@"Modrinth modpack installation completed\n"
+                          "Name: %@\n"
+                          "Version: %@\n"
+                          "Directory: %@\n"
+                          "Date: %@",
+                          indexDict[@"name"],
+                          indexDict[@"versionId"],
+                          destPath,
+                          [NSDate date]];
+    
+    [logContent writeToFile:[destPath stringByAppendingPathComponent:@"modrinth_install.log"]
+                 atomically:YES
+                   encoding:NSUTF8StringEncoding
+                      error:nil];
 }
-
 #pragma mark - Mod Installation with Background Task Support
 
 - (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
