@@ -15,35 +15,29 @@ NS_ASSUME_NONNULL_BEGIN
 + (instancetype)defaultAPI;
 
 /**
- * Searches for mods or modpacks on Modrinth
- * @param searchFilters Dictionary of search filters
- * @param modrinthSearchResult Previous search results for pagination
- * @return Array of search results
+ * Filters versions based on game version and loader compatibility
+ * @param gameVersion The Minecraft version to filter by
+ * @param loader The mod loader to filter by
+ * @param versions The array of versions to filter
+ * @return An array of versions that match the filters
  */
-- (nullable NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters 
-                                previousPageResult:(nullable NSMutableArray *)modrinthSearchResult;
+- (NSArray *)filterVersionsForGameVersion:(nullable NSString *)gameVersion 
+                                   loader:(nullable NSString *)loader 
+                             fromVersions:(NSArray *)versions;
 
 /**
- * Synchronously loads details for a mod or modpack
- * @param item The mod or modpack to load details for
+ * Encodes a search query for URL transmission
+ * @param query The raw search query
+ * @return The URL-encoded search query
  */
-- (void)loadDetailsOfModSync:(NSMutableDictionary *)item;
+- (NSString *)encodedSearchQuery:(NSString *)query;
 
 /**
- * Asynchronously loads details for a mod or modpack
- * @param item The mod or modpack to load details for
- * @param completion Block to call when the operation completes
+ * Creates facets JSON for advanced search
+ * @param filters The search filters
+ * @return A JSON string representing the search facets
  */
-- (void)loadDetailsOfMod:(NSMutableDictionary *)item 
-              completion:(void (^)(NSError * _Nullable error))completion;
-
-/**
- * Installs a mod from the provided detail at the selected version
- * @param modDetail The mod details
- * @param selectedVersion The index of the selected version
- */
-- (void)installModFromDetail:(NSDictionary *)modDetail 
-                     atIndex:(NSUInteger)selectedVersion;
+- (NSString *)createFacetsJSON:(NSDictionary *)filters;
 
 @end
 
