@@ -15,6 +15,7 @@
 + (NSString *)uniqueGameDirForProfileName:(NSString *)profileName;
 + (NSString *)fullPathForProfileWithName:(NSString *)profileName gameDir:(NSString *)gameDir;
 + (BOOL)ensureProfileDirectoryExists:(NSString *)profileName gameDir:(NSString *)gameDir;
++ (BOOL)renameProfileDirectory:(NSString *)oldProfileName to:(NSString *)newProfileName gameDir:(NSString *)oldGameDir;
 
 - (id)initWithCurrentInstance;
 - (NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, NSString *> *> *)profiles;
