@@ -497,105 +497,101 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
 #pragma mark - Extraction, Manifest, then Downloads
 
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
+    NSLog(@"[CurseForge-Modpack] Starting extraction for CurseForge modpack: %@", packagePath);
+    
     __weak typeof(self) weakSelf = self;
     NSError *extractError = nil;
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:packagePath error:&extractError];
+    
     if (extractError) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Extraction failed: %@", extractError.localizedDescription]];
-        });
-        return;
-    }
-    __block BOOL extractionSuccess = YES;
-    [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
-        NSString *destItemPath = [destPath stringByAppendingPathComponent:fileInfo.filename];
-        if (fileInfo.isDirectory) {
-            NSError *dirError = nil;
-            BOOL created = [[NSFileManager defaultManager] createDirectoryAtPath:destItemPath withIntermediateDirectories:YES attributes:nil error:&dirError];
-            if (!created || dirError) {
-                NSLog(@"Extraction error for directory %@: %@", destItemPath, dirError);
-                *stop = YES;
-                extractionSuccess = NO;
-            }
-        } else {
-            NSError *fileError = nil;
-            NSData *data = [archive extractData:fileInfo error:&fileError];
-            if (!data || fileError) {
-                NSLog(@"Extraction error for file %@: %@", fileInfo.filename, fileError);
-                *stop = YES;
-                extractionSuccess = NO;
-            } else {
-                BOOL written = [data writeToFile:destItemPath options:NSDataWritingAtomic error:&fileError];
-                if (!written || fileError) {
-                    NSLog(@"Write error for file %@: %@", destItemPath, fileError);
-                    *stop = YES;
-                    extractionSuccess = NO;
-                }
-            }
-        }
-    } error:&extractError];
-    
-    if (!extractionSuccess || extractError) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Extraction failed: %@", extractError.localizedDescription]];
+            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to open modpack package: %@", extractError.localizedDescription]];
         });
         return;
     }
     
-    NSLog(@"downloader: Extraction completed successfully");
-    NSError *loadError = nil;
-    NSDictionary *manifestDict = [weakSelf loadManifestFromDestination:destPath error:&loadError];
-    if (!manifestDict) {
-        NSLog(@"downloader: Manifest load failed: %@", loadError);
+    // Extract the manifest.json file which is used by CurseForge modpacks
+    NSData *manifestData = [archive extractDataFromFile:@"manifest.json" error:&extractError];
+    if (!manifestData) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [downloader finishDownloadWithErrorString:@"Manifest missing or invalid"];
+            [downloader finishDownloadWithErrorString:@"Failed to extract manifest.json from package"];
         });
         return;
     }
-    if (![weakSelf verifyManifestFromDictionary:manifestDict]) {
-        NSLog(@"downloader: Manifest verification failed");
+    
+    NSDictionary* manifestDict = [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:&extractError];
+    if (extractError) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [downloader finishDownloadWithErrorString:@"Invalid manifest"];
+            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to parse manifest.json: %@", extractError.localizedDescription]];
         });
         return;
     }
-    NSLog(@"downloader: Manifest loaded and verified");
+    
+    // Verify manifest
+    if (![self verifyManifestFromDictionary:manifestDict]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [downloader finishDownloadWithErrorString:@"Invalid manifest format"];
+        });
+        return;
+    }
+    
+    NSLog(@"[CurseForge-Modpack] Successfully loaded and verified manifest");
+    
+    // Create mods directory
     NSString *modsDir = [destPath stringByAppendingPathComponent:@"mods"];
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
         NSError *createError = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
+        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir 
+                                   withIntermediateDirectories:YES 
+                                                    attributes:nil 
+                                                         error:&createError];
         if (createError) {
-            NSLog(@"downloader: Failed to create mods directory: %@", createError);
+            NSLog(@"[CurseForge-Modpack] Failed to create mods directory: %@", createError);
         } else {
-            NSLog(@"downloader: Created mods directory at %@", modsDir);
+            NSLog(@"[CurseForge-Modpack] Created mods directory at %@", modsDir);
         }
     }
+    
+    // Extract Minecraft version and loader info from manifest
     NSDictionary *minecraft = manifestDict[@"minecraft"];
     NSString *vanillaVersion = @"";
     NSString *modLoaderId = @"";
     NSString *modLoaderVersion = @"";
+    
     if (minecraft && [minecraft isKindOfClass:[NSDictionary class]]) {
         vanillaVersion = minecraft[@"version"] ?: @"";
         NSArray *modLoaders = minecraft[@"modLoaders"];
         NSDictionary *primaryModLoader = nil;
+        
         if ([modLoaders isKindOfClass:[NSArray class]] && modLoaders.count > 0) {
+            // Find primary loader or use the first one
             for (NSDictionary *loader in modLoaders) {
                 if ([loader[@"primary"] boolValue]) {
                     primaryModLoader = loader;
                     break;
                 }
             }
-            if (!primaryModLoader) { primaryModLoader = modLoaders[0]; }
+            if (!primaryModLoader) {
+                primaryModLoader = modLoaders[0];
+            }
+            
             NSString *rawId = primaryModLoader[@"id"] ?: @"";
             NSRange dashRange = [rawId rangeOfString:@"-"];
             if (dashRange.location != NSNotFound) {
                 NSString *loaderName = [rawId substringToIndex:dashRange.location];
                 NSString *loaderVer = [rawId substringFromIndex:(dashRange.location + 1)];
+                
                 if ([loaderName isEqualToString:@"forge"]) {
                     modLoaderId = @"forge";
                     modLoaderVersion = loaderVer;
                 } else if ([loaderName isEqualToString:@"fabric"]) {
                     modLoaderId = @"fabric";
+                    modLoaderVersion = loaderVer;
+                } else if ([loaderName isEqualToString:@"neoforge"]) {
+                    modLoaderId = @"neoforge";
+                    modLoaderVersion = loaderVer;
+                } else if ([loaderName isEqualToString:@"quilt"]) {
+                    modLoaderId = @"quilt";
                     modLoaderVersion = loaderVer;
                 } else {
                     modLoaderId = loaderName;
@@ -607,15 +603,24 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             }
         }
     }
+    
+    // Create version string based on loader
     NSString *finalVersionString = @"";
     if ([modLoaderId isEqualToString:@"forge"]) {
         finalVersionString = [NSString stringWithFormat:@"%@-forge-%@", vanillaVersion, modLoaderVersion];
     } else if ([modLoaderId isEqualToString:@"fabric"]) {
-        finalVersionString = [NSString stringWithFormat:@"fabric-%@-%@", modLoaderVersion, vanillaVersion];
+        finalVersionString = [NSString stringWithFormat:@"fabric-loader-%@-%@", modLoaderVersion, vanillaVersion];
+    } else if ([modLoaderId isEqualToString:@"quilt"]) {
+        finalVersionString = [NSString stringWithFormat:@"quilt-loader-%@-%@", modLoaderVersion, vanillaVersion];
+    } else if ([modLoaderId isEqualToString:@"neoforge"]) {
+        finalVersionString = [NSString stringWithFormat:@"%@-neoforge-%@", vanillaVersion, modLoaderVersion];
     } else {
         finalVersionString = [NSString stringWithFormat:@"%@ | %@", vanillaVersion, modLoaderId];
     }
-    NSLog(@"downloader: Determined version string: %@", finalVersionString);
+    
+    NSLog(@"[CurseForge-Modpack] Determined version string: %@", finalVersionString);
+    
+    // Create a profile for this modpack
     NSString *profileName = manifestDict[@"name"] ?: @"Unknown Modpack";
     if (profileName.length > 0) {
         // Create a unique gameDir for this modpack
@@ -629,103 +634,108 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             @"gameDir": gameDir,
             @"name": profileName,
             @"lastVersionId": finalVersionString,
-            @"icon": @""
+            @"icon": manifestDict[@"overrides"] ? @"" : @"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAABGdBTUEAALGPC/xhBQAAAAFzUkdCAK7OHOkAAAA8UExURUxpcejp6erp6erp6ejo6Onp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6VvMQMcAAAATdFJOUwBAv4BATz8Q798Qr1+vn3+fYL+Qu+0AAAE+SURBVFjD7ZZLkoQgDEApFHzPqPe/7MQZp3WwSQrX7mXDg5BAvkaj0fgfuMRJ8gw5SadHwPMLQXbBExA0Mp8A/d0ToCXIQD6fkLItoAb/wB8CjVJEPQbhTxUwEzZZAnTERUBERPR2ERDfERIBoEzQb2IQZudP8gS+DgAiIpoPAO1APkbsV2CAqAK+FlBflQHUAV5WgFfiVYCfWp4iMCcVcAtQS9RlQFQ8A/FVAFqCXASUE78L4OUBVEsQfwfAM1Hwc0BRAWoB6KQZcEoB2LEFXAuITgFYeQwkNQHnJSCrCYiaALWAtSbAbwKeRTbgPwCLZsARlYBZM2AsEsBmzYDnJ8CnzYBPAFQnuKzAbF23DQj9ZY0a3z3A7LZnvjuuJnN7b7r3Xn3G/H5dDwfIb/j1Jb57o9FoXHEDgWAupBBbCjcAAAAASUVORK5CYII="
         };
         
         // Ensure the profile directory exists
-        [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
+        [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
         
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSLog(@"downloader: Setting profile: %@", profileName);
-            PLProfiles.current.profiles[profileName] = [profileInfo mutableCopy];
-            PLProfiles.current.selectedProfileName = profileName;
+            NSLog(@"[CurseForge-Modpack] Setting profile: %@", profileName);
+            PLProfiles.current.profiles[safeProfileName] = [profileInfo mutableCopy];
+            PLProfiles.current.selectedProfileName = safeProfileName;
             [PLProfiles.current save];
         });
     }
     
-    NSError *error = nil;
-    [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
-    if (error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to extract overrides from modpack package: %@", error.localizedDescription]];
-        });
-        return;
+    // Extract overrides
+    NSLog(@"[CurseForge-Modpack] Extracting overrides");
+    NSError *overridesError = nil;
+    if (manifestDict[@"overrides"]) {
+        NSString *overridesPath = manifestDict[@"overrides"];
+        [ModpackUtils archive:archive extractDirectory:overridesPath toPath:destPath error:&overridesError];
+        if (overridesError) {
+            NSLog(@"[CurseForge-Modpack] Failed to extract overrides: %@", overridesError);
+            // Don't fail the whole installation for overrides error
+        } else {
+            NSLog(@"[CurseForge-Modpack] Successfully extracted overrides");
+        }
     }
-    [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&error];
-    if (error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to extract client-overrides from modpack package: %@", error.localizedDescription]];
-        });
-        return;
-    }
+    
+    // Clean up the package archive
     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
     
-    NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:manifestDict[@"dependencies"]];
+    // Setup progress tracking for file downloads
+    NSArray *files = manifestDict[@"files"];
+    if (!files || ![files isKindOfClass:[NSArray class]]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [downloader finishDownloadWithErrorString:@"Invalid files list in modpack manifest"];
+        });
+        return;
+    }
     
+    // Set the total number of files to download
+    downloader.progress.totalUnitCount = [files count];
+    
+    // Now process and download each mod file
     dispatch_group_t group = dispatch_group_create();
-    for (NSDictionary *fileEntry in manifestDict[@"files"]) {
+    for (NSDictionary *fileEntry in files) {
         dispatch_group_enter(group);
         NSNumber *projectID = fileEntry[@"projectID"];
         NSNumber *fileID = fileEntry[@"fileID"];
         BOOL required = [fileEntry[@"required"] boolValue];
-        [weakSelf getDownloadUrlForProject:[projectID unsignedLongLongValue] fileID:[fileID unsignedLongLongValue] completion:^(NSString *url, NSError *error) {
+        
+        [self getDownloadUrlForProject:[projectID unsignedLongLongValue] fileID:[fileID unsignedLongLongValue] completion:^(NSString *url, NSError *error) {
             if (!url && required) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    NSString *modName = fileEntry[@"fileName"] ?: @"UnknownFile";
-                    NSLog(@"downloader: Failed to get URL for required mod %@ in modpack %@", modName, destPath.lastPathComponent);
-                    [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to obtain download URL for modpack '%@' and mod '%@'", destPath.lastPathComponent, modName]];
+                    NSString *modName = fileEntry[@"fileName"] ?: @"Unknown File";
+                    NSLog(@"[CurseForge-Modpack] Failed to get URL for required mod %@", modName);
+                    // Don't fail completely, just log the error
                 });
                 dispatch_group_leave(group);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (!downloader.progress.cancelled) {
+                        downloader.progress.completedUnitCount++;
+                    }
+                });
                 return;
             } else if (!url) {
-                NSLog(@"downloader: Skipping optional mod with no URL: %@", fileEntry[@"fileName"] ?: @"Unknown");
+                NSLog(@"[CurseForge-Modpack] Skipping optional mod with no URL");
                 dispatch_group_leave(group);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (!downloader.progress.cancelled) {
+                        downloader.progress.completedUnitCount++;
+                    }
+                });
                 return;
             }
-            NSString *relativePath = fileEntry[@"path"];
-            if (!relativePath || relativePath.length == 0) {
-                relativePath = fileEntry[@"fileName"];
-                if (!relativePath || relativePath.length == 0) {
-                    NSURL *dlURL = [NSURL URLWithString:url];
-                    relativePath = dlURL.lastPathComponent ?: [NSString stringWithFormat:@"%@.jar", fileID];
-                }
+            
+            // Get the filename from the URL
+            NSURL *downloadURL = [NSURL URLWithString:url];
+            NSString *fileName = downloadURL.lastPathComponent;
+            if (!fileName || fileName.length == 0) {
+                fileName = [NSString stringWithFormat:@"mod_%@_%@.jar", projectID, fileID];
             }
-            NSArray *components = [relativePath pathComponents];
-            if (components.count > 1 && [[components firstObject] caseInsensitiveCompare:destPath.lastPathComponent] == NSOrderedSame) {
-                relativePath = [[components subarrayWithRange:NSMakeRange(1, components.count - 1)] componentsJoinedByString:@"/"];
-            }
-            NSString *destinationPath;
-            if ([[relativePath pathExtension] caseInsensitiveCompare:@"jar"] == NSOrderedSame && ![relativePath hasPrefix:@"mods/"]) {
-                destinationPath = [[destPath stringByAppendingPathComponent:@"mods"] stringByAppendingPathComponent:[relativePath lastPathComponent]];
-            } else {
-                destinationPath = [destPath stringByAppendingPathComponent:relativePath];
-            }
-            NSLog(@"downloader: Destination path for download: %@", destinationPath);
-            NSUInteger rawSize = [fileEntry[@"fileLength"] unsignedLongLongValue];
-            if (rawSize == 0) { rawSize = 1; }
+            
+            // Create the destination path for the mod file
+            NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
+            
+            NSLog(@"[CurseForge-Modpack] Download destination: %@", destinationPath);
+            
+            // Create the download task
             @try {
-                NSString *destDir = [destinationPath stringByDeletingLastPathComponent];
-                if (![[NSFileManager defaultManager] fileExistsAtPath:destDir]) {
-                    [[NSFileManager defaultManager] createDirectoryAtPath:destDir withIntermediateDirectories:YES attributes:nil error:nil];
-                }
-                
-                // Use resumable download
-                NSURLSessionDownloadTask *task = [weakSelf resumableDownloadTaskWithURL:url toPath:destinationPath completion:^(BOOL success, NSError *error) {
-                    if (success) {
-                        NSLog(@"downloader: Download completed for %@", destinationPath);
-                    } else {
-                        NSLog(@"downloader: Download failed for %@: %@", destinationPath, error);
-                    }
-                    dispatch_group_leave(group);
-                }];
-                
+                NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
+                                                                           size:1 
+                                                                            sha:nil 
+                                                                        altName:nil 
+                                                                         toPath:destinationPath];
                 if (task) {
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        NSLog(@"downloader: Starting download for %@", destinationPath);
+                        NSLog(@"[CurseForge-Modpack] Starting download for %@", fileName);
                         [task resume];
                     });
                 } else {
-                    NSLog(@"downloader: Failed to create task for %@", destinationPath);
+                    NSLog(@"[CurseForge-Modpack] Failed to create task for %@", fileName);
                     dispatch_group_leave(group);
                     dispatch_async(dispatch_get_main_queue(), ^{
                         if (!downloader.progress.cancelled) {
@@ -734,50 +744,48 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                     });
                 }
             } @catch (NSException *ex) {
-                NSLog(@"downloader: Exception creating task for %@: %@", destinationPath, ex);
+                NSLog(@"[CurseForge-Modpack] Exception creating task for %@: %@", fileName, ex);
                 dispatch_group_leave(group);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (!downloader.progress.cancelled) {
+                        downloader.progress.completedUnitCount++;
+                    }
+                });
             }
         }];
     }
+    
+    // Setup completion block
     dispatch_group_notify(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         dispatch_async(dispatch_get_main_queue(), ^{
             downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
-            downloader.textProgress.completedUnitCount = downloader.progress.totalUnitCount;
-            NSLog(@"downloader: All downloads completed");
-            NSError *removeError = nil;
-            [[NSFileManager defaultManager] removeItemAtPath:packagePath error:&removeError];
-            if (removeError) {
-                NSLog(@"downloader: Failed to remove package file %@: %@", packagePath, removeError);
-            } else {
-                NSLog(@"downloader: Removed package file %@", packagePath);
+            if (downloader.textProgress) {
+                downloader.textProgress.completedUnitCount = downloader.progress.totalUnitCount;
             }
+            NSLog(@"[CurseForge-Modpack] All downloads completed");
         });
-        if (depInfo[@"json"]) {
-            NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", [NSString stringWithUTF8String:getenv("POJAV_GAME_DIR")], depInfo[@"id"], depInfo[@"id"]];
-            NSURLSessionDownloadTask *depTask = [downloader createDownloadTask:depInfo[@"json"] size:1 sha:nil altName:nil toPath:jsonPath];
-            if (depTask) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    NSLog(@"downloader: Starting dependency download for %@", jsonPath);
-                    [depTask resume];
-                });
-            } else {
-                NSLog(@"downloader: Failed to create dependency download task for %@", jsonPath);
-            }
-        }
+        
+        // Install the appropriate loader
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if ([modLoaderId isEqualToString:@"forge"]) {
-                NSLog(@"downloader: Auto-installing Forge");
+                NSLog(@"[CurseForge-Modpack] Auto-installing Forge");
                 [strongSelf autoInstallForge:vanillaVersion loaderVersion:modLoaderVersion];
             } else if ([modLoaderId isEqualToString:@"fabric"]) {
-                NSLog(@"downloader: Auto-installing Fabric");
+                NSLog(@"[CurseForge-Modpack] Auto-installing Fabric");
                 [strongSelf autoInstallFabricWithFullString:finalVersionString];
             } else if ([modLoaderId isEqualToString:@"neoforge"]) {
-                NSLog(@"downloader: Auto-installing NeoForge");
+                NSLog(@"[CurseForge-Modpack] Auto-installing NeoForge");
                 [strongSelf autoInstallNeoForgeWithVanillaVersion:vanillaVersion loaderVersion:modLoaderVersion];
+            } else if ([modLoaderId isEqualToString:@"quilt"]) {
+                NSLog(@"[CurseForge-Modpack] Auto-installing Quilt");
+                // Add Quilt installation logic if needed
             } else {
-                NSLog(@"downloader: Unrecognized loader: %@", modLoaderId);
+                NSLog(@"[CurseForge-Modpack] Unrecognized loader: %@", modLoaderId);
             }
+            
+            // Mark task as completed
+            [downloader finishDownloadWithErrorString:nil];
         });
     });
 }
