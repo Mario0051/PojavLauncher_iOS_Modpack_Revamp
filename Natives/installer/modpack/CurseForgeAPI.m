@@ -959,19 +959,25 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             NSMutableArray *loaders = [NSMutableArray new];
             
             for (NSDictionary *file in files) {
+                // Add file name
                 [names addObject:[NSString stringWithFormat:@"%@", file[@"fileName"] ?: @""]];
                 
-                id versions = file[@"gameVersion"] ?: file[@"gameVersionList"];
-                NSString *gameVersion = @"";
-                if ([versions isKindOfClass:[NSArray class]] && [versions count] > 0) {
-                    gameVersion = [NSString stringWithFormat:@"%@", ((NSArray *)versions)[0]];
-                } else if ([versions isKindOfClass:[NSString class]]) {
-                    gameVersion = [NSString stringWithFormat:@"%@", versions];
+                // Extract game versions - CurseForge uses "gameVersions" key
+                NSArray *gameVersions = file[@"gameVersions"];
+                NSMutableArray *versionsArray = [NSMutableArray new];
+                if ([gameVersions isKindOfClass:[NSArray class]]) {
+                    for (id version in gameVersions) {
+                        if ([version isKindOfClass:[NSString class]]) {
+                            [versionsArray addObject:version];
+                        }
+                    }
                 }
-                [mcNames addObject:gameVersion];
+                [mcNames addObject:versionsArray];
                 
+                // Extract download URL
                 [urls addObject:[NSString stringWithFormat:@"%@", file[@"downloadUrl"] ?: @""]];
                 
+                // Extract file size
                 NSNumber *sizeNumber = nil;
                 id fileLength = file[@"fileLength"];
                 if ([fileLength isKindOfClass:[NSNumber class]]) {
@@ -983,6 +989,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 }
                 [sizes addObject:sizeNumber];
                 
+                // Extract hashes
                 NSString *sha1 = @"";
                 NSArray *hashesArray = file[@"hashes"];
                 for (NSDictionary *hashDict in hashesArray) {
@@ -993,9 +1000,67 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 }
                 [hashes addObject:sha1];
                 
-                // Load loader info if available
-                NSArray *loaderInfo = file[@"loaders"] ?: @[];
-                [loaders addObject:loaderInfo];
+                // Extract loaders - CurseForge may use modLoaders or gameVersions that contain loader info
+                NSMutableArray *modLoaders = [NSMutableArray new];
+                
+                // 1. Check direct modLoaders field
+                if (file[@"modLoaders"] && [file[@"modLoaders"] isKindOfClass:[NSArray class]]) {
+                    [modLoaders addObjectsFromArray:file[@"modLoaders"]];
+                }
+                
+                // 2. Extract from gameVersions that might contain loader info (e.g., "Fabric", "Forge")
+                for (NSString *version in versionsArray) {
+                    if ([version caseInsensitiveCompare:@"Forge"] == NSOrderedSame ||
+                        [version caseInsensitiveCompare:@"Fabric"] == NSOrderedSame ||
+                        [version caseInsensitiveCompare:@"Quilt"] == NSOrderedSame ||
+                        [version caseInsensitiveCompare:@"NeoForge"] == NSOrderedSame) {
+                        [modLoaders addObject:version];
+                    }
+                }
+                
+                // 3. Look at dependencies for loader info
+                NSArray *dependencies = file[@"dependencies"];
+                if ([dependencies isKindOfClass:[NSArray class]]) {
+                    for (NSDictionary *dep in dependencies) {
+                        if ([dep isKindOfClass:[NSDictionary class]]) {
+                            NSNumber *modId = dep[@"modId"];
+                            if (modId) {
+                                // Common mod loader IDs in CurseForge
+                                // Fabric API: 306612
+                                // Forge: 250763
+                                // Quilt: 634179
+                                if ([modId integerValue] == 306612) {
+                                    [modLoaders addObject:@"Fabric"];
+                                } else if ([modId integerValue] == 250763) {
+                                    [modLoaders addObject:@"Forge"];
+                                } else if ([modId integerValue] == 634179) {
+                                    [modLoaders addObject:@"Quilt"];
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // 4. If still no loaders and filename contains loader hint
+                if (modLoaders.count == 0) {
+                    NSString *fileName = [NSString stringWithFormat:@"%@", file[@"fileName"] ?: @""];
+                    if ([fileName containsString:@"fabric"] || [fileName containsString:@"Fabric"]) {
+                        [modLoaders addObject:@"Fabric"];
+                    }
+                    if ([fileName containsString:@"forge"] || [fileName containsString:@"Forge"]) {
+                        [modLoaders addObject:@"Forge"];
+                    }
+                    if ([fileName containsString:@"quilt"] || [fileName containsString:@"Quilt"]) {
+                        [modLoaders addObject:@"Quilt"];
+                    }
+                }
+                
+                // 5. If there are no explicit loaders found, default to all common loaders
+                if (modLoaders.count == 0) {
+                    [modLoaders addObjectsFromArray:@[@"Fabric", @"Forge"]];
+                }
+                
+                [loaders addObject:modLoaders];
             }
             
             dispatch_async(dispatch_get_main_queue(), ^{
