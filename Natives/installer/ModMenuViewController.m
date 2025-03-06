@@ -2,13 +2,20 @@
 #import "modpack/ModrinthAPI.h"
 #import "modpack/CurseForgeAPI.h"
 #import "modpack/ModpackUtils.h"
-#import "config.h"
+#import "AFNetworking.h"
 #import "UIKit+AFNetworking.h"
+#import "config.h"
 #import "utils.h"
 #import "PLProfiles.h"
 #import "UIAlertUtilities.h"
+#import "LauncherPreferences.h"
 
-@class ModMenuViewController;
+// Constants for better code maintenance
+static NSString * const kCurseForgeAPIKeyPrefKey = @"curseforge.api_key";
+static NSString * const kFilterByProfilePrefKey = @"mods.filter_by_profile";
+static NSTimeInterval const kSearchDebounceDelay = 0.5;
+static NSUInteger const kDefaultPageSize = 50;
+static NSUInteger const kMaxVersionsToShow = 100;
 
 // Add protocol definition for version selection
 @protocol VersionSelectorDelegate <NSObject>
@@ -16,11 +23,13 @@
 @property (nonatomic, readonly) UIViewController *presentedViewController;
 @end
 
+// Version selector data source
 @interface VersionSelectorDataSource : NSObject <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) NSArray<NSString *> *versions;
 @property (nonatomic, strong) NSArray<NSNumber *> *indices;
 @property (nonatomic, strong) NSDictionary *mod;
 @property (nonatomic, weak) id<VersionSelectorDelegate> delegate;
+@property (nonatomic, strong) UIActivityIndicatorView *activityIndicator;
 
 - (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
                              mod:(NSDictionary *)mod 
@@ -28,13 +37,13 @@
                         delegate:(id<VersionSelectorDelegate>)delegate;
 @end
 
-#pragma mark - Alert Dialog Helper
-static inline void presentAlertDialog(NSString *title, NSString *message) {
-    NSLog(@"Presenting alert: %@ - %@", title, message);
-    [UIAlertUtilities presentAlertWithTitle:title message:message viewController:nil];
-}
+// Helper class for managing mod installation queue
+@interface ModQueueViewController : UITableViewController
+@property (nonatomic, strong) NSMutableArray *queue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
+@property (nonatomic, copy) void (^didFinishInstallation)(void);
+@end
 
-#pragma mark - Helper Function
+// Helper Functions
 static inline NSString *SafeStringFromVersion(id rawVersion) {
     if ([rawVersion isKindOfClass:[NSString class]]) {
         return rawVersion;
@@ -45,142 +54,21 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     }
 }
 
-#pragma mark - Private Method Declarations
-@interface ModMenuViewController ()
-@property (nonatomic, assign) BOOL hasPromptedForAPIKey;
-- (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion;
-- (NSString *)stringFromVersionObject:(id)rawVersion;
-- (void)updateProfileFromSavedSettings;
-@end
-
-#pragma mark - ModQueueViewController Interface
-@interface ModQueueViewController : UITableViewController
-@property (nonatomic, strong) NSMutableArray *queue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
-@property (nonatomic, copy) void (^didFinishInstallation)(void);
-@end
-
-#pragma mark - ModQueueViewController Implementation
-@implementation ModQueueViewController
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"Install Queue";
-    self.tableView.tableFooterView = [UIView new];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Install"
-                                                                              style:UIBarButtonItemStyleDone
-                                                                             target:self
-                                                                             action:@selector(installQueueAction)];
-    self.navigationItem.leftBarButtonItem = self.editButtonItem;
-}
-- (void)installQueueAction {
-    if (self.queue.count == 0) {
-        presentAlertDialog(localize(@"Queue Empty", nil), @"There are no mods in the install queue.");
-        return;
-    }
-    for (NSDictionary *entry in self.queue) {
-        NSDictionary *mod = entry[@"mod"];
-        NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
-        NSNumber *apiSource = mod[@"apiSource"];
-        if ([apiSource integerValue] == 1) {
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
-                                                                object:nil
-                                                              userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
-        } else {
-            if ([mod[@"isModpack"] boolValue]) {
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack"
-                                                                    object:nil
-                                                                  userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
-            } else {
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
-                                                                    object:nil
-                                                                  userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
-            }
-        }
-    }
-    [self.queue removeAllObjects];
-    if (self.didFinishInstallation) {
-        self.didFinishInstallation();
-    }
-    [self.tableView reloadData];
-    presentAlertDialog(@"Installation Started", @"Queued mod installations have been triggered.");
-}
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.queue.count;
-}
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"QueueCell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"QueueCell"];
-    }
-    NSDictionary *entry = self.queue[indexPath.row];
-    NSDictionary *mod = entry[@"mod"];
-    NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
-    cell.textLabel.text = mod[@"title"];
-    NSArray *versionNames = mod[@"versionNames"];
-    NSString *verStr = (versionIndex < versionNames.count) ? SafeStringFromVersion(versionNames[versionIndex]) : @"";
-    NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-    cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
-    return cell;
-}
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
- forRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (editingStyle == UITableViewCellEditingStyleDelete) {
-        [self.queue removeObjectAtIndex:indexPath.row];
-        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
-    }
-}
-@end
-
-#pragma mark - VersionSelectorDataSource Implementation
-@implementation VersionSelectorDataSource
-
-- (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
-                             mod:(NSDictionary *)mod 
-                         indices:(NSArray<NSNumber *> *)indices 
-                        delegate:(id<VersionSelectorDelegate>)delegate {
-    if (self = [super init]) {
-        _versions = versions;
-        _mod = mod;
-        _indices = indices;
-        _delegate = delegate;
-    }
-    return self;
+static inline void PresentAlert(NSString *title, NSString *message, UIViewController *viewController) {
+    [UIAlertUtilities presentAlertWithTitle:title message:message viewController:viewController];
 }
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.versions.count;
-}
+#pragma mark - ModMenuViewController Implementation
 
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"VersionCell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"VersionCell"];
-    }
-    
-    if (indexPath.row < self.versions.count) {
-        cell.textLabel.text = self.versions[indexPath.row];
-    }
-    
-    return cell;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    
-    if (indexPath.row < self.indices.count) {
-        NSUInteger versionIndex = [self.indices[indexPath.row] unsignedIntegerValue];
-        
-        [self.delegate.presentedViewController dismissViewControllerAnimated:YES completion:^{
-            [self.delegate handleVersionSelection:self.mod selectedVersion:versionIndex];
-        }];
-    }
-}
-
-@end
-
-#pragma mark - ModMenuViewController Interface
 @interface ModMenuViewController () <UISearchResultsUpdating, UITableViewDelegate, UITableViewDataSource, VersionSelectorDelegate>
+// UI Components
 @property (nonatomic, strong) UISearchController *searchController;
 @property (nonatomic, strong) UISegmentedControl *apiSegmentedControl;
+@property (nonatomic, strong) UIBarButtonItem *filterButton;
+@property (nonatomic, strong) UIBarButtonItem *queueButton;
+@property (nonatomic, strong) UIActivityIndicatorView *loadingIndicator;
+
+// Data Sources
 @property (nonatomic, strong) NSMutableArray *modsList;
 @property (nonatomic, strong) ModrinthAPI *modrinth;
 @property (nonatomic, strong) CurseForgeAPI *curseForge;
@@ -188,15 +76,198 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 @property (nonatomic, strong) NSString *selectedProfileName;
 @property (nonatomic, strong) NSString *selectedMCVersion;
 @property (nonatomic, strong) NSString *selectedModLoader;
-@property (nonatomic, strong) NSMutableArray *installQueue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
-- (void)showVersionSelectorTableForMod:(NSDictionary *)mod withVersions:(NSArray<NSString *> *)versions indices:(NSArray<NSNumber *> *)indices;
+@property (nonatomic, strong) NSMutableArray *installQueue;
+
+// State Management
+@property (nonatomic, assign) BOOL isLoading;
+@property (nonatomic, assign) BOOL hasPromptedForAPIKey;
+@property (nonatomic, assign) BOOL isFilterByCurrentProfileEnabled;
+@property (nonatomic, assign) BOOL isInitialLoad;
+@property (nonatomic, strong) NSString *defaultInstance;
 @end
 
-#pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
 
-// Auto-update from saved profile settings if available.
+#pragma mark - Lifecycle Methods
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    self.isInitialLoad = YES;
+    self.title = @"Mods";
+    
+    // Initialize APIs
+    self.modrinth = [ModrinthAPI defaultAPI];
+    
+    // Get saved API key if available
+    NSString *savedApiKey = getPrefObject(kCurseForgeAPIKeyPrefKey) ?: @"";
+    self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:savedApiKey];
+    self.curseForge.parentViewController = self;
+    
+    // Initialize state variables
+    self.searchFilters = [@{@"isModpack": @(NO), @"name": @""} mutableCopy];
+    self.modsList = [NSMutableArray new];
+    self.installQueue = [NSMutableArray new];
+    self.isLoading = NO;
+    self.hasPromptedForAPIKey = NO;
+    self.isFilterByCurrentProfileEnabled = getPrefBool(kFilterByProfilePrefKey);
+    
+    // Set up the search controller
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.searchResultsUpdater = self;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.hidesNavigationBarDuringPresentation = NO;
+    
+    if (@available(iOS 16.0, *)) {
+        self.navigationItem.preferredSearchBarPlacement = UINavigationItemSearchBarPlacementStacked;
+    }
+    
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    
+    // Create loading indicator
+    self.loadingIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    
+    // Set up the segmented control for API source
+    self.apiSegmentedControl = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
+    self.apiSegmentedControl.selectedSegmentIndex = 0;
+    [self.apiSegmentedControl addTarget:self action:@selector(apiSourceChanged:) forControlEvents:UIControlEventValueChanged];
+    
+    // Create a container for the segmented control with proper padding
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 60)];
+    headerView.backgroundColor = [UIColor clearColor];
+    
+    self.apiSegmentedControl.frame = CGRectMake(16, 15, headerView.frame.size.width - 32, 30);
+    self.apiSegmentedControl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    [headerView addSubview:self.apiSegmentedControl];
+    
+    self.tableView.tableHeaderView = headerView;
+    
+    // Set up navigation items
+    self.filterButton = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"] 
+                                                        style:UIBarButtonItemStylePlain 
+                                                       target:self 
+                                                       action:@selector(actionToggleFilter:)];
+    
+    self.queueButton = [[UIBarButtonItem alloc] initWithTitle:@"Queue (0)" 
+                                                       style:UIBarButtonItemStylePlain 
+                                                      target:self 
+                                                      action:@selector(actionShowQueue)];
+    
+    UIBarButtonItem *profileButton = [[UIBarButtonItem alloc] initWithTitle:@"Profile" 
+                                                                     style:UIBarButtonItemStylePlain 
+                                                                    target:self 
+                                                                    action:@selector(actionChooseProfile)];
+    
+    self.navigationItem.leftBarButtonItem = profileButton;
+    self.navigationItem.rightBarButtonItems = @[self.queueButton, self.filterButton];
+    
+    // Set up table view
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 80;
+    
+    // Register notification handlers
+    [[NSNotificationCenter defaultCenter] addObserver:self 
+                                             selector:@selector(handleInstallModNotification:) 
+                                                 name:@"InstallMod" 
+                                               object:nil];
+    
+    // Update filter button state
+    [self updateFilterButtonAppearance];
+    
+    // Auto-select profile if available
+    [self updateProfileFromSavedSettings];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    
+    // If profile may have changed, reload
+    if (!self.isInitialLoad) {
+        [self updateProfileFromSavedSettings];
+    }
+    
+    // Start initial search if we don't have data yet
+    if (self.modsList.count == 0 && !self.isLoading) {
+        [self performSearch:@""];
+    }
+    
+    self.isInitialLoad = NO;
+}
+
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        // Update layout for new size
+        [self.tableView reloadData];
+        
+        // Update header view size
+        UIView *headerView = self.tableView.tableHeaderView;
+        headerView.frame = CGRectMake(0, 0, size.width, 60);
+        self.tableView.tableHeaderView = headerView;
+    } completion:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+#pragma mark - Public Methods
+
+- (void)setDefaultInstance:(NSString *)instanceName {
+    self.defaultInstance = instanceName;
+    // If instance name is provided, attempt to load its profile
+    if (instanceName) {
+        // Implementation would depend on how instances are managed in your app
+        // This would typically involve loading the profile for the given instance
+        [self updateProfileFromSavedSettings];
+    }
+}
+
+- (void)setFilterByCurrentProfile:(BOOL)filterEnabled {
+    self.isFilterByCurrentProfileEnabled = filterEnabled;
+    setPrefBool(kFilterByProfilePrefKey, filterEnabled);
+    [self updateFilterButtonAppearance];
+    
+    // Refresh the list with the new filter setting
+    [self performSearch:self.searchController.searchBar.text];
+}
+
+#pragma mark - Profile Management
+
 - (void)updateProfileFromSavedSettings {
+    // If a default instance is set, use it instead of the current profile
+    if (self.defaultInstance && self.defaultInstance.length > 0) {
+        // Look for a profile matching the default instance name
+        NSDictionary *profiles = [PLProfiles current].profiles;
+        NSDictionary *profile = profiles[self.defaultInstance];
+        
+        if (profile) {
+            self.selectedProfileName = self.defaultInstance;
+            NSString *lastVersionId = profile[@"lastVersionId"];
+            if (![lastVersionId isKindOfClass:[NSString class]]) {
+                lastVersionId = [lastVersionId description];
+            }
+            
+            // Parse version info
+            NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
+            self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
+            self.selectedModLoader = parsed[@"loader"] ?: @"";
+            
+            NSLog(@"Using specified instance: %@, mod loader: %@, MC version: %@", 
+                  self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
+            
+            // Only update search filters if filtering is enabled
+            if (self.isFilterByCurrentProfileEnabled) {
+                self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+                self.searchFilters[@"loader"] = self.selectedModLoader;
+            }
+            return;
+        } else {
+            NSLog(@"Warning: Specified instance '%@' not found, falling back to current profile", self.defaultInstance);
+        }
+    }
+    
     NSString *savedProfile = [PLProfiles current].selectedProfileName;
     if (savedProfile) {
         NSDictionary *profile = [PLProfiles current].profiles[savedProfile];
@@ -206,557 +277,382 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             if (![lastVersionId isKindOfClass:[NSString class]]) {
                 lastVersionId = [lastVersionId description];
             }
+            
+            // Parse the version ID to get MC version and mod loader
             NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
             self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
             self.selectedModLoader = parsed[@"loader"] ?: @"";
-            NSLog(@"Auto-selected profile: %@, mod loader: %@, MC version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
-            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+            
+            NSLog(@"Auto-selected profile: %@, mod loader: %@, MC version: %@", 
+                  self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
+            
+            // Only update search filters if filtering is enabled
+            if (self.isFilterByCurrentProfileEnabled) {
+                self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+                self.searchFilters[@"loader"] = self.selectedModLoader;
+            }
         }
     }
 }
 
-// Helper: Return a safe string from a version object.
-- (NSString *)stringFromVersionObject:(id)rawVersion {
-    return SafeStringFromVersion(rawVersion);
+#pragma mark - UI Actions
+
+- (void)actionToggleFilter:(UIBarButtonItem *)sender {
+    [self setFilterByCurrentProfile:!self.isFilterByCurrentProfileEnabled];
 }
 
-// Implementation of the download method with file conflict resolution.
-- (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion {
-    NSURL *url = [NSURL URLWithString:urlString];
-    NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession] downloadTaskWithURL:url
-        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
-            if (error) {
-                if (completion) completion(NO, error);
-                return;
-            }
-            NSFileManager *fm = [NSFileManager defaultManager];
-            if ([fm fileExistsAtPath:destinationPath]) {
-                NSError *removeError = nil;
-                [fm removeItemAtPath:destinationPath error:&removeError];
-                if (removeError) {
-                    if (completion) completion(NO, removeError);
-                    return;
-                }
-            }
-            NSError *fileError = nil;
-            [fm moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&fileError];
-            if (fileError) {
-                if (completion) completion(NO, fileError);
-            } else {
-                if (completion) completion(YES, nil);
-            }
-    }];
-    [downloadTask resume];
-}
-
-// Method to handle mod installation when a version is selected.
-- (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
-    NSArray *urls = mod[@"versionUrls"];
-    if (index >= urls.count) {
-        presentAlertDialog(localize(@"Error", nil), @"Invalid version index for installation.");
-        return;
-    }
-    NSString *urlString = urls[index];
-    // Use the lastPathComponent of the URL to preserve the original file name.
-    NSString *fileName = [[NSURL URLWithString:urlString] lastPathComponent];
-    
-    // Retrieve the actual gameDir path for the current profile
-    NSString *profileName = [PLProfiles current].selectedProfileName;
-    NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
-    NSString *gameDir = profile[@"gameDir"];
-    
-    // Ensure the profile directory exists
-    [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
-    
-    // Get the full path to the profile directory
-    NSString *profileDir = [PLProfiles fullPathForProfileWithName:profileName gameDir:gameDir];
-    NSString *modsDir = [profileDir stringByAppendingPathComponent:@"mods"];
-    
-    // Create the mods directory if it doesn't exist
-    if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
-        NSError *createError = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
-        if (createError) {
-            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription]);
-            return;
-        }
-    }
-    
-    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
-    
-    [self downloadModFromURL:urlString toDestination:destinationPath completion:^(BOOL success, NSError *error) {
-        if (success) {
-            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", fileName]);
-        } else {
-            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to install %@: %@", fileName, error.localizedDescription]);
-        }
-    }];
-}
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.hasPromptedForAPIKey = NO;
-    self.title = @"Mods";
-    self.modrinth = [ModrinthAPI defaultAPI];
-    // Initialize CurseForgeAPI with an empty key so the user is always prompted.
-    self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:@""];
-    self.searchFilters = [@{@"isModpack": @(NO), @"name": @""} mutableCopy];
-    self.modsList = [NSMutableArray new];
-    self.installQueue = [NSMutableArray new];
-    
-    // Auto-select saved profile if available.
-    [self updateProfileFromSavedSettings];
-    
-    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
-    self.searchController.searchResultsUpdater = self;
-    self.searchController.obscuresBackgroundDuringPresentation = NO;
-    self.navigationItem.searchController = self.searchController;
-    
-    self.apiSegmentedControl = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
-    self.apiSegmentedControl.selectedSegmentIndex = 0;
-    [self.apiSegmentedControl addTarget:self action:@selector(updateModsList) forControlEvents:UIControlEventValueChanged];
-    self.tableView.tableHeaderView = self.apiSegmentedControl;
-    
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Profile"
-                                                                             style:UIBarButtonItemStylePlain
-                                                                            target:self
-                                                                            action:@selector(actionChooseProfile)];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Queue (0)"
-                                                                              style:UIBarButtonItemStylePlain
-                                                                             target:self
-                                                                             action:@selector(actionShowQueue)];
-    
-    self.tableView.delegate = self;
-    self.tableView.dataSource = self;
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInstallModNotification:) name:@"InstallMod" object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleInstallModpackNotification:) name:@"InstallModpack" object:nil];
-    
-    [self updateModsList];
-}
-
-// Profile selection: Presents a sorted list of profiles for the user to choose from.
 - (void)actionChooseProfile {
     NSDictionary *profiles = [PLProfiles current].profiles;
     if (!profiles || profiles.count == 0) {
-        presentAlertDialog(localize(@"Error", nil), @"No profiles available.");
+        PresentAlert(localize(@"Error", nil), @"No profiles available.", self);
         return;
     }
+    
     NSArray *sortedProfiles = [[profiles allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *p1, NSDictionary *p2) {
         return [p1[@"name"] compare:p2[@"name"] options:NSCaseInsensitiveSearch];
     }];
+    
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Profile"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+                                                                  message:nil
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    
     for (NSDictionary *profile in sortedProfiles) {
         NSString *profileName = profile[@"name"];
-        [alert addAction:[UIAlertAction actionWithTitle:profileName
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction * _Nonnull action) {
+        NSString *lastVersionId = profile[@"lastVersionId"];
+        NSString *displayName = [NSString stringWithFormat:@"%@ (%@)", profileName, lastVersionId];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:displayName
+                                                style:UIAlertActionStyleDefault
+                                              handler:^(UIAlertAction * _Nonnull action) {
             self.selectedProfileName = profileName;
             NSString *lastVersionId = profile[@"lastVersionId"];
             if (![lastVersionId isKindOfClass:[NSString class]]) {
                 lastVersionId = [lastVersionId description];
             }
+            
             NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
             self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
             self.selectedModLoader = parsed[@"loader"] ?: @"";
-            NSLog(@"Selected profile: %@, mod loader: %@, MC version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
-            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+            
+            NSLog(@"Selected profile: %@, mod loader: %@, MC version: %@", 
+                  self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
+            
+            // Only update search filters if filtering is enabled
+            if (self.isFilterByCurrentProfileEnabled) {
+                self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+                self.searchFilters[@"loader"] = self.selectedModLoader;
+                [self performSearch:self.searchController.searchBar.text];
+            }
         }]];
     }
+    
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-    alert.popoverPresentationController.sourceView = self.view;
-    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
-                                                                CGRectGetMidY(self.view.bounds),
-                                                                1, 1);
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+    
+    // Set up popover for iPad
+    alert.popoverPresentationController.barButtonItem = self.navigationItem.leftBarButtonItem;
+    
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-// Always prompt for CurseForge API key when the CurseForge segment is active.
-- (void)viewDidAppear:(BOOL)animated {
-    [super viewDidAppear:animated];
-    // API key prompt is now handled in updateModsList
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
-
-- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
-    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
-    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>  _Nonnull context) {
-        [self.tableView reloadData];
-    } completion:nil];
-}
-
-#pragma mark - Notification Handlers
-- (void)handleInstallModNotification:(NSNotification *)notification {
-    NSDictionary *userInfo = notification.userInfo;
-    NSDictionary *mod = userInfo[@"detail"];
-    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
-    [self installModNow:mod versionIndex:index];
-}
-
-- (void)handleInstallModpackNotification:(NSNotification *)notification {
-    NSDictionary *userInfo = notification.userInfo;
-    NSDictionary *mod = userInfo[@"detail"];
-    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
-    [self installModpackNow:mod versionIndex:index];
-}
-
-#pragma mark - Installation Methods
-- (void)installModpackNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
-    NSString *modTitle = mod[@"title"] ?: @"Modpack";
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
-    });
-}
-
-#pragma mark - Mod Search
-- (void)updateModsList {
-    NSString *name = self.searchController.searchBar.text;
-    self.searchFilters[@"name"] = name ?: @"";
-    if (self.selectedMCVersion && self.selectedMCVersion.length > 0) {
-        self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
-    }
+- (void)actionShowQueue {
+    ModQueueViewController *queueVC = [ModQueueViewController new];
+    queueVC.queue = self.installQueue;
     
-    if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
-        if (!self.hasPromptedForAPIKey) {
-            self.hasPromptedForAPIKey = YES;
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
-                                                                           message:@"Please enter your CurseForge API key to search mods on CurseForge."
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-                textField.placeholder = @"API Key";
-            }];
-            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                NSString *enteredKey = alert.textFields.firstObject.text;
-                if (enteredKey.length > 0) {
-                    [self.curseForge setValue:enteredKey forKey:@"apiKey"];
-                } else {
-                    presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
-                }
-                [self refreshModsListWithPrevList:NO];
-            }]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
-                // Switch back to Modrinth if they cancel
-                self.apiSegmentedControl.selectedSegmentIndex = 0;
-                [self refreshModsListWithPrevList:NO];
-            }]];
-            [self presentViewController:alert animated:YES completion:nil];
-            return;
-        }
-    } else {
-        self.hasPromptedForAPIKey = NO;
-        [self.modsList removeAllObjects];
-        [self refreshModsListWithPrevList:NO];
-    }
-}
-
-- (void)refreshModsListWithPrevList:(BOOL)prevList {
-    if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
-        __weak typeof(self) weakSelf = self;
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            NSMutableArray *results = [weakSelf.modrinth searchModWithFilters:weakSelf.searchFilters previousPageResult:(prevList ? weakSelf.modsList : nil)];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(weakSelf) strongSelf = weakSelf;
-                if (results) {
-                    strongSelf.modsList = results;
-                    [strongSelf.tableView reloadData];
-                } else {
-                    presentAlertDialog(localize(@"Error", nil), strongSelf.modrinth.lastError.localizedDescription);
-                }
-            });
-        });
-    } else {
-        [self.curseForge searchModWithFilters:self.searchFilters previousPageResult:(prevList ? self.modsList : nil) completion:^(NSMutableArray *results, NSError *error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (results) {
-                    self.modsList = results;
-                    [self.tableView reloadData];
-                } else {
-                    presentAlertDialog(localize(@"Error", nil), error.localizedDescription);
-                }
-            });
-        }];
-    }
-}
-
-- (void)segmentChanged:(UISegmentedControl *)segment {
-    // If switching from Modrinth to CurseForge, reset the prompt flag
-    if (segment.selectedSegmentIndex == 1) {
-        self.hasPromptedForAPIKey = NO;
-    }
-    [self updateModsList];
-}
-
-- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateModsList) object:nil];
-    [self performSelector:@selector(updateModsList) withObject:nil afterDelay:0.5];
-}
-
-#pragma mark - UITableView DataSource
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 1;
-}
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.modsList.count;
-}
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"modCell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"modCell"];
-        cell.imageView.contentMode = UIViewContentModeScaleAspectFill;
-        cell.imageView.clipsToBounds = YES;
-    }
-    NSDictionary *mod = self.modsList[indexPath.row];
-    cell.textLabel.text = mod[@"title"];
-    cell.detailTextLabel.text = mod[@"description"];
-    UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
-    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:mod[@"imageUrl"]]];
-    __weak UITableViewCell *weakCell = cell;
-    [cell.imageView setImageWithURLRequest:request placeholderImage:placeholder success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
-        if (image.size.width < 50 || image.size.height < 50) {
-            weakCell.imageView.image = placeholder;
-        } else {
-            weakCell.imageView.image = image;
-        }
-        [weakCell setNeedsLayout];
-    } failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
-        weakCell.imageView.image = placeholder;
-        [weakCell setNeedsLayout];
-    }];
-    return cell;
-}
-
-#pragma mark - UITableView Delegate
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSDictionary *mod = self.modsList[indexPath.row];
-    if ([mod[@"versionDetailsLoaded"] boolValue]) {
-        [self showModDetails:mod atIndexPath:indexPath];
-    } else {
-        [tableView deselectRowAtIndexPath:indexPath animated:YES];
-        [self loadModDetailsForMod:mod atIndexPath:indexPath];
-    }
-}
-- (void)loadModDetailsForMod:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
-    NSMutableDictionary *modMutable = [mod mutableCopy];
     __weak typeof(self) weakSelf = self;
-    if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            [weakSelf.modrinth loadDetailsOfMod:modMutable completion:^(NSError *error) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    __strong typeof(weakSelf) strongSelf = weakSelf;
-                    if ([modMutable[@"versionDetailsLoaded"] boolValue]) {
-                        [strongSelf.modsList replaceObjectAtIndex:indexPath.row withObject:modMutable];
-                        [strongSelf showModDetails:modMutable atIndexPath:indexPath];
-                    } else {
-                        presentAlertDialog(localize(@"Error", nil), strongSelf.modrinth.lastError.localizedDescription);
-                    }
-                });
-            }];
-        });
+    queueVC.didFinishInstallation = ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf.installQueue removeAllObjects];
+        [strongSelf updateQueueButtonTitle];
+    };
+    
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:queueVC];
+    
+    // Configure properly for iPad
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        nav.modalPresentationStyle = UIModalPresentationFormSheet;
+        nav.preferredContentSize = CGSizeMake(540, 620);
     } else {
-        [self.curseForge loadDetailsOfMod:modMutable completion:^(NSError *error) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(weakSelf) strongSelf = weakSelf;
-                if ([modMutable[@"versionDetailsLoaded"] boolValue]) {
-                    [strongSelf.modsList replaceObjectAtIndex:indexPath.row withObject:modMutable];
-                    [strongSelf showModDetails:modMutable atIndexPath:indexPath];
-                } else {
-                    presentAlertDialog(localize(@"Error", nil), strongSelf.curseForge.lastError.localizedDescription);
-                }
-            });
-        }];
+        nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    }
+    
+    [self presentViewController:nav animated:YES completion:nil];
+}
+
+- (void)apiSourceChanged:(UISegmentedControl *)sender {
+    // Clear the current list
+    [self.modsList removeAllObjects];
+    [self.tableView reloadData];
+    
+    // Only prompt for API key if switching to CurseForge and key is not already set
+    if (sender.selectedSegmentIndex == 1) {
+        NSString *savedApiKey = getPrefObject(kCurseForgeAPIKeyPrefKey);
+        if (!savedApiKey || savedApiKey.length == 0) {
+            [self promptForCurseForgeAPIKey];
+        } else {
+            // Use saved API key
+            [self.curseForge setValue:savedApiKey forKey:@"apiKey"];
+            [self performSearch:self.searchController.searchBar.text];
+        }
+    } else {
+        // Re-do the search with the current term
+        [self performSearch:self.searchController.searchBar.text];
     }
 }
 
-#pragma mark - Version Filtering and Action Sheet
-- (void)showModDetails:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+#pragma mark - API Key Management
+
+- (void)promptForCurseForgeAPIKey {
+    self.hasPromptedForAPIKey = YES;
     
-    // Check for valid version data
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"CurseForge API Key Required"
+                                                                  message:@"Please enter your CurseForge API key to search mods on CurseForge."
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.placeholder = @"API Key";
+        textField.secureTextEntry = YES;
+        
+        // Pre-fill with saved API key if available
+        NSString *savedApiKey = getPrefObject(kCurseForgeAPIKeyPrefKey);
+        if (savedApiKey && savedApiKey.length > 0) {
+            textField.text = savedApiKey;
+        }
+    }];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        NSString *enteredKey = alert.textFields.firstObject.text;
+        if (enteredKey.length > 0) {
+            // Save the API key
+            setPrefObject(kCurseForgeAPIKeyPrefKey, enteredKey);
+            [self.curseForge setValue:enteredKey forKey:@"apiKey"];
+            [self performSearch:self.searchController.searchBar.text];
+        } else {
+            // Switch back to Modrinth if no key provided
+            self.apiSegmentedControl.selectedSegmentIndex = 0;
+            PresentAlert(@"API Key Missing", @"No API key entered. Switching back to Modrinth.", self);
+        }
+    }]];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+        // Switch back to Modrinth
+        self.apiSegmentedControl.selectedSegmentIndex = 0;
+    }]];
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - Version Selection
+
+- (void)showVersionSelectorForMod:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSArray *versionNames = mod[@"versionNames"];
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
     NSArray *loadersArray = mod[@"versionLoaders"];
     
     if (!versionNames || ![versionNames isKindOfClass:[NSArray class]] || versionNames.count == 0) {
-        [UIAlertUtilities presentAlertWithTitle:@"Error" 
-                                      message:@"No versions available for this mod." 
-                              viewController:self];
+        PresentAlert(@"Error", @"No versions available for this mod.", self);
         return;
     }
-
-    // Limit number of versions to prevent UI freezing
-    const NSUInteger MAX_VERSIONS_TO_SHOW = 50;
     
-    NSLog(@"[DEBUG] About to show version selector with %lu versions", 
-          (unsigned long)versionNames.count);
+    // Filter versions based on compatibility with selected profile
+    NSMutableArray<NSString *> *compatibleVersions = [NSMutableArray array];
+    NSMutableArray<NSNumber *> *compatibleIndices = [NSMutableArray array];
     
-    NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-    NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-    NSLog(@"Filtering for MC version: %@ and loader: %@", profileMCVer, profileLoader);
+    NSString *profileMCVer = self.isFilterByCurrentProfileEnabled ? self.selectedMCVersion : nil;
+    NSString *profileLoader = self.isFilterByCurrentProfileEnabled ? self.selectedModLoader : nil;
     
-    NSMutableArray<NSNumber *> *supportedIndices = [NSMutableArray array];
-    NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
+    if (profileMCVer.length == 0) profileMCVer = nil;
+    if (profileLoader.length == 0) profileLoader = nil;
     
-    // Original version comparison logic with relaxed matching
-    for (NSUInteger i = 0; i < versionNames.count; i++) {
-        NSArray *gameVers = @[];
-        if (i < gameVersionsArray.count) {
-            id gameVerItem = gameVersionsArray[i];
-            gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : @[gameVerItem];
+    // If no filtering, just use all versions
+    if (!profileMCVer && !profileLoader) {
+        for (NSUInteger i = 0; i < MIN(versionNames.count, kMaxVersionsToShow); i++) {
+            NSString *verStr = SafeStringFromVersion(versionNames[i]);
+            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+            NSString *displayName = parsed[@"loaderVersion"] ?: verStr;
+            
+            [compatibleVersions addObject:displayName];
+            [compatibleIndices addObject:@(i)];
         }
-        
-        BOOL mcMatch = NO;
-        if (profileMCVer.length == 0) {
-            mcMatch = YES; // If no specific MC version is selected, consider it a match
-        } else {
-            for (NSString *gv in gameVers) {
-                if (![gv isKindOfClass:[NSString class]]) continue;
+    } else {
+        // Apply filtering
+        for (NSUInteger i = 0; i < versionNames.count; i++) {
+            // Check MC version compatibility
+            BOOL mcMatch = !profileMCVer;  // If no MC version filter, all match
+            
+            if (profileMCVer && i < gameVersionsArray.count) {
+                id gameVerItem = gameVersionsArray[i];
+                NSArray *gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : @[gameVerItem];
                 
-                NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                
-                // More relaxed version matching - checking for exact match, prefix match, or if version contains the requested version
-                if ([trimmedGV isEqualToString:profileMCVer] ||
-                    [trimmedGV hasPrefix:profileMCVer] ||
-                    [profileMCVer hasPrefix:trimmedGV] ||
-                    [trimmedGV containsString:profileMCVer]) {
-                    mcMatch = YES;
-                    break;
-                }
-                
-                // Handle partial version matches (e.g., "1.21" matches "1.21.4")
-                NSArray *gvComponents = [trimmedGV componentsSeparatedByString:@"."];
-                NSArray *profComponents = [profileMCVer componentsSeparatedByString:@"."];
-                
-                if (gvComponents.count > 0 && profComponents.count > 0) {
-                    if ([gvComponents[0] isEqualToString:profComponents[0]]) {
-                        if (gvComponents.count > 1 && profComponents.count > 1) {
-                            if ([gvComponents[1] isEqualToString:profComponents[1]]) {
-                                mcMatch = YES;
-                                break;
-                            }
-                        }
+                for (NSString *gv in gameVers) {
+                    if (![gv isKindOfClass:[NSString class]]) continue;
+                    
+                    NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                    NSString *trimmedProfileVer = [[profileMCVer stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                    
+                    // More relaxed version matching
+                    if ([trimmedGV isEqualToString:trimmedProfileVer] ||
+                        [trimmedGV hasPrefix:trimmedProfileVer] ||
+                        [trimmedProfileVer hasPrefix:trimmedGV]) {
+                        mcMatch = YES;
+                        break;
                     }
                 }
             }
-        }
-        
-        NSArray *versionLoaders = @[];
-        if (loadersArray && i < loadersArray.count) {
-            id loaderItem = loadersArray[i];
-            versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
-        }
-        
-        BOOL loaderMatch = NO;
-        if (profileLoader.length == 0) {
-            loaderMatch = YES; // If no specific loader is selected, consider it a match
-        } else {
-            for (NSString *ld in versionLoaders) {
-                if (![ld isKindOfClass:[NSString class]]) continue;
+            
+            // Check loader compatibility
+            BOOL loaderMatch = !profileLoader;  // If no loader filter, all match
+            
+            if (profileLoader && loadersArray && i < loadersArray.count) {
+                id loaderItem = loadersArray[i];
+                NSArray *versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : @[loaderItem];
                 
-                NSString *trimmedLD = [[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                
-                // More relaxed loader matching
-                if ([trimmedLD isEqualToString:profileLoader] ||
-                    [trimmedLD containsString:profileLoader] ||
-                    [profileLoader containsString:trimmedLD]) {
-                    loaderMatch = YES;
-                    break;
+                for (NSString *ld in versionLoaders) {
+                    if (![ld isKindOfClass:[NSString class]]) continue;
+                    
+                    NSString *trimmedLD = [[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                    NSString *trimmedProfileLoader = [[profileLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                    
+                    // More relaxed loader matching
+                    if ([trimmedLD isEqualToString:trimmedProfileLoader] ||
+                        [trimmedLD containsString:trimmedProfileLoader] ||
+                        [trimmedProfileLoader containsString:trimmedLD]) {
+                        loaderMatch = YES;
+                        break;
+                    }
                 }
             }
             
-            // If we didn't match but the version loaders list is empty, assume compatibility
-            if (!loaderMatch && versionLoaders.count == 0) {
-                loaderMatch = YES;
+            // Add compatible versions to the list
+            if (mcMatch && loaderMatch) {
+                NSString *verStr = SafeStringFromVersion(versionNames[i]);
+                NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+                NSString *displayName = parsed[@"loaderVersion"] ?: verStr;
+                
+                [compatibleVersions addObject:displayName];
+                [compatibleIndices addObject:@(i)];
+                
+                // Limit to prevent UI freezing
+                if (compatibleVersions.count >= kMaxVersionsToShow) {
+                    break;
+                }
             }
-        }
-        
-        NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
-        if (mcMatch && loaderMatch) {
-            [supportedIndices addObject:@(i)];
-            NSString *verStr = [self stringFromVersionObject:versionNames[i]];
-            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-            NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
-            [supportedDisplayNames addObject:modFileVersion];
-            
-            // Limit to prevent UI freezing with too many options
-            if (supportedIndices.count >= MAX_VERSIONS_TO_SHOW) {
-                break;
-            }
-        }
-    }
-
-    // If still no matches found, add a fallback to show all versions
-    if (supportedIndices.count == 0 && versionNames.count > 0) {
-        // As a fallback, show all versions
-        for (NSUInteger i = 0; i < MIN(versionNames.count, MAX_VERSIONS_TO_SHOW); i++) {
-            [supportedIndices addObject:@(i)];
-            NSString *verStr = [self stringFromVersionObject:versionNames[i]];
-            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-            NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
-            [supportedDisplayNames addObject:modFileVersion];
         }
     }
     
-    if (supportedIndices.count == 0) {
-        NSLog(@"No supported versions found for mod: %@", mod[@"title"]);
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                       message:@"No supported versions available for your selected profile." 
-                               viewController:self];
+    // If no compatible versions found, show a message
+    if (compatibleVersions.count == 0) {
+        if (self.isFilterByCurrentProfileEnabled) {
+            // Offer to disable filtering
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"No Compatible Versions"
+                                                                          message:@"No versions compatible with your current profile were found. Would you like to disable filtering to see all versions?"
+                                                                   preferredStyle:UIAlertControllerStyleAlert];
+            
+            [alert addAction:[UIAlertAction actionWithTitle:@"Yes" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                [self setFilterByCurrentProfile:NO];
+                [self showVersionSelectorForMod:mod atIndexPath:indexPath];
+            }]];
+            
+            [alert addAction:[UIAlertAction actionWithTitle:@"No" style:UIAlertActionStyleCancel handler:nil]];
+            
+            [self presentViewController:alert animated:YES completion:nil];
+        } else {
+            PresentAlert(@"No Compatible Versions", @"No versions available for installation.", self);
+        }
         return;
     }
     
-    NSLog(@"[DEBUG] Found %lu filtered versions to display", (unsigned long)supportedIndices.count);
-    
-    // Use action sheet for iPad
-    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPad) {
-        UIAlertController *versionAlert = [UIAlertController alertControllerWithTitle:@"Select Version"
-                                                                             message:nil
-                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
-        
-        for (NSUInteger j = 0; j < supportedIndices.count; j++) {
-            NSUInteger idx = [supportedIndices[j] unsignedIntegerValue];
-            NSString *displayName = supportedDisplayNames[j];
-            
-            [versionAlert addAction:[UIAlertAction actionWithTitle:displayName
-                                                         style:UIAlertActionStyleDefault
-                                                       handler:^(UIAlertAction * _Nonnull action) {
-                [self handleVersionSelection:mod selectedVersion:idx];
-            }]];
-        }
-        
-        [versionAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                                     style:UIAlertActionStyleCancel
-                                                   handler:nil]];
-        
-        UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
-        if (cell) {
-            versionAlert.popoverPresentationController.sourceView = cell;
-            versionAlert.popoverPresentationController.sourceRect = cell.bounds;
-        } else {
-            versionAlert.popoverPresentationController.sourceView = self.view;
-            versionAlert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
-                                                                                CGRectGetMidY(self.view.bounds), 1, 1);
-        }
-        
-        [self presentViewController:versionAlert animated:YES completion:^{
-            NSLog(@"Version selection alert presented for mod: %@", mod[@"title"]);
-        }];
+    // Present the version selector UI based on device type
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        [self showVersionSelectorTableForMod:mod withVersions:compatibleVersions indices:compatibleIndices];
     } else {
-        // For iPhone and smaller devices, use a table-based approach
-        [self showVersionSelectorTableForMod:mod withVersions:supportedDisplayNames indices:supportedIndices];
+        [self showVersionSelectorAlertForMod:mod withVersions:compatibleVersions indices:compatibleIndices];
     }
 }
 
-#pragma mark - VersionSelectorDelegate Implementation
+- (void)showVersionSelectorAlertForMod:(NSDictionary *)mod withVersions:(NSArray<NSString *> *)versions indices:(NSArray<NSNumber *> *)indices {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Version"
+                                                                  message:nil
+                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    for (NSUInteger i = 0; i < versions.count; i++) {
+        NSString *displayName = versions[i];
+        NSUInteger originalIndex = [indices[i] unsignedIntegerValue];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:displayName
+                                                style:UIAlertActionStyleDefault
+                                              handler:^(UIAlertAction * _Nonnull action) {
+            [self handleVersionSelection:mod selectedVersion:originalIndex];
+        }]];
+    }
+    
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                            style:UIAlertActionStyleCancel
+                                          handler:nil]];
+    
+    // Set up popover presentation for iPad (fallback)
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:[NSIndexPath indexPathForRow:[self.modsList indexOfObject:mod] inSection:0]];
+        if (cell) {
+            alert.popoverPresentationController.sourceView = cell;
+            alert.popoverPresentationController.sourceRect = cell.bounds;
+        } else {
+            alert.popoverPresentationController.sourceView = self.view;
+            alert.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+        }
+    }
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)showVersionSelectorTableForMod:(NSDictionary *)mod withVersions:(NSArray<NSString *> *)versions indices:(NSArray<NSNumber *> *)indices {
+    // Create a table view controller for version selection
+    UITableViewController *versionTableVC = [[UITableViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    versionTableVC.title = @"Select Version";
+    
+    // Create and configure the data source
+    VersionSelectorDataSource *dataSource = [[VersionSelectorDataSource alloc] 
+                                         initWithVersions:versions 
+                                                      mod:mod 
+                                                  indices:indices 
+                                                 delegate:self];
+    
+    versionTableVC.tableView.dataSource = dataSource;
+    versionTableVC.tableView.delegate = dataSource;
+    
+    // Create a navigation controller
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:versionTableVC];
+    
+    // Configure presentation style based on device type
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        navController.modalPresentationStyle = UIModalPresentationFormSheet;
+        navController.preferredContentSize = CGSizeMake(400, 600);
+    } else {
+        navController.modalPresentationStyle = UIModalPresentationPageSheet;
+    }
+    
+    // Add close button
+    versionTableVC.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] 
+                                                    initWithBarButtonSystemItem:UIBarButtonSystemItemCancel 
+                                                                       target:self 
+                                                                       action:@selector(dismissVersionSelector)];
+    
+    // The data source is retained by the navController through the table view association
+    objc_setAssociatedObject(navController, "dataSource", dataSource, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
+    [self presentViewController:navController animated:YES completion:nil];
+}
+
+- (void)dismissVersionSelector {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+#pragma mark - VersionSelectorDelegate
+
 - (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx {
     UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
-                                                                        message:@"Choose to install now or add to the install queue."
+                                                                        message:@"Choose to install now or add to the installation queue."
                                                                  preferredStyle:UIAlertControllerStyleAlert];
     [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Install Now"
                                                 style:UIAlertActionStyleDefault
@@ -769,6 +665,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         NSDictionary *queueEntry = @{@"mod": mod, @"versionIndex": @(idx)};
         [self.installQueue addObject:queueEntry];
         [self updateQueueButtonTitle];
+        
         [UIAlertUtilities presentAlertWithTitle:@"Added to Queue" 
                                        message:[NSString stringWithFormat:@"\"%@\" has been added to the install queue.", mod[@"title"]]
                                viewController:self];
@@ -779,45 +676,622 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self presentViewController:choiceAlert animated:YES completion:nil];
 }
 
-// Table-based version selection for iPhone
-- (void)showVersionSelectorTableForMod:(NSDictionary *)mod 
-                          withVersions:(NSArray<NSString *> *)versions 
-                               indices:(NSArray<NSNumber *> *)indices {
-    UITableViewController *versionTableVC = [[UITableViewController alloc] initWithStyle:UITableViewStylePlain];
-    versionTableVC.title = @"Select Version";
+#pragma mark - Mod Installation
+
+- (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
+    NSArray *urls = mod[@"versionUrls"];
+    if (index >= urls.count) {
+        PresentAlert(localize(@"Error", nil), @"Invalid version index for installation.", self);
+        return;
+    }
     
-    VersionSelectorDataSource *dataSource = [[VersionSelectorDataSource alloc] 
-                                         initWithVersions:versions 
-                                                      mod:mod 
-                                                  indices:indices 
-                                                 delegate:self];
+    NSString *urlString = urls[index];
     
-    versionTableVC.tableView.dataSource = dataSource;
-    versionTableVC.tableView.delegate = dataSource;
+    // Show loading indicator
+    [self showLoadingIndicator];
     
-    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:versionTableVC];
-    [self presentViewController:navController animated:YES completion:nil];
+    // Get the file name for the mod
+    NSString *fileName = [[NSURL URLWithString:urlString] lastPathComponent];
+    if (!fileName || fileName.length == 0) {
+        // Generate a default name if URL doesn't have one
+        fileName = [NSString stringWithFormat:@"mod_%@.jar", mod[@"title"]];
+    }
+    
+    // Get profile information
+    NSString *profileName = [PLProfiles current].selectedProfileName;
+    NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
+    
+    if (!profile) {
+        [self hideLoadingIndicator];
+        PresentAlert(localize(@"Error", nil), @"No profile selected. Please select a profile first.", self);
+        return;
+    }
+    
+    NSString *gameDir = profile[@"gameDir"];
+    
+    // Ensure the profile directory exists
+    [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
+    
+    // Get the full path to the profile directory
+    NSString *profileDir = [PLProfiles fullPathForProfileWithName:profileName gameDir:gameDir];
+    NSString *modsDir = [profileDir stringByAppendingPathComponent:@"mods"];
+    
+    // Create the mods directory if it doesn't exist
+    if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
+        NSError *createError = nil;
+        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir 
+                                  withIntermediateDirectories:YES 
+                                                   attributes:nil 
+                                                        error:&createError];
+        if (createError) {
+            [self hideLoadingIndicator];
+            PresentAlert(localize(@"Error", nil), 
+                      [NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription], 
+                      self);
+            return;
+        }
+    }
+    
+    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
+    
+    // Download the mod file
+    NSURLSession *session = [NSURLSession sharedSession];
+    NSURLSessionDownloadTask *downloadTask = [session downloadTaskWithURL:[NSURL URLWithString:urlString] 
+                                                        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        // Hide loading indicator on main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self hideLoadingIndicator];
+        });
+        
+        if (error) {
+            NSLog(@"Download error: %@", error);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                PresentAlert(localize(@"Error", nil), 
+                          [NSString stringWithFormat:@"Failed to download mod: %@", error.localizedDescription], 
+                          self);
+            });
+            return;
+        }
+        
+        // Move the downloaded file to destination
+        NSError *moveError = nil;
+        
+        // Remove existing file if needed
+        if ([[NSFileManager defaultManager] fileExistsAtPath:destinationPath]) {
+            [[NSFileManager defaultManager] removeItemAtPath:destinationPath error:nil];
+        }
+        
+        [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&moveError];
+        
+        if (moveError) {
+            NSLog(@"File move error: %@", moveError);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                PresentAlert(localize(@"Error", nil), 
+                          [NSString stringWithFormat:@"Failed to save mod: %@", moveError.localizedDescription], 
+                          self);
+            });
+            return;
+        }
+        
+        // Show success message
+        dispatch_async(dispatch_get_main_queue(), ^{
+            PresentAlert(@"Installation Complete", 
+                      [NSString stringWithFormat:@"%@ installed successfully to %@.", fileName, profileName], 
+                      self);
+        });
+    }];
+    
+    [downloadTask resume];
 }
 
-#pragma mark - Install Queue
+#pragma mark - Notification Handlers
+
+- (void)handleInstallModNotification:(NSNotification *)notification {
+    NSDictionary *userInfo = notification.userInfo;
+    NSDictionary *mod = userInfo[@"detail"];
+    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
+    
+    // Validate input
+    if (!mod) {
+        PresentAlert(localize(@"Error", nil), @"Invalid mod data received.", self);
+        return;
+    }
+    
+    [self installModNow:mod versionIndex:index];
+}
+
+#pragma mark - Search Handling
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performDelayedSearch:) object:nil];
+    [self performSelector:@selector(performDelayedSearch:) withObject:searchController.searchBar.text afterDelay:kSearchDebounceDelay];
+}
+
+- (void)performDelayedSearch:(NSString *)searchText {
+    [self performSearch:searchText];
+}
+
+- (void)performSearch:(NSString *)searchText {
+    // Don't perform concurrent searches
+    if (self.isLoading) {
+        return;
+    }
+    
+    self.isLoading = YES;
+    [self showSearchLoadingIndicator];
+    
+    // Update search filters
+    self.searchFilters[@"name"] = searchText ?: @"";
+    
+    // If filtering by profile is enabled, add those filters
+    if (self.isFilterByCurrentProfileEnabled) {
+        if (self.selectedMCVersion) {
+            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
+        }
+        
+        if (self.selectedModLoader) {
+            self.searchFilters[@"loader"] = self.selectedModLoader;
+        }
+    } else {
+        // Remove profile-specific filters if not filtering
+        [self.searchFilters removeObjectForKey:@"mcVersion"];
+        [self.searchFilters removeObjectForKey:@"loader"];
+    }
+    
+    // Perform search on background thread
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
+            // Modrinth search
+            NSMutableArray *results = [self.modrinth searchModWithFilters:self.searchFilters previousPageResult:nil];
+            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.isLoading = NO;
+                [self hideSearchLoadingIndicator];
+                
+                if (results) {
+                    self.modsList = results;
+                    [self.tableView reloadData];
+                } else if (self.modrinth.lastError) {
+                    PresentAlert(localize(@"Error", nil), self.modrinth.lastError.localizedDescription, self);
+                }
+            });
+        } else {
+            // CurseForge search
+            [self.curseForge searchModWithFilters:self.searchFilters previousPageResult:nil completion:^(NSMutableArray *results, NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.isLoading = NO;
+                    [self hideSearchLoadingIndicator];
+                    
+                    if (results) {
+                        self.modsList = results;
+                        [self.tableView reloadData];
+                    } else if (error) {
+                        PresentAlert(localize(@"Error", nil), error.localizedDescription, self);
+                    }
+                });
+            }];
+        }
+    });
+}
+
+#pragma mark - Loading Indicators
+
+- (void)showLoadingIndicator {
+    if (!self.loadingIndicator.isAnimating) {
+        UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        [indicator startAnimating];
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:indicator];
+    }
+}
+
+- (void)hideLoadingIndicator {
+    if (self.navigationItem.leftBarButtonItem.customView == self.loadingIndicator) {
+        UIBarButtonItem *profileButton = [[UIBarButtonItem alloc] initWithTitle:@"Profile" 
+                                                                         style:UIBarButtonItemStylePlain 
+                                                                        target:self 
+                                                                        action:@selector(actionChooseProfile)];
+        self.navigationItem.leftBarButtonItem = profileButton;
+    }
+}
+
+- (void)showSearchLoadingIndicator {
+    if (!self.loadingIndicator.isAnimating) {
+        [self.loadingIndicator startAnimating];
+        UIBarButtonItem *loadingItem = [[UIBarButtonItem alloc] initWithCustomView:self.loadingIndicator];
+        self.navigationItem.rightBarButtonItems = @[self.queueButton, loadingItem];
+    }
+}
+
+- (void)hideSearchLoadingIndicator {
+    [self.loadingIndicator stopAnimating];
+    self.navigationItem.rightBarButtonItems = @[self.queueButton, self.filterButton];
+}
+
+#pragma mark - Helper Methods
+
 - (void)updateQueueButtonTitle {
     NSUInteger count = self.installQueue.count;
-    self.navigationItem.rightBarButtonItem.title = [NSString stringWithFormat:@"Queue (%lu)", (unsigned long)count];
+    self.queueButton.title = [NSString stringWithFormat:@"Queue (%lu)", (unsigned long)count];
 }
-- (void)actionShowQueue {
-    ModQueueViewController *queueVC = [ModQueueViewController new];
-    queueVC.queue = self.installQueue;
-    __weak typeof(self) weakSelf = self;
-    queueVC.didFinishInstallation = ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf.installQueue removeAllObjects];
-        [strongSelf updateQueueButtonTitle];
-    };
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:queueVC];
-    nav.modalPresentationStyle = UIModalPresentationPopover;
-    if (nav.popoverPresentationController) {
-        nav.popoverPresentationController.barButtonItem = self.navigationItem.rightBarButtonItem;
+
+- (void)updateFilterButtonAppearance {
+    if (self.isFilterByCurrentProfileEnabled) {
+        self.filterButton.image = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle.fill"];
+        self.filterButton.tintColor = self.view.tintColor;
+    } else {
+        self.filterButton.image = [UIImage systemImageNamed:@"line.3.horizontal.decrease.circle"];
+        self.filterButton.tintColor = [UIColor systemGrayColor];
     }
-    [self presentViewController:nav animated:YES completion:nil];
 }
+
+- (void)updateModsList {
+    [self performSearch:self.searchController.searchBar.text];
+}
+
+#pragma mark - UITableView DataSource & Delegate
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (self.modsList.count == 0 && !self.isLoading) {
+        return 1; // Show "No results" cell
+    }
+    return self.modsList.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cellIdentifier = @"ModCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellIdentifier];
+    
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cellIdentifier];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        
+        // Configure cell appearance
+        cell.imageView.contentMode = UIViewContentModeScaleAspectFill;
+        cell.imageView.clipsToBounds = YES;
+        cell.imageView.layer.cornerRadius = 4;
+        
+        // Ensure text doesn't get truncated in narrow layouts
+        cell.textLabel.numberOfLines = 1;
+        cell.textLabel.adjustsFontSizeToFitWidth = YES;
+        cell.textLabel.minimumScaleFactor = 0.75;
+        
+        cell.detailTextLabel.numberOfLines = 2;
+    }
+    
+    // Handle empty state
+    if (self.modsList.count == 0 && !self.isLoading) {
+        cell.textLabel.text = @"No mods found";
+        cell.detailTextLabel.text = @"Try a different search or switch sources";
+        cell.imageView.image = nil;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+    
+    // Configure cell with mod data
+    NSDictionary *mod = self.modsList[indexPath.row];
+    
+    cell.textLabel.text = mod[@"title"];
+    cell.detailTextLabel.text = mod[@"description"];
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    
+    // Load image with placeholder
+    UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
+    if (mod[@"imageUrl"] && [mod[@"imageUrl"] length] > 0) {
+        [cell.imageView setImageWithURL:[NSURL URLWithString:mod[@"imageUrl"]] 
+                       placeholderImage:placeholder];
+    } else {
+        cell.imageView.image = placeholder;
+    }
+    
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    // Handle empty state selection
+    if (self.modsList.count == 0) {
+        return;
+    }
+    
+    NSDictionary *mod = self.modsList[indexPath.row];
+    
+    // Show loading indicator
+    [self showLoadingIndicator];
+    
+    // Check if details are already loaded
+    if ([mod[@"versionDetailsLoaded"] boolValue]) {
+        [self hideLoadingIndicator];
+        [self showVersionSelectorForMod:mod atIndexPath:indexPath];
+    } else {
+        // Need to load details first
+        if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
+            [self.modrinth loadDetailsOfMod:[mod mutableCopy] completion:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self hideLoadingIndicator];
+                    
+                    if (error) {
+                        PresentAlert(localize(@"Error", nil), error.localizedDescription, self);
+                        return;
+                    }
+                    
+                    // Get the updated mod with loaded details
+                    NSDictionary *updatedMod = [mod mutableCopy];
+                    if ([updatedMod[@"versionDetailsLoaded"] boolValue]) {
+                        // Replace in the list so it doesn't need to be reloaded
+                        [self.modsList replaceObjectAtIndex:indexPath.row withObject:updatedMod];
+                        [self showVersionSelectorForMod:updatedMod atIndexPath:indexPath];
+                    } else {
+                        PresentAlert(localize(@"Error", nil), @"Failed to load mod versions", self);
+                    }
+                });
+            }];
+        } else {
+            [self.curseForge loadDetailsOfMod:[mod mutableCopy] completion:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self hideLoadingIndicator];
+                    
+                    if (error) {
+                        PresentAlert(localize(@"Error", nil), error.localizedDescription, self);
+                        return;
+                    }
+                    
+                    // Get the updated mod with loaded details
+                    NSDictionary *updatedMod = [mod mutableCopy];
+                    if ([updatedMod[@"versionDetailsLoaded"] boolValue]) {
+                        // Replace in the list so it doesn't need to be reloaded
+                        [self.modsList replaceObjectAtIndex:indexPath.row withObject:updatedMod];
+                        [self showVersionSelectorForMod:updatedMod atIndexPath:indexPath];
+                    } else {
+                        PresentAlert(localize(@"Error", nil), @"Failed to load mod versions", self);
+                    }
+                });
+            }];
+        }
+    }
+}
+
+@end
+
+#pragma mark - VersionSelectorDataSource Implementation
+
+@implementation VersionSelectorDataSource
+
+- (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
+                             mod:(NSDictionary *)mod 
+                         indices:(NSArray<NSNumber *> *)indices 
+                        delegate:(id<VersionSelectorDelegate>)delegate {
+    if (self = [super init]) {
+        _versions = versions;
+        _mod = mod;
+        _indices = indices;
+        _delegate = delegate;
+        
+        // Create activity indicator for loading state
+        _activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    }
+    return self;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.versions.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cellId = @"VersionCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellId];
+    
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cellId];
+    }
+    
+    if (indexPath.row < self.versions.count) {
+        cell.textLabel.text = self.versions[indexPath.row];
+        
+        // Add additional information if available
+        NSUInteger originalIndex = [self.indices[indexPath.row] unsignedIntegerValue];
+        NSArray *mcVersions = self.mod[@"mcVersionNames"];
+        if (mcVersions && originalIndex < mcVersions.count) {
+            id versionArray = mcVersions[originalIndex];
+            if ([versionArray isKindOfClass:[NSArray class]] && [(NSArray *)versionArray count] > 0) {
+                NSString *mcVersionText = [(NSArray *)versionArray componentsJoinedByString:@", "];
+                cell.detailTextLabel.text = [NSString stringWithFormat:@"Minecraft: %@", mcVersionText];
+            }
+        }
+    }
+    
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    if (indexPath.row < self.indices.count) {
+        // Show loading state
+        UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+        cell.accessoryView = self.activityIndicator;
+        [self.activityIndicator startAnimating];
+        
+        NSUInteger versionIndex = [self.indices[indexPath.row] unsignedIntegerValue];
+        
+        // Small delay to show loading state before dismissing
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self.delegate.presentedViewController dismissViewControllerAnimated:YES completion:^{
+                [self.delegate handleVersionSelection:self.mod selectedVersion:versionIndex];
+            }];
+        });
+    }
+}
+
+@end
+
+#pragma mark - ModQueueViewController Implementation
+
+@implementation ModQueueViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    self.title = @"Install Queue";
+    
+    // Configure table view
+    self.tableView.tableFooterView = [UIView new];
+    
+    // Add navigation items
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Install All"
+                                                                             style:UIBarButtonItemStyleDone
+                                                                            target:self
+                                                                            action:@selector(installQueueAction)];
+    
+    self.navigationItem.leftBarButtonItem = self.editButtonItem;
+    
+    // Initialize empty queue if needed
+    if (!self.queue) {
+        self.queue = [NSMutableArray array];
+    }
+}
+
+- (void)installQueueAction {
+    if (self.queue.count == 0) {
+        PresentAlert(localize(@"Queue Empty", nil), @"There are no mods in the install queue.", self);
+        return;
+    }
+    
+    // Show confirmation
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Install All Mods"
+                                                                  message:[NSString stringWithFormat:@"Are you sure you want to install all %lu mods?", (unsigned long)self.queue.count]
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"Yes" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        // Process all queued mods
+        for (NSDictionary *entry in self.queue) {
+            NSDictionary *mod = entry[@"mod"];
+            NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
+            
+            // Dispatch notification to handle installation
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
+                                                                object:nil
+                                                              userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
+        }
+        
+        // Clear the queue
+        [self.queue removeAllObjects];
+        
+        // Refresh the table
+        [self.tableView reloadData];
+        
+        // Call completion handler if set
+        if (self.didFinishInstallation) {
+            self.didFinishInstallation();
+        }
+        
+        // Dismiss the view controller
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }]];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"No" style:UIAlertActionStyleCancel handler:nil]];
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - UITableViewDataSource
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.queue.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cellId = @"QueueCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellId];
+    
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cellId];
+    }
+    
+    if (indexPath.row < self.queue.count) {
+        NSDictionary *entry = self.queue[indexPath.row];
+        NSDictionary *mod = entry[@"mod"];
+        NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
+        
+        cell.textLabel.text = mod[@"title"];
+        
+        // Get version information
+        NSArray *versionNames = mod[@"versionNames"];
+        NSString *verStr = (versionIndex < versionNames.count) ? SafeStringFromVersion(versionNames[versionIndex]) : @"";
+        
+        // Parse version for better display
+        NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+        cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
+    }
+    
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
+forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle == UITableViewCellEditingStyleDelete && indexPath.row < self.queue.count) {
+        [self.queue removeObjectAtIndex:indexPath.row];
+        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+        
+        // Call completion handler to update queue button
+        if (self.didFinishInstallation) {
+            self.didFinishInstallation();
+        }
+    }
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    if (indexPath.row < self.queue.count) {
+        NSDictionary *entry = self.queue[indexPath.row];
+        NSDictionary *mod = entry[@"mod"];
+        NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
+        
+        // Show options alert
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Mod Options"
+                                                                      message:mod[@"title"]
+                                                               preferredStyle:UIAlertControllerStyleActionSheet];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Install Now" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            // Post notification to handle installation
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
+                                                                object:nil
+                                                              userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
+            
+            // Remove from queue
+            [self.queue removeObjectAtIndex:indexPath.row];
+            [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+            
+            // Call completion handler
+            if (self.didFinishInstallation) {
+                self.didFinishInstallation();
+            }
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Remove from Queue" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+            [self.queue removeObjectAtIndex:indexPath.row];
+            [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+            
+            // Call completion handler
+            if (self.didFinishInstallation) {
+                self.didFinishInstallation();
+            }
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        
+        // Set up popover for iPad
+        if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+            UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+            alert.popoverPresentationController.sourceView = cell;
+            alert.popoverPresentationController.sourceRect = cell.bounds;
+        }
+        
+        [self presentViewController:alert animated:YES completion:nil];
+    }
+}
+
 @end
