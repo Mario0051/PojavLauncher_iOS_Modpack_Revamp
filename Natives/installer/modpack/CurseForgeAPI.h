@@ -5,6 +5,17 @@
 NS_ASSUME_NONNULL_BEGIN
 
 /**
+ * Enum for CurseForge mod loaders
+ */
+typedef NS_ENUM(NSInteger, CurseForgeLoader) {
+    CurseForgeLoaderUnknown = 0,
+    CurseForgeLoaderForge,
+    CurseForgeLoaderFabric,
+    CurseForgeLoaderQuilt,
+    CurseForgeLoaderNeoForge
+};
+
+/**
  * CurseForge API implementation for accessing mods and modpacks from CurseForge
  */
 @interface CurseForgeAPI : ModpackAPI
@@ -53,12 +64,25 @@ NS_ASSUME_NONNULL_BEGIN
                      atIndex:(NSUInteger)selectedVersion;
 
 /**
- * Auto-installs Forge for a Minecraft version
- * @param vanillaVer The Minecraft version
- * @param forgeVer The Forge version
+ * Creates a JSON profile for a mod loader
+ * @param minecraftVersion The Minecraft version
+ * @param loaderVersion The loader version
+ * @param loaderType The type of loader (Forge, Fabric, etc)
+ * @return Path to created JSON file or nil on failure
  */
-- (void)autoInstallForge:(NSString *)vanillaVer 
-           loaderVersion:(NSString *)forgeVer;
+- (nullable NSString *)createModLoaderJSON:(NSString *)minecraftVersion 
+                             loaderVersion:(NSString *)loaderVersion 
+                                loaderType:(CurseForgeLoader)loaderType;
+
+/**
+ * Gets download URL for a project file
+ * @param projectID The project ID
+ * @param fileID The file ID
+ * @param completion Block to call with the download URL or error
+ */
+- (void)getDownloadUrlForProject:(uint64_t)projectID 
+                          fileID:(uint64_t)fileID 
+                      completion:(void (^)(NSString * _Nullable downloadUrl, NSError * _Nullable error))completion;
 
 /**
  * Parent view controller for displaying alerts
