@@ -29,6 +29,18 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index;
 
+/**
+ * Sets the default instance to use. Call after initialization to use a specific instance.
+ * @param instanceName The name of the instance to use
+ */
+- (void)setDefaultInstance:(nullable NSString *)instanceName;
+
+/**
+ * Filters the mod list to show only mods compatible with the current profile
+ * @param filterEnabled Whether to enable filtering by current profile
+ */
+- (void)setFilterByCurrentProfile:(BOOL)filterEnabled;
+
 @end
 
 NS_ASSUME_NONNULL_END
