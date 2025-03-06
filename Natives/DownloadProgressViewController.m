@@ -22,23 +22,21 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     [super loadView];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
     self.tableView.allowsSelection = NO;
-
-    // Load WFWorkflowProgressView
-    dlopen("/System/Library/PrivateFrameworks/WorkflowUIServices.framework/WorkflowUIServices", RTLD_GLOBAL);
 }
+
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     
-[self.task.textProgress addObserver:self
-        forKeyPath:@"fractionCompleted"
-        options:NSKeyValueObservingOptionInitial
-        context:TotalProgressObserverContext];
+    [self.task.textProgress addObserver:self
+            forKeyPath:@"fractionCompleted"
+            options:NSKeyValueObservingOptionInitial
+            context:TotalProgressObserverContext];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
     
-[self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+    [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
 }
 
 - (void)actionClose {
@@ -51,11 +49,39 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         UITableViewCell *cell = objc_getAssociatedObject(progress, @"cell");
         if (!cell) return;
         dispatch_async(dispatch_get_main_queue(), ^{
-            cell.detailTextLabel.text = progress.localizedAdditionalDescription;
-            WFWorkflowProgressView *progressView = (id)cell.accessoryView;
-            progressView.fractionCompleted = progress.fractionCompleted;
+            // Format size as MB/MB
+            NSString *sizeText;
+            if (progress.totalUnitCount > 0) {
+                double completedMB = progress.completedUnitCount / 1024.0 / 1024.0;
+                double totalMB = progress.totalUnitCount / 1024.0 / 1024.0;
+                sizeText = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
+            } else {
+                sizeText = @"Pending...";
+            }
+            
+            // Update detail text
+            cell.detailTextLabel.text = sizeText;
+            
+            // For the accessory view, check if download is complete
             if (progress.finished) {
-                [progressView transitionCompletedLayerToVisible:YES animated:YES haptic:NO];
+                // Show checkmark as accessory
+                UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+                UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                checkmarkView.image = checkmarkImage;
+                checkmarkView.tintColor = [UIColor systemGreenColor];
+                cell.accessoryView = checkmarkView;
+                cell.detailTextLabel.text = @"Done";
+            } else {
+                // Ensure progress label is updated
+                UILabel *progressLabel = (UILabel *)cell.accessoryView;
+                if (![progressLabel isKindOfClass:[UILabel class]]) {
+                    progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+                    progressLabel.textAlignment = NSTextAlignmentRight;
+                    progressLabel.font = [UIFont systemFontOfSize:14];
+                    cell.accessoryView = progressLabel;
+                }
+                int percentage = (int)(progress.fractionCompleted * 100);
+                progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
             }
         });
     } else if (context == TotalProgressObserverContext) {
@@ -82,10 +108,13 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
 
     if (cell == nil) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"cell"];
-        WFWorkflowProgressView *progressView = [[NSClassFromString(@"WFWorkflowProgressView") alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
-        progressView.resolvedTintColor = self.view.tintColor;
-        progressView.stopSize = 0;
-        cell.accessoryView = progressView;
+        
+        // Create progress label instead of WFWorkflowProgressView
+        UILabel *progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+        progressLabel.textAlignment = NSTextAlignmentRight;
+        progressLabel.font = [UIFont systemFontOfSize:14];
+        progressLabel.text = @"0%";
+        cell.accessoryView = progressLabel;
     }
 
     // Unset the last cell displaying the progress
@@ -105,16 +134,40 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         options:NSKeyValueObservingOptionInitial
         context:CellProgressObserverContext];
 
-    WFWorkflowProgressView *progressView = (id)cell.accessoryView;
-    if (lastProgress.finished) {
-        [progressView reset];
+    // Initialize accessory based on progress state
+    if (progress.finished) {
+        // Show checkmark for completed downloads
+        UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+        UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+        checkmarkView.image = checkmarkImage;
+        checkmarkView.tintColor = [UIColor systemGreenColor];
+        cell.accessoryView = checkmarkView;
+        cell.detailTextLabel.text = @"Done";
+    } else {
+        // Ensure progress label is set up correctly
+        UILabel *progressLabel = (UILabel *)cell.accessoryView;
+        if (![progressLabel isKindOfClass:[UILabel class]]) {
+            progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+            progressLabel.textAlignment = NSTextAlignmentRight;
+            progressLabel.font = [UIFont systemFontOfSize:14];
+            cell.accessoryView = progressLabel;
+        }
+        
+        // Set initial progress text
+        int percentage = (int)(progress.fractionCompleted * 100);
+        progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+        
+        // Format size as MB/MB for detail text
+        if (progress.totalUnitCount > 0) {
+            double completedMB = progress.completedUnitCount / 1024.0 / 1024.0;
+            double totalMB = progress.totalUnitCount / 1024.0 / 1024.0;
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
+        } else {
+            cell.detailTextLabel.text = @"Pending...";
+        }
     }
-    progressView.fractionCompleted = progress.fractionCompleted;
-    [progressView transitionCompletedLayerToVisible:progress.finished animated:NO haptic:NO];
-    [progressView transitionRunningLayerToVisible:!progress.finished animated:NO];
 
     cell.textLabel.text = self.task.fileList[indexPath.row];
-    cell.detailTextLabel.text = progress.localizedAdditionalDescription;
     return cell;
 }
 
