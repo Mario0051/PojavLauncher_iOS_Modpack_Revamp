@@ -958,24 +958,76 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             NSMutableArray *sizes = [NSMutableArray new];
             NSMutableArray *loaders = [NSMutableArray new];
             
-            for (NSDictionary *file in files) {
+            // Sort files by date (newest first) if possible
+            NSArray *sortedFiles = [files sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *file1, NSDictionary *file2) {
+                NSString *dateStr1 = file1[@"fileDate"];
+                NSString *dateStr2 = file2[@"fileDate"];
+                
+                if (dateStr1 && dateStr2) {
+                    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+                    formatter.dateFormat = @"yyyy-MM-dd'T'HH:mm:ss.SSSZ";
+                    NSDate *date1 = [formatter dateFromString:dateStr1];
+                    NSDate *date2 = [formatter dateFromString:dateStr2];
+                    
+                    if (date1 && date2) {
+                        return [date2 compare:date1]; // Newest first
+                    }
+                }
+                
+                // Fallback to filename comparison if dates not available
+                return [file2[@"fileName"] compare:file1[@"fileName"]];
+            }];
+            
+            for (NSDictionary *file in sortedFiles) {
+                // Skip files that are marked as not available
+                if (![file[@"isAvailable"] boolValue]) {
+                    continue;
+                }
+                
                 // Add file name
                 [names addObject:[NSString stringWithFormat:@"%@", file[@"fileName"] ?: @""]];
                 
                 // Extract game versions - CurseForge uses "gameVersions" key
                 NSArray *gameVersions = file[@"gameVersions"];
                 NSMutableArray *versionsArray = [NSMutableArray new];
+                NSMutableArray *loaderArray = [NSMutableArray new];
+                
                 if ([gameVersions isKindOfClass:[NSArray class]]) {
                     for (id version in gameVersions) {
                         if ([version isKindOfClass:[NSString class]]) {
-                            [versionsArray addObject:version];
+                            NSString *versionStr = (NSString *)version;
+                            
+                            // Extract proper Minecraft version vs loader information
+                            if ([versionStr hasPrefix:@"1."] || [versionStr hasPrefix:@"2."]) {
+                                // This is likely a Minecraft version
+                                [versionsArray addObject:versionStr];
+                            } else if ([versionStr caseInsensitiveCompare:@"Forge"] == NSOrderedSame ||
+                                      [versionStr caseInsensitiveCompare:@"Fabric"] == NSOrderedSame || 
+                                      [versionStr caseInsensitiveCompare:@"Quilt"] == NSOrderedSame ||
+                                      [versionStr caseInsensitiveCompare:@"NeoForge"] == NSOrderedSame) {
+                                // This is a mod loader
+                                [loaderArray addObject:versionStr];
+                            }
                         }
                     }
                 }
+                
                 [mcNames addObject:versionsArray];
                 
                 // Extract download URL
-                [urls addObject:[NSString stringWithFormat:@"%@", file[@"downloadUrl"] ?: @""]];
+                NSString *downloadUrl = [NSString stringWithFormat:@"%@", file[@"downloadUrl"] ?: @""];
+                
+                // If no direct download URL, we'll need to use the getDownloadUrl method later
+                BOOL needsDownloadUrl = (downloadUrl.length == 0 || [downloadUrl isEqualToString:@"(null)"]);
+                
+                if (needsDownloadUrl) {
+                    // Store placeholder that will be replaced when user selects the version
+                    [urls addObject:[NSString stringWithFormat:@"placeholder:%@:%@", 
+                                    file[@"modId"] ?: modId, 
+                                    file[@"id"] ?: @"0"]];
+                } else {
+                    [urls addObject:downloadUrl];
+                }
                 
                 // Extract file size
                 NSNumber *sizeNumber = nil;
@@ -992,33 +1044,17 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 // Extract hashes
                 NSString *sha1 = @"";
                 NSArray *hashesArray = file[@"hashes"];
-                for (NSDictionary *hashDict in hashesArray) {
-                    if ([[NSString stringWithFormat:@"%@", hashDict[@"algo"]] isEqualToString:@"SHA1"]) {
-                        sha1 = [NSString stringWithFormat:@"%@", hashDict[@"value"]];
-                        break;
+                if ([hashesArray isKindOfClass:[NSArray class]]) {
+                    for (NSDictionary *hashDict in hashesArray) {
+                        if ([[NSString stringWithFormat:@"%@", hashDict[@"algo"]] isEqualToString:@"SHA1"]) {
+                            sha1 = [NSString stringWithFormat:@"%@", hashDict[@"value"]];
+                            break;
+                        }
                     }
                 }
                 [hashes addObject:sha1];
                 
-                // Extract loaders - CurseForge may use modLoaders or gameVersions that contain loader info
-                NSMutableArray *modLoaders = [NSMutableArray new];
-                
-                // 1. Check direct modLoaders field
-                if (file[@"modLoaders"] && [file[@"modLoaders"] isKindOfClass:[NSArray class]]) {
-                    [modLoaders addObjectsFromArray:file[@"modLoaders"]];
-                }
-                
-                // 2. Extract from gameVersions that might contain loader info (e.g., "Fabric", "Forge")
-                for (NSString *version in versionsArray) {
-                    if ([version caseInsensitiveCompare:@"Forge"] == NSOrderedSame ||
-                        [version caseInsensitiveCompare:@"Fabric"] == NSOrderedSame ||
-                        [version caseInsensitiveCompare:@"Quilt"] == NSOrderedSame ||
-                        [version caseInsensitiveCompare:@"NeoForge"] == NSOrderedSame) {
-                        [modLoaders addObject:version];
-                    }
-                }
-                
-                // 3. Look at dependencies for loader info
+                // Look at dependencies for loader info
                 NSArray *dependencies = file[@"dependencies"];
                 if ([dependencies isKindOfClass:[NSArray class]]) {
                     for (NSDictionary *dep in dependencies) {
@@ -1029,38 +1065,39 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                                 // Fabric API: 306612
                                 // Forge: 250763
                                 // Quilt: 634179
-                                if ([modId integerValue] == 306612) {
-                                    [modLoaders addObject:@"Fabric"];
-                                } else if ([modId integerValue] == 250763) {
-                                    [modLoaders addObject:@"Forge"];
-                                } else if ([modId integerValue] == 634179) {
-                                    [modLoaders addObject:@"Quilt"];
+                                if ([modId integerValue] == 306612 && ![loaderArray containsObject:@"Fabric"]) {
+                                    [loaderArray addObject:@"Fabric"];
+                                } else if ([modId integerValue] == 250763 && ![loaderArray containsObject:@"Forge"]) {
+                                    [loaderArray addObject:@"Forge"];
+                                } else if ([modId integerValue] == 634179 && ![loaderArray containsObject:@"Quilt"]) {
+                                    [loaderArray addObject:@"Quilt"];
                                 }
                             }
                         }
                     }
                 }
                 
-                // 4. If still no loaders and filename contains loader hint
-                if (modLoaders.count == 0) {
+                // If still no loaders and filename contains loader hint
+                if (loaderArray.count == 0) {
                     NSString *fileName = [NSString stringWithFormat:@"%@", file[@"fileName"] ?: @""];
-                    if ([fileName containsString:@"fabric"] || [fileName containsString:@"Fabric"]) {
-                        [modLoaders addObject:@"Fabric"];
+                    NSString *lowerFileName = [fileName lowercaseString];
+                    
+                    if ([lowerFileName containsString:@"fabric"] && ![loaderArray containsObject:@"Fabric"]) {
+                        [loaderArray addObject:@"Fabric"];
                     }
-                    if ([fileName containsString:@"forge"] || [fileName containsString:@"Forge"]) {
-                        [modLoaders addObject:@"Forge"];
+                    if ([lowerFileName containsString:@"forge"] && ![loaderArray containsObject:@"Forge"]) {
+                        [loaderArray addObject:@"Forge"];
                     }
-                    if ([fileName containsString:@"quilt"] || [fileName containsString:@"Quilt"]) {
-                        [modLoaders addObject:@"Quilt"];
+                    if ([lowerFileName containsString:@"quilt"] && ![loaderArray containsObject:@"Quilt"]) {
+                        [loaderArray addObject:@"Quilt"];
+                    }
+                    if ([lowerFileName containsString:@"neoforge"] && ![loaderArray containsObject:@"NeoForge"]) {
+                        [loaderArray addObject:@"NeoForge"];
                     }
                 }
                 
-                // 5. If there are no explicit loaders found, default to all common loaders
-                if (modLoaders.count == 0) {
-                    [modLoaders addObjectsFromArray:@[@"Fabric", @"Forge"]];
-                }
-                
-                [loaders addObject:modLoaders];
+                // Don't default to all loaders anymore - this was causing compatibility issues
+                [loaders addObject:loaderArray];
             }
             
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -1079,6 +1116,74 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             });
         }];
     } withPriority:NSOperationQueuePriorityHigh];
+}
+
+// Add a helper method to resolve placeholder download URLs
+- (void)resolveDownloadUrlForMod:(NSMutableDictionary *)mod atIndex:(NSUInteger)index completion:(void (^)(NSString *url, NSError *error))completion {
+    NSArray *urls = mod[@"versionUrls"];
+    if (index >= urls.count) {
+        if (completion) {
+            NSError *error = [NSError errorWithDomain:@"CurseForgeAPIErrorDomain" 
+                                                code:1002 
+                                            userInfo:@{NSLocalizedDescriptionKey: @"Invalid version index"}];
+            completion(nil, error);
+        }
+        return;
+    }
+    
+    NSString *urlString = urls[index];
+    
+    // Check if this is a placeholder that needs resolving
+    if ([urlString hasPrefix:@"placeholder:"]) {
+        NSArray *components = [urlString componentsSeparatedByString:@":"];
+        if (components.count >= 3) {
+            NSString *projectId = components[1];
+            NSString *fileId = components[2];
+            
+            [self getDownloadUrlForProject:[projectId longLongValue] fileID:[fileId longLongValue] completion:^(NSString *downloadUrl, NSError *error) {
+                if (downloadUrl) {
+                    // Update the URL in the array for future use
+                    NSMutableArray *mutableUrls = [urls mutableCopy];
+                    mutableUrls[index] = downloadUrl;
+                    mod[@"versionUrls"] = mutableUrls;
+                }
+                
+                if (completion) {
+                    completion(downloadUrl, error);
+                }
+            }];
+        } else {
+            if (completion) {
+                NSError *error = [NSError errorWithDomain:@"CurseForgeAPIErrorDomain" 
+                                                    code:1003 
+                                                userInfo:@{NSLocalizedDescriptionKey: @"Invalid placeholder URL format"}];
+                completion(nil, error);
+            }
+        }
+    } else {
+        // URL is already resolved
+        if (completion) {
+            completion(urlString, nil);
+        }
+    }
+}
+
+// Update the installation method to use the URL resolver
+- (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    NSMutableDictionary *mutableDetail = [modDetail mutableCopy];
+    
+    [self resolveDownloadUrlForMod:mutableDetail atIndex:selectedVersion completion:^(NSString *url, NSError *error) {
+        if (url) {
+            NSDictionary *userInfo = @{@"detail": mutableDetail, @"index": @(selectedVersion)};
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" object:self userInfo:userInfo];
+        } else {
+            NSLog(@"Failed to resolve download URL: %@", error);
+            // Show error to user
+            [UIAlertUtilities presentAlertWithTitle:@"Download Error" 
+                                           message:[NSString stringWithFormat:@"Could not retrieve download URL: %@", error.localizedDescription]
+                                   viewController:nil];
+        }
+    }];
 }
 
 #pragma mark - Modpack Installation
