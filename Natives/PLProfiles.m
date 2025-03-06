@@ -7,6 +7,43 @@ static PLProfiles* current;
 @interface PLProfiles()
 @end
 
+// Simple icon cache to avoid repeatedly loading the same icons
+@interface PLProfileIconCache : NSObject
+@property (nonatomic, strong) NSCache *iconCache;
++ (instancetype)sharedCache;
+- (nullable UIImage *)imageForKey:(NSString *)key;
+- (void)setImage:(UIImage *)image forKey:(NSString *)key;
+@end
+
+@implementation PLProfileIconCache
+
++ (instancetype)sharedCache {
+    static PLProfileIconCache *sharedCache = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedCache = [[self alloc] init];
+    });
+    return sharedCache;
+}
+
+- (instancetype)init {
+    if (self = [super init]) {
+        _iconCache = [[NSCache alloc] init];
+        _iconCache.countLimit = 50; // Limit to 50 cached icons
+    }
+    return self;
+}
+
+- (nullable UIImage *)imageForKey:(NSString *)key {
+    return [_iconCache objectForKey:key];
+}
+
+- (void)setImage:(UIImage *)image forKey:(NSString *)key {
+    [_iconCache setObject:image forKey:key];
+}
+
+@end
+
 @implementation PLProfiles
 
 + (id)defaultProfiles {
@@ -109,7 +146,7 @@ static PLProfiles* current;
     BOOL isPending = [oldGameDir hasSuffix:@"pending_profile"];
     
     // Only for new profiles or explicit user rename
-    if (isPending || ![[NSFileManager defaultManager] fileExistsAtPath:oldPath]) {
+    if (isPending || ![[NSFileManager defaultManager] fileExistsAtPath:[self fullPathForProfileWithName:oldProfileName gameDir:oldGameDir]]) {
         // For pending profiles or if old path doesn't exist, just create the new directory
         return [self ensureProfileDirectoryExists:newProfileName gameDir:[self uniqueGameDirForProfileName:newProfileName]];
     }
@@ -139,6 +176,37 @@ static PLProfiles* current;
     }
     
     return YES;
+}
+
++ (UIImage *)iconForProfileWithName:(NSString *)profileName iconValue:(NSString *)iconValue {
+    PLProfileIconCache *cache = [PLProfileIconCache sharedCache];
+    NSString *cacheKey = [NSString stringWithFormat:@"profile_%@", profileName];
+    
+    // Check cache first
+    UIImage *cachedImage = [cache imageForKey:cacheKey];
+    if (cachedImage) {
+        return cachedImage;
+    }
+    
+    // Parse base64 icon data if available
+    if ([iconValue hasPrefix:@"data:image/"]) {
+        NSString *base64String = [iconValue componentsSeparatedByString:@","].lastObject;
+        if (base64String) {
+            NSData *imageData = [[NSData alloc] initWithBase64EncodedString:base64String options:0];
+            if (imageData) {
+                UIImage *image = [UIImage imageWithData:imageData];
+                if (image) {
+                    [cache setImage:image forKey:cacheKey];
+                    return image;
+                }
+            }
+        }
+    }
+    
+    // Fallback to default icon
+    UIImage *defaultImage = [UIImage imageNamed:@"DefaultProfile"];
+    [cache setImage:defaultImage forKey:cacheKey];
+    return defaultImage;
 }
 
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
