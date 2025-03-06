@@ -435,7 +435,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
                 NSString *enteredKey = alert.textFields.firstObject.text;
                 if (enteredKey.length > 0) {
-                    self.curseForge.apiKey = enteredKey;
+                    [self.curseForge setValue:enteredKey forKey:@"apiKey"];
                 } else {
                     presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
                 }
