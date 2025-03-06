@@ -49,31 +49,27 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     headerView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     headerView.backgroundColor = [UIColor systemBackgroundColor];
     
-    // Status label - positioned at the top with proper margins
+    // Status label - use Auto Layout
     _statusLabel = [[UILabel alloc] init];
-    _statusLabel.frame = CGRectMake(16, 10, headerView.bounds.size.width - 32, 20);
-    _statusLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _statusLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     _statusLabel.textColor = [UIColor labelColor];
     _statusLabel.text = @"Preparing download...";
     [headerView addSubview:_statusLabel];
     
-    // Progress view - positioned below the status label with proper height
-    // Note: UIProgressView has a fixed height of 2 points (4 for .bar style)
+    // Progress view - use Auto Layout with proper sizing
     _overallProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-    _overallProgressView.frame = CGRectMake(16, 40, headerView.bounds.size.width - 32, 2); // Only width matters for UIProgressView
-    _overallProgressView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    _overallProgressView.translatesAutoresizingMaskIntoConstraints = NO;
     _overallProgressView.progress = 0.0;
     _overallProgressView.progressTintColor = [UIColor systemBlueColor];
     _overallProgressView.trackTintColor = [UIColor systemFillColor];
-    _overallProgressView.layer.cornerRadius = 1.0; // Optional: rounded corners
-    _overallProgressView.clipsToBounds = YES;      // Required for corner radius
+    _overallProgressView.layer.cornerRadius = 1.0;
+    _overallProgressView.clipsToBounds = YES;
     [headerView addSubview:_overallProgressView];
     
-    // Percentage label - positioned below the progress view
+    // Percentage label - use Auto Layout
     UILabel *percentLabel = [[UILabel alloc] init];
-    percentLabel.frame = CGRectMake(16, 50, headerView.bounds.size.width - 32, 20);
-    percentLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    percentLabel.translatesAutoresizingMaskIntoConstraints = NO;
     percentLabel.font = [UIFont systemFontOfSize:12];
     percentLabel.textColor = [UIColor secondaryLabelColor];
     percentLabel.textAlignment = NSTextAlignmentRight;
@@ -81,22 +77,43 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     objc_setAssociatedObject(_overallProgressView, @"percentLabel", percentLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [headerView addSubview:percentLabel];
     
-    // Add a separator line at the bottom of the header
+    // Add separator line
     UIView *separatorLine = [[UIView alloc] init];
-    separatorLine.frame = CGRectMake(0, headerHeight - 0.5, headerView.bounds.size.width, 0.5);
-    separatorLine.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    separatorLine.translatesAutoresizingMaskIntoConstraints = NO;
     separatorLine.backgroundColor = [UIColor separatorColor];
     [headerView addSubview:separatorLine];
     
+    // Auto Layout Constraints
+    [NSLayoutConstraint activateConstraints:@[
+        // Status Label Constraints
+        [_statusLabel.topAnchor constraintEqualToAnchor:headerView.topAnchor constant:10],
+        [_statusLabel.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor constant:16],
+        [_statusLabel.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor constant:-16],
+        
+        // Progress View Constraints
+        [_overallProgressView.topAnchor constraintEqualToAnchor:_statusLabel.bottomAnchor constant:10],
+        [_overallProgressView.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor constant:16],
+        [_overallProgressView.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor constant:-16],
+        [_overallProgressView.heightAnchor constraintEqualToConstant:4], // Thin progress bar
+        
+        // Percentage Label Constraints
+        [percentLabel.topAnchor constraintEqualToAnchor:_overallProgressView.bottomAnchor constant:5],
+        [percentLabel.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor constant:16],
+        [percentLabel.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor constant:-16],
+        
+        // Separator Line Constraints
+        [separatorLine.heightAnchor constraintEqualToConstant:0.5],
+        [separatorLine.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor],
+        [separatorLine.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor],
+        [separatorLine.bottomAnchor constraintEqualToAnchor:headerView.bottomAnchor]
+    ]];
+    
     self.tableView.tableHeaderView = headerView;
     
-    // Make sure the header view has a valid size
-    [headerView setNeedsLayout];
+    // Ensure the header view has the correct size
     [headerView layoutIfNeeded];
     CGSize headerSize = [headerView systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
-    CGRect headerFrame = headerView.frame;
-    headerFrame.size.height = headerHeight;
-    headerView.frame = headerFrame;
+    headerView.frame = CGRectMake(0, 0, headerView.frame.size.width, headerSize.height);
     self.tableView.tableHeaderView = headerView;
     
     // Detect if this is a modpack install based on initial file list
