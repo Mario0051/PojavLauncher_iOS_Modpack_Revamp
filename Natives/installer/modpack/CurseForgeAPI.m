@@ -1054,11 +1054,15 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             NSString *modPath = [modsDir stringByAppendingPathComponent:fileName];
             
             // Download the file
-            NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession] downloadTaskWithURL:[NSURL URLWithString:downloadUrl] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
+            NSURLSessionDownloadTask *urlTask = [[NSURLSession sharedSession] downloadTaskWithURL:[NSURL URLWithString:downloadUrl] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
                 // Signal the semaphore to allow another download to start
                 dispatch_semaphore_signal(self.downloadSemaphore);
                 
-                NSProgress *modProgress = downloadTask.progressList.lastObject;
+                // Get the most recently added progress from the resource download task
+                NSProgress *modProgress = nil;
+                if (downloadTask.progressList.count > 0) {
+                    modProgress = [downloadTask.progressList lastObject];
+                }
                 
                 if (downloadError) {
                     NSLog(@"[CurseForge-Modpack] Failed to download mod %@: %@", fileName, downloadError);
@@ -1096,7 +1100,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 dispatch_group_leave(group);
             }];
             
-            [downloadTask resume];
+            [urlTask resume];
         }];
     }
     
