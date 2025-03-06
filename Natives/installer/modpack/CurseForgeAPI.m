@@ -76,25 +76,27 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
 - (instancetype)initWithAPIKey:(NSString *)apiKey {
     self = [super initWithURL:@"https://api.curseforge.com/v1"];
     if (self) {
-        // Use only the user-provided API key.
-        self.apiKey = apiKey ?: @"";
+        _apiKey = apiKey ?: @"";
         _networkQueue = dispatch_queue_create("com.curseforge.api.network", DISPATCH_QUEUE_SERIAL);
         
-        // Initialize session manager
-        self.sessionManager = [AFHTTPSessionManager manager];
+        // Initialize session manager with appropriate configuration
+        _sessionManager = [AFHTTPSessionManager manager];
+        _sessionManager.requestSerializer = [AFJSONRequestSerializer serializer];
+        _sessionManager.responseSerializer = [AFJSONResponseSerializer serializer];
+        _sessionManager.requestSerializer.timeoutInterval = 20.0; // Set a reasonable timeout
         
         // Initialize response cache
-        self.responseCache = [[NSCache alloc] init];
-        self.responseCache.countLimit = 100; // Cache up to 100 responses
+        _responseCache = [[NSCache alloc] init];
+        _responseCache.countLimit = 100; // Cache up to 100 responses
         
-        // Initialize operation queue
-        self.operationQueue = [[NSOperationQueue alloc] init];
-        self.operationQueue.maxConcurrentOperationCount = 4; // Limit concurrent operations
+        // Initialize operation queue with limited concurrency
+        _operationQueue = [[NSOperationQueue alloc] init];
+        _operationQueue.maxConcurrentOperationCount = 2; // Limit concurrent operations
         
         // Initialize task path map for resumable downloads
-        self.taskPathMap = [NSMutableDictionary dictionary];
+        _taskPathMap = [NSMutableDictionary dictionary];
         
-        NSLog(@"CurseForgeAPI: Initialized with API key: %@", self.apiKey.length > 0 ? @"[redacted]" : @"(none)");
+        NSLog(@"CurseForgeAPI: Initialized with API key: %@", _apiKey.length > 0 ? @"[redacted]" : @"(none)");
     }
     return self;
 }
@@ -168,25 +170,98 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
 
 #pragma mark - GET Endpoint with Caching
 
-- (void)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params completion:(void (^)(id, NSError *))completion {
+- (id)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params {
+    if (!endpoint) {
+        return nil;
+    }
+    
     // Check cache first
     id cachedResponse = [self getCachedResponseForEndpoint:endpoint params:params];
     if (cachedResponse) {
         NSLog(@"getEndpoint: Cache hit for %@", endpoint);
-        if (completion) completion(cachedResponse, nil);
+        return cachedResponse;
+    }
+    
+    __block id result = nil;
+    __block NSError *requestError = nil;
+    
+    // Use a dispatch semaphore with a timeout instead of DISPATCH_TIME_FOREVER
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)); // 15 second timeout
+    
+    NSString *url = [self.baseURL stringByAppendingPathComponent:endpoint];
+    NSString *key = self.apiKey;
+    
+    if (key.length == 0) {
+        NSLog(@"getEndpoint: No API key provided");
+        return nil;
+    }
+    
+    [self.sessionManager.requestSerializer setValue:key forHTTPHeaderField:@"x-api-key"];
+    NSLog(@"getEndpoint: Requesting %@ with params: %@", url, params);
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [self.sessionManager GET:url parameters:params headers:nil progress:nil success:^(NSURLSessionTask *task, id responseObject) {
+            result = responseObject;
+            // Cache successful responses
+            [self cacheResponse:responseObject forEndpoint:endpoint params:params];
+            dispatch_semaphore_signal(semaphore);
+        } failure:^(NSURLSessionTask *operation, NSError *error) {
+            requestError = error;
+            self.lastError = error;
+            NSLog(@"getEndpoint: Failed for %@: %@", endpoint, error);
+            dispatch_semaphore_signal(semaphore);
+        }];
+    });
+    
+    // Wait with timeout to prevent blocking indefinitely
+    if (dispatch_semaphore_wait(semaphore, timeout) != 0) {
+        NSLog(@"getEndpoint: Request timed out for %@", endpoint);
+        self.lastError = [NSError errorWithDomain:@"CurseForgeAPIErrorDomain" 
+                                            code:1000 
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Request timed out"}];
+    }
+    
+    return result;
+}
+
+- (void)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params completion:(void (^)(id, NSError *))completion {
+    if (!endpoint) {
+        if (completion) {
+            NSError *error = [self errorWithCode:CurseForgeErrorCodeParsingError 
+                                         message:@"Invalid endpoint" 
+                                 underlyingError:nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, error);
+            });
+        }
+        return;
+    }
+    
+    // Check cache first
+    id cachedResponse = [self getCachedResponseForEndpoint:endpoint params:params];
+    if (cachedResponse) {
+        NSLog(@"getEndpoint: Cache hit for %@", endpoint);
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(cachedResponse, nil);
+            });
+        }
         return;
     }
     
     NSString *url = [self.baseURL stringByAppendingPathComponent:endpoint];
-    // Use only the provided API key; no workflow or environment retrieval.
     NSString *key = self.apiKey;
+    
     if (key.length == 0) {
         NSLog(@"getEndpoint: No API key provided");
         if (completion) {
             NSError *error = [self errorWithCode:CurseForgeErrorCodeAuthentication 
                                          message:@"No API key provided" 
                                  underlyingError:nil];
-            completion(nil, error);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, error);
+            });
         }
         return;
     }
@@ -200,7 +275,11 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         // Cache the response
         [self cacheResponse:responseObject forEndpoint:endpoint params:params];
         
-        if (completion) completion(responseObject, nil);
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(responseObject, nil);
+            });
+        }
     } failure:^(NSURLSessionTask *operation, NSError *error) {
         self.lastError = error;
         NSLog(@"getEndpoint: Failed for %@: %@", endpoint, error);
@@ -230,7 +309,11 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                            underlyingError:error];
         }
         
-        if (completion) completion(nil, apiError);
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, apiError);
+            });
+        }
     }];
 }
 
@@ -721,48 +804,87 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         
         NSLog(@"searchModWithFilters: Searching with params: %@", params);
         
-        // Use retry mechanism
-        [self requestWithRetry:@"mods/search" params:params maxAttempts:3 currentAttempt:0 completion:^(id response, NSError *error) {
-            if (!response) {
-                NSLog(@"searchModWithFilters: Failed: %@", error);
+        __weak typeof(self) weakSelf = self;
+        
+        [self getEndpoint:@"mods/search" params:params completion:^(id response, NSError *error) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    completion(nil, self.lastError);
+                    completion(nil, error);
                 });
                 return;
             }
             
-            NSMutableArray *result = prevResult ?: [NSMutableArray new];
-            NSArray *data = response[@"data"];
-            NSLog(@"searchModWithFilters: Found %lu items", (unsigned long)data.count);
-            
-            for (NSDictionary *mod in data) {
-                id allow = mod[@"allowModDistribution"];
-                if (allow && ![allow isKindOfClass:[NSNull class]] && ![allow boolValue]) {
-                    NSLog(@"searchModWithFilters: Skipping mod %@ due to distribution restriction", mod[@"name"]);
-                    continue;
-                }
-                
-                BOOL isModpack = ([mod[@"classId"] integerValue] == kCurseForgeClassIDModpack);
-                NSMutableDictionary *entry = [@{
-                    @"apiSource": @(1),
-                    @"isModpack": @(isModpack),
-                    @"id": [NSString stringWithFormat:@"%@", mod[@"id"]],
-                    @"title": (mod[@"name"] ?: @""),
-                    @"description": (mod[@"summary"] ?: @""),
-                    @"imageUrl": (mod[@"logo"] ?: @"")
-                } mutableCopy];
-                
-                [result addObject:entry];
+            if (!response) {
+                NSLog(@"searchModWithFilters: Failed: %@", error);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(nil, strongSelf.lastError ?: error);
+                });
+                return;
             }
             
-            NSDictionary *pagination = response[@"pagination"];
-            NSUInteger totalCount = [pagination[@"totalCount"] unsignedIntegerValue];
-            self.reachedLastPage = (result.count >= totalCount);
-            NSLog(@"searchModWithFilters: Total count: %lu, reached last page: %d", (unsigned long)totalCount, self.reachedLastPage);
-            
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completion(result, nil);
-            });
+            @try {
+                NSMutableArray *result = prevResult ?: [NSMutableArray new];
+                NSArray *data = response[@"data"];
+                if (![data isKindOfClass:[NSArray class]]) {
+                    NSLog(@"searchModWithFilters: Invalid data format");
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        NSError *formatError = [NSError errorWithDomain:@"CurseForgeAPIErrorDomain" 
+                                                                  code:1004 
+                                                              userInfo:@{NSLocalizedDescriptionKey: @"Invalid response format"}];
+                        completion(nil, formatError);
+                    });
+                    return;
+                }
+                
+                NSLog(@"searchModWithFilters: Found %lu items", (unsigned long)data.count);
+                
+                for (NSDictionary *mod in data) {
+                    if (![mod isKindOfClass:[NSDictionary class]]) continue;
+                    
+                    id allow = mod[@"allowModDistribution"];
+                    if (allow && ![allow isKindOfClass:[NSNull class]] && ![allow boolValue]) {
+                        NSLog(@"searchModWithFilters: Skipping mod %@ due to distribution restriction", mod[@"name"]);
+                        continue;
+                    }
+                    
+                    BOOL isModpack = NO;
+                    if ([mod[@"classId"] isKindOfClass:[NSNumber class]]) {
+                        isModpack = ([mod[@"classId"] integerValue] == kCurseForgeClassIDModpack);
+                    }
+                    
+                    NSMutableDictionary *entry = [@{
+                        @"apiSource": @(1),
+                        @"isModpack": @(isModpack),
+                        @"id": [NSString stringWithFormat:@"%@", mod[@"id"] ?: @"0"],
+                        @"title": (mod[@"name"] ?: @""),
+                        @"description": (mod[@"summary"] ?: @""),
+                        @"imageUrl": (mod[@"logo"] ?: @"")
+                    } mutableCopy];
+                    
+                    [result addObject:entry];
+                }
+                
+                NSDictionary *pagination = response[@"pagination"];
+                if ([pagination isKindOfClass:[NSDictionary class]]) {
+                    NSUInteger totalCount = [pagination[@"totalCount"] unsignedIntegerValue];
+                    strongSelf.reachedLastPage = (result.count >= totalCount);
+                } else {
+                    strongSelf.reachedLastPage = YES;
+                }
+                
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(result, nil);
+                });
+            } @catch (NSException *exception) {
+                NSLog(@"searchModWithFilters: Exception: %@", exception);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSError *exceptionError = [NSError errorWithDomain:@"CurseForgeAPIErrorDomain" 
+                                                                  code:1004 
+                                                              userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Exception: %@", exception.reason]}];
+                    completion(nil, exceptionError);
+                });
+            }
         }];
     } withPriority:NSOperationQueuePriorityNormal];
 }
@@ -846,6 +968,8 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         }];
     } withPriority:NSOperationQueuePriorityHigh];
 }
+
+#pragma mark - Modpack Installation
 
 - (void)installModpackFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion completion:(void (^ _Nonnull)(NSError * _Nullable error))completion {
     NSArray *versionNames = modDetail[@"versionNames"];
