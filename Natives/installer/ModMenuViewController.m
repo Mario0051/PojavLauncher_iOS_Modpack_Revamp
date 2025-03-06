@@ -121,17 +121,17 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     return self.queue.count;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    // This is the correct implementation for ModMenuViewController
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"modCell"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"modCell"];
         cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
         cell.imageView.clipsToBounds = YES;
-        // Set a fixed size for the image view
-        cell.imageView.frame = CGRectMake(0, 0, 40, 40);
     }
     
     // Clear any existing image to prevent flicker
-    cell.imageView.image = [UIImage imageNamed:@"DefaultProfile"];
+    UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
+    cell.imageView.image = placeholder;
     
     if (self.modsList.count == 0 && !self.isLoading) {
         // Show "No results" cell
@@ -149,38 +149,43 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     
     // Load image with proper caching and sizing
-    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:mod[@"imageUrl"]]];
-    UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
-    
-    // Create a proper size image placeholder
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
-    [placeholder drawInRect:CGRectMake(0, 0, 40, 40)];
-    UIImage *resizedPlaceholder = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    
-    __weak typeof(cell) weakCell = cell;
-    
-    [cell.imageView setImageWithURLRequest:request placeholderImage:resizedPlaceholder success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
-        if (image.size.width < 10 || image.size.height < 10) {
-            weakCell.imageView.image = resizedPlaceholder;
-        } else {
+    NSString *imageUrlString = mod[@"imageUrl"];
+    if (imageUrlString.length > 0) {
+        NSURL *imageUrl = [NSURL URLWithString:imageUrlString];
+        UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
+        
+        // Create a properly sized placeholder
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
+        [placeholder drawInRect:CGRectMake(0, 0, 40, 40)];
+        UIImage *resizedPlaceholder = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        
+        __weak typeof(cell) weakCell = cell;
+        
+        [cell.imageView setImageWithURL:imageUrl 
+                       placeholderImage:resizedPlaceholder 
+                                success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
             // Resize the downloaded image properly
-            UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
-            [image drawInRect:CGRectMake(0, 0, 40, 40)];
-            UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
-            UIGraphicsEndImageContext();
-            
-            weakCell.imageView.image = resizedImage;
-        }
-        weakCell.imageView.contentMode = UIViewContentModeScaleAspectFit;
-        [weakCell setNeedsLayout];
-    } failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
-        weakCell.imageView.image = resizedPlaceholder;
-        [weakCell setNeedsLayout];
-    }];
+            if (image) {
+                UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
+                [image drawInRect:CGRectMake(0, 0, 40, 40)];
+                UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
+                UIGraphicsEndImageContext();
+                
+                weakCell.imageView.image = resizedImage;
+            } else {
+                weakCell.imageView.image = resizedPlaceholder;
+            }
+            [weakCell setNeedsLayout];
+        } failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
+            weakCell.imageView.image = resizedPlaceholder;
+            [weakCell setNeedsLayout];
+        }];
+    }
     
     return cell;
 }
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.versions.count;
 }
