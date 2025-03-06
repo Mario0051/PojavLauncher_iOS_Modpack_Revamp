@@ -1,6 +1,8 @@
 #import "AFNetworking.h"
 #import "MinecraftResourceDownloadTask.h"
 #import "ModpackAPI.h"
+#import "ModpackUtils.h"
+#import "PLProfiles.h"
 #import "utils.h"
 
 @implementation ModpackAPI
@@ -13,24 +15,6 @@
         _reachedLastPage = NO;
     }
     return self;
-}
-
-#pragma mark - Abstract methods
-
-- (void)loadDetailsOfMod:(NSMutableDictionary *)item {
-    NSAssert(NO, @"Subclasses must override -loadDetailsOfMod:");
-    [self doesNotRecognizeSelector:_cmd];
-}
-
-- (NSMutableArray *)searchModWithFilters:(NSDictionary *)searchFilters previousPageResult:(NSMutableArray *)prevResult {
-    NSAssert(NO, @"Subclasses must override -searchModWithFilters:previousPageResult:");
-    [self doesNotRecognizeSelector:_cmd];
-    return nil;
-}
-
-- (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
-    NSAssert(NO, @"Subclasses must override -downloader:submitDownloadTasksFromPackage:toPath:");
-    [self doesNotRecognizeSelector:_cmd];
 }
 
 #pragma mark - Network requests
@@ -69,9 +53,9 @@
 - (void)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params completion:(void (^)(id, NSError *))completion {
     if (!endpoint) {
         if (completion) {
-            NSError *error = [NSError errorWithDomain:@"ModpackAPIErrorDomain" 
-                                                 code:100 
-                                             userInfo:@{NSLocalizedDescriptionKey: @"Invalid endpoint"}];
+            NSError *error = [ModpackUtils errorWithCode:ModpackUtilsErrorCodeInvalidParameters
+                                                 message:@"Invalid endpoint"
+                                         underlyingError:nil];
             completion(nil, error);
         }
         return;
@@ -87,17 +71,65 @@
     } failure:^(NSURLSessionTask *operation, NSError *error) {
         self.lastError = error;
         NSLog(@"[ModpackAPI] Async GET request to %@ failed: %@", endpoint, error);
+        
+        // Determine the type of error
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)operation.response;
+        ModpackUtilsErrorCode errorCode = ModpackUtilsErrorCodeNetworkError;
+        NSString *errorMessage = @"A network error occurred";
+        
+        if (httpResponse) {
+            if (httpResponse.statusCode == 401 || httpResponse.statusCode == 403) {
+                errorCode = ModpackUtilsErrorCodeAuthenticationFailed;
+                errorMessage = @"Authentication failed";
+            } else if (httpResponse.statusCode == 404) {
+                errorCode = ModpackUtilsErrorCodeInvalidParameters;
+                errorMessage = @"The requested resource was not found";
+            } else if (httpResponse.statusCode >= 500) {
+                errorCode = ModpackUtilsErrorCodeNetworkError;
+                errorMessage = @"A server error occurred";
+            }
+        }
+        
+        NSError *wrappedError = [ModpackUtils errorWithCode:errorCode 
+                                                    message:errorMessage 
+                                            underlyingError:error];
+        
         if (completion) {
-            completion(nil, error);
+            completion(nil, wrappedError);
         }
     }];
 }
 
-#pragma mark - Modpack installation
+#pragma mark - Abstract methods
 
-- (void)installModpackFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+- (void)searchModWithFilters:(NSDictionary *)filters previousPageResult:(NSMutableArray *)prevResult completion:(void (^)(NSMutableArray *, NSError *))completion {
+    // Abstract method - subclasses must implement
+    NSError *error = [ModpackUtils errorWithCode:ModpackUtilsErrorCodeInvalidParameters
+                                         message:@"Subclasses must override searchModWithFilters method"
+                                 underlyingError:nil];
+    if (completion) {
+        completion(nil, error);
+    }
+}
+
+- (void)loadDetailsOfMod:(NSMutableDictionary *)item completion:(void (^)(NSError *))completion {
+    // Abstract method - subclasses must implement
+    NSError *error = [ModpackUtils errorWithCode:ModpackUtilsErrorCodeInvalidParameters
+                                         message:@"Subclasses must override loadDetailsOfMod method"
+                                 underlyingError:nil];
+    if (completion) {
+        completion(error);
+    }
+}
+
+- (void)installModpackFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion completion:(void (^)(NSError *))completion {
     if (!modDetail) {
-        NSLog(@"[ModpackAPI] Cannot install modpack: nil modDetail");
+        NSError *error = [ModpackUtils errorWithCode:ModpackUtilsErrorCodeInvalidParameters
+                                            message:@"Cannot install modpack: nil modDetail"
+                                    underlyingError:nil];
+        if (completion) {
+            completion(error);
+        }
         return;
     }
     
@@ -108,9 +140,62 @@
     
     dispatch_async(dispatch_get_main_queue(), ^{
         [NSNotificationCenter.defaultCenter postNotificationName:@"InstallModpack" 
-                                                          object:self 
-                                                        userInfo:userInfo];
+                                                         object:self 
+                                                       userInfo:userInfo];
+        if (completion) {
+            completion(nil);
+        }
     });
+}
+
+- (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion completion:(void (^)(NSError *))completion {
+    if (!modDetail) {
+        NSError *error = [ModpackUtils errorWithCode:ModpackUtilsErrorCodeInvalidParameters
+                                            message:@"Cannot install mod: nil modDetail"
+                                    underlyingError:nil];
+        if (completion) {
+            completion(error);
+        }
+        return;
+    }
+    
+    // Handle the fact that different API implementations might use different URL formats
+    NSArray *versionUrls = modDetail[@"versionUrls"];
+    if (!versionUrls || selectedVersion >= versionUrls.count) {
+        NSError *error = [ModpackUtils errorWithCode:ModpackUtilsErrorCodeInvalidParameters
+                                            message:@"Invalid version index for mod installation"
+                                    underlyingError:nil];
+        if (completion) {
+            completion(error);
+        }
+        return;
+    }
+    
+    // Post the notification for mod installation
+    // This notification is expected to be handled by the app's controllers
+    NSDictionary *userInfo = @{
+        @"detail": modDetail,
+        @"index": @(selectedVersion)
+    };
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter postNotificationName:@"InstallMod" 
+                                                         object:self 
+                                                       userInfo:userInfo];
+        if (completion) {
+            completion(nil);
+        }
+    });
+}
+
+- (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath completion:(void (^)(NSError *))completion {
+    // Abstract method - subclasses must implement
+    NSError *error = [ModpackUtils errorWithCode:ModpackUtilsErrorCodeInvalidParameters
+                                         message:@"Subclasses must override submitDownloadTasksFromPackage method"
+                                 underlyingError:nil];
+    if (completion) {
+        completion(error);
+    }
 }
 
 @end
