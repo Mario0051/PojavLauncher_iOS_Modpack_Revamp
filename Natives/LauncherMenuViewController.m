@@ -198,24 +198,44 @@
 
     cell.textLabel.text = [self.options[indexPath.row] title];
     
-    UIImage *origImage = [UIImage systemImageNamed:[self.options[indexPath.row]
-        performSelector:@selector(imageName)]];
-    if (origImage) {
-        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
-        UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext*_Nonnull myContext) {
-            CGFloat scaleFactor = 40/origImage.size.height;
-            [origImage drawInRect:CGRectMake(20 - origImage.size.width*scaleFactor/2, 0, origImage.size.width*scaleFactor, 40)];
-        }];
-        cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-    }
+    NSString *imageName = [self.options[indexPath.row] performSelector:@selector(imageName)];
+    UIImage *origImage = [UIImage systemImageNamed:imageName];
     
-    if (cell.imageView.image == nil) {
+    if (origImage) {
+        // Configure system icons with consistent sizing that works on iOS 14-18
+        if (@available(iOS 14.0, *)) {
+            UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightRegular];
+            UIImage *configuredImage = [origImage imageByApplyingSymbolConfiguration:config];
+            cell.imageView.image = [configuredImage imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        } else {
+            // Fallback for earlier iOS versions if needed
+            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
+            UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext*_Nonnull myContext) {
+                CGFloat scaleFactor = 40/origImage.size.height;
+                [origImage drawInRect:CGRectMake(20 - origImage.size.width*scaleFactor/2, 0, origImage.size.width*scaleFactor, 40)];
+            }];
+            cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        }
+    } else if (imageName.length > 0) {
+        // Handle regular image assets
         cell.imageView.layer.magnificationFilter = kCAFilterNearest;
         cell.imageView.layer.minificationFilter = kCAFilterNearest;
-        cell.imageView.image = [UIImage imageNamed:[self.options[indexPath.row]
-            performSelector:@selector(imageName)]];
-        cell.imageView.image = [cell.imageView.image _imageWithSize:CGSizeMake(40, 40)];
+        cell.imageView.image = [UIImage imageNamed:imageName];
+        
+        // Avoid using private API _imageWithSize and use standard resizing instead
+        if (cell.imageView.image) {
+            UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
+            [cell.imageView.image drawInRect:CGRectMake(0, 0, 40, 40)];
+            UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+            
+            cell.imageView.image = resizedImage;
+        }
     }
+    
+    // Ensure proper sizing and content mode
+    cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
+    
     return cell;
 }
 
