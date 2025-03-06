@@ -121,45 +121,66 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     return self.queue.count;
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"QueueCell"];
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"modCell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"QueueCell"];
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"modCell"];
+        cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
+        cell.imageView.clipsToBounds = YES;
+        // Set a fixed size for the image view
+        cell.imageView.frame = CGRectMake(0, 0, 40, 40);
     }
-    NSDictionary *entry = self.queue[indexPath.row];
-    NSDictionary *mod = entry[@"mod"];
-    NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
+    
+    // Clear any existing image to prevent flicker
+    cell.imageView.image = [UIImage imageNamed:@"DefaultProfile"];
+    
+    if (self.modsList.count == 0 && !self.isLoading) {
+        // Show "No results" cell
+        cell.textLabel.text = @"No modpacks found";
+        cell.detailTextLabel.text = @"Try a different search or switch sources";
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+    
+    // Configure cell with mod info
+    NSDictionary *mod = self.modsList[indexPath.row];
     cell.textLabel.text = mod[@"title"];
-    NSArray *versionNames = mod[@"versionNames"];
-    NSString *verStr = (versionIndex < versionNames.count) ? SafeStringFromVersion(versionNames[versionIndex]) : @"";
-    NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-    cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
+    cell.detailTextLabel.text = mod[@"description"];
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    
+    // Load image with proper caching and sizing
+    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:mod[@"imageUrl"]]];
+    UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
+    
+    // Create a proper size image placeholder
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
+    [placeholder drawInRect:CGRectMake(0, 0, 40, 40)];
+    UIImage *resizedPlaceholder = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    
+    __weak typeof(cell) weakCell = cell;
+    
+    [cell.imageView setImageWithURLRequest:request placeholderImage:resizedPlaceholder success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
+        if (image.size.width < 10 || image.size.height < 10) {
+            weakCell.imageView.image = resizedPlaceholder;
+        } else {
+            // Resize the downloaded image properly
+            UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
+            [image drawInRect:CGRectMake(0, 0, 40, 40)];
+            UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
+            UIGraphicsEndImageContext();
+            
+            weakCell.imageView.image = resizedImage;
+        }
+        weakCell.imageView.contentMode = UIViewContentModeScaleAspectFit;
+        [weakCell setNeedsLayout];
+    } failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
+        weakCell.imageView.image = resizedPlaceholder;
+        [weakCell setNeedsLayout];
+    }];
+    
     return cell;
 }
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
- forRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (editingStyle == UITableViewCellEditingStyleDelete) {
-        [self.queue removeObjectAtIndex:indexPath.row];
-        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
-    }
-}
-@end
-
-#pragma mark - VersionSelectorDataSource Implementation
-@implementation VersionSelectorDataSource
-
-- (instancetype)initWithVersions:(NSArray<NSString *> *)versions 
-                             mod:(NSDictionary *)mod 
-                         indices:(NSArray<NSNumber *> *)indices 
-                        delegate:(id<VersionSelectorDelegate>)delegate {
-    if (self = [super init]) {
-        _versions = versions;
-        _mod = mod;
-        _indices = indices;
-        _delegate = delegate;
-    }
-    return self;
-}
-
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.versions.count;
 }
