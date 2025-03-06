@@ -46,27 +46,36 @@
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"cell"];
     }
 
-    cell.textLabel.text = [self.fileList objectAtIndex:indexPath.row];
+    // Safely access the array with bounds checking
+    if (indexPath.row >= 0 && indexPath.row < self.fileList.count) {
+        cell.textLabel.text = [self.fileList objectAtIndex:indexPath.row];
+    } else {
+        // If we're somehow out of bounds, set a placeholder text
+        cell.textLabel.text = @"";
+        NSLog(@"Warning: Index out of bounds in FileListViewController: %ld, fileList count: %lu", 
+              (long)indexPath.row, (unsigned long)self.fileList.count);
+    }
+    
     return cell;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [self dismissViewControllerAnimated:YES completion:nil];
-
-    self.whenItemSelected(self.fileList [indexPath.row]);
 }
 
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
-        NSString *str = [self.fileList objectAtIndex:indexPath.row];
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSString *path = [NSString stringWithFormat:@"%@/%@.json", self.listPath, str];
-        if (self.whenDelete != nil) {
-            self.whenDelete(path);
+        // Safely access the array with bounds checking
+        if (indexPath.row >= 0 && indexPath.row < self.fileList.count) {
+            NSString *str = [self.fileList objectAtIndex:indexPath.row];
+            NSFileManager *fm = [NSFileManager defaultManager];
+            NSString *path = [NSString stringWithFormat:@"%@/%@.json", self.listPath, str];
+            if (self.whenDelete != nil) {
+                self.whenDelete(path);
+            }
+            [fm removeItemAtPath:path error:nil];
+            [self.fileList removeObjectAtIndex:indexPath.row];
+            [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationFade];
+        } else {
+            NSLog(@"Warning: Index out of bounds in FileListViewController commitEditingStyle: %ld, fileList count: %lu", 
+                  (long)indexPath.row, (unsigned long)self.fileList.count);
         }
-        [fm removeItemAtPath:path error:nil];
-        [self.fileList removeObjectAtIndex:indexPath.row];
-        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationFade];
     }
 }
 
