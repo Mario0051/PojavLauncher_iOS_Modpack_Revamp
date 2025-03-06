@@ -28,6 +28,13 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
 
 @implementation ModpackInstallViewController
 
+// Implement method for UISearchResultsUpdating protocol
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    // Since we're not using a search controller with results controller, 
+    // we'll just use our existing searchBar:textDidChange: method
+    [self performSearch:searchController.searchBar.text];
+}
+
 #pragma mark - Lifecycle
 
 - (void)viewDidLoad {
@@ -410,7 +417,7 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
         [versionAlert addAction:[UIAlertAction actionWithTitle:title
                                                        style:UIAlertActionStyleDefault
                                                      handler:^(UIAlertAction * _Nonnull action) {
-            [self installModpackWithDetails:modpack atIndex:capturedIndex source:source];
+            [self installModpackWithDetails:modpack atIndex:capturedIndex source:(NSInteger)source];
         }]];
     }
     
@@ -428,7 +435,7 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
 
 #pragma mark - Installation
 
-- (void)installModpackWithDetails:(NSDictionary *)modpack atIndex:(NSUInteger)index source:(ModpackSource)source {
+- (void)installModpackWithDetails:(NSDictionary *)modpack atIndex:(NSUInteger)index source:(NSInteger)source {
     NSLog(@"[ModpackInstall] Starting installation for modpack %@ (version index: %lu)", modpack[@"title"], (unsigned long)index);
     
     // Create a download task
@@ -438,6 +445,9 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
     DownloadProgressViewController *progressVC = [[DownloadProgressViewController alloc] initWithTask:downloadTask];
     UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:progressVC];
     [self presentViewController:navController animated:YES completion:nil];
+    
+    // Prepare the download task
+    [downloadTask prepareForDownload];
     
     // Start the actual installation
     if (source == ModpackSourceModrinth) {
