@@ -175,8 +175,64 @@ typedef NS_ENUM(NSUInteger, LauncherProfilesTableSection) {
     cell.detailTextLabel.text = profile[@"lastVersionId"];
     cell.imageView.layer.magnificationFilter = kCAFilterNearest;
     
-    UIImage *fallbackImage = [[UIImage imageNamed:@"DefaultProfile"] _imageWithSize:CGSizeMake(40, 40)];
-    [cell.imageView setImageWithURL:[NSURL URLWithString:profile[@"icon"]] placeholderImage:fallbackImage];
+    // Use cached image loading
+    UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
+    
+    // Properly size the fallback image
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
+    [fallbackImage drawInRect:CGRectMake(0, 0, 40, 40)];
+    UIImage *resizedPlaceholder = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    
+    if ([profile[@"icon"] hasPrefix:@"data:image/"]) {
+        // Try to decode the base64 image
+        NSString *base64String = [profile[@"icon"] componentsSeparatedByString:@","].lastObject;
+        if (base64String) {
+            NSData *imageData = [[NSData alloc] initWithBase64EncodedString:base64String options:0];
+            if (imageData) {
+                UIImage *iconImage = [UIImage imageWithData:imageData];
+                if (iconImage) {
+                    // Resize the icon image
+                    UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
+                    [iconImage drawInRect:CGRectMake(0, 0, 40, 40)];
+                    UIImage *resizedIcon = UIGraphicsGetImageFromCurrentImageContext();
+                    UIGraphicsEndImageContext();
+                    
+                    cell.imageView.image = resizedIcon;
+                    return;
+                }
+            }
+        }
+    }
+    
+    // If URL-based icon or base64 failed, use the URL loading with caching
+    if ([profile[@"icon"] hasPrefix:@"http"]) {
+        NSURL *iconURL = [NSURL URLWithString:profile[@"icon"]];
+        if (iconURL) {
+            __weak typeof(cell) weakCell = cell;
+            [cell.imageView setImageWithURLRequest:[NSURLRequest requestWithURL:iconURL]
+                                 placeholderImage:resizedPlaceholder
+                                          success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
+                // Resize the downloaded image properly
+                UIGraphicsBeginImageContextWithOptions(CGSizeMake(40, 40), NO, 0.0);
+                [image drawInRect:CGRectMake(0, 0, 40, 40)];
+                UIImage *resizedImage = UIGraphicsGetImageFromCurrentImageContext();
+                UIGraphicsEndImageContext();
+                
+                weakCell.imageView.image = resizedImage;
+                weakCell.imageView.contentMode = UIViewContentModeScaleAspectFit;
+                [weakCell setNeedsLayout];
+            } failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
+                weakCell.imageView.image = resizedPlaceholder;
+                [weakCell setNeedsLayout];
+            }];
+            return;
+        }
+    }
+    
+    // Fallback to placeholder image
+    cell.imageView.image = resizedPlaceholder;
+    cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
 }
 
 - (UITableViewCell *)tableView:(nonnull UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
