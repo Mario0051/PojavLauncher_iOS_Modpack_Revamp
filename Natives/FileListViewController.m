@@ -49,6 +49,28 @@
     // Safely access the array with bounds checking
     if (indexPath.row >= 0 && indexPath.row < self.fileList.count) {
         cell.textLabel.text = [self.fileList objectAtIndex:indexPath.row];
+        
+        // Add proper image handling for icons
+        UIImage *icon = [UIImage systemImageNamed:@"doc.fill"];
+        if (icon) {
+            // Configure system icons with consistent sizing that works on iOS 14-18
+            if (@available(iOS 14.0, *)) {
+                UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:24 weight:UIImageSymbolWeightRegular];
+                UIImage *configuredImage = [icon imageByApplyingSymbolConfiguration:config];
+                cell.imageView.image = [configuredImage imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+            } else {
+                // Fallback for earlier iOS versions if needed
+                UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
+                UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext*_Nonnull myContext) {
+                    CGFloat scaleFactor = 40/icon.size.height;
+                    [icon drawInRect:CGRectMake(20 - icon.size.width*scaleFactor/2, 0, icon.size.width*scaleFactor, 40)];
+                }];
+                cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+            }
+        }
+        
+        // Ensure proper sizing and content mode
+        cell.imageView.contentMode = UIViewContentModeScaleAspectFit;
     } else {
         // If we're somehow out of bounds, set a placeholder text
         cell.textLabel.text = @"";
@@ -58,7 +80,6 @@
     
     return cell;
 }
-
 - (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
     if (editingStyle == UITableViewCellEditingStyleDelete) {
         // Safely access the array with bounds checking
