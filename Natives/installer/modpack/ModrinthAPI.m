@@ -695,7 +695,7 @@
     dispatch_async(dispatch_get_main_queue(), ^{
         // Create the profile with the modpack info
         PLProfiles.current.profiles[indexDict[@"name"]] = @{
-            @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent],
+            @"gameDir": [NSString stringWithFormat:@"./profiles/%@", destPath.lastPathComponent],
             @"name": indexDict[@"name"],
             @"lastVersionId": depInfo[@"id"],
             @"icon": iconBase64.length > 0 ? [NSString stringWithFormat:@"data:image/png;base64,%@", iconBase64] : @""
