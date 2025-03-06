@@ -1211,11 +1211,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     }
 }
 
-- (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
-    NSDictionary *userInfo = @{@"detail": modDetail, @"index": @(selectedVersion)};
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" object:self userInfo:userInfo];
-}
-
 #pragma mark - Helper: Auto-install Loader
 
 - (void)autoInstallForge:(NSString *)vanillaVer loaderVersion:(NSString *)forgeVer {
