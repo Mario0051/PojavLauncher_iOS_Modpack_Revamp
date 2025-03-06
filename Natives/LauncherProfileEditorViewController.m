@@ -170,14 +170,29 @@
         self.profile[@"name"] = self.oldName;
     }
 
-    // Ensure a valid gameDir
-    if (!self.profile[@"gameDir"] || [self.profile[@"gameDir"] isEqualToString:@"."]) {
-        NSString *uniqueGameDir = [PLProfiles uniqueGameDirForProfileName:self.profile[@"name"]];
-        self.profile[@"gameDir"] = uniqueGameDir;
+    // Store the original gameDir before any changes
+    NSString *oldGameDir = self.profile[@"gameDir"];
+    NSString *newProfileName = self.profile[@"name"];
+    
+    // Check if this is a default gameDir that needs to be updated with the profile name
+    BOOL isDefaultGameDir = !oldGameDir || [oldGameDir isEqualToString:@"."] || 
+                           [oldGameDir hasPrefix:@"./profiles/"] || 
+                           [oldGameDir hasSuffix:@"pending_profile"];
+    
+    // Update gameDir to match new profile name if it's using default path
+    if (isDefaultGameDir) {
+        NSString *newGameDir = [PLProfiles uniqueGameDirForProfileName:newProfileName];
+        self.profile[@"gameDir"] = newGameDir;
+    }
+
+    // Handle directory renaming if profile name changed
+    if (![self.oldName isEqualToString:newProfileName]) {
+        // Attempt to rename the directory
+        [PLProfiles renameProfileDirectory:self.oldName to:newProfileName gameDir:oldGameDir];
     }
     
     // Ensure the profile directory exists
-    [PLProfiles ensureProfileDirectoryExists:self.profile[@"name"] gameDir:self.profile[@"gameDir"]];
+    [PLProfiles ensureProfileDirectoryExists:newProfileName gameDir:self.profile[@"gameDir"]];
 
     if ([self.oldName isEqualToString:self.profile[@"name"]]) {
         // Not a rename, directly create/replace
