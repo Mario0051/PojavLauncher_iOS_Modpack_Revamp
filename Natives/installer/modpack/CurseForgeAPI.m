@@ -749,14 +749,25 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                          selectedVersion:(NSUInteger)selectedVersion 
                             downloadTask:(MinecraftResourceDownloadTask *)downloadTask
                              completion:(void (^)(NSError *))completion {
-    // Create a temporary directory for the modpack
+    // Create a temporary directory for the modpack ZIP
     NSString *tempDir = NSTemporaryDirectory();
     NSString *profileName = [modDetail[@"title"] stringByReplacingOccurrencesOfString:@" " withString:@"_"];
-    NSString *destDir = [tempDir stringByAppendingPathComponent:profileName];
+    NSString *zipPath = [tempDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.zip", profileName]];
     
-    // Ensure the destination directory exists
+    // Generate safe profile name for directory
+    NSString *safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+    safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+    safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+    
+    // Use the same directory structure as Modrinth
+    NSString *gameDir = [NSString stringWithFormat:@"./custom_gamedir/%@", safeProfileName];
+    
+    // Create actual destination directory path
+    NSString *destPath = [PLProfiles fullPathForProfileWithName:safeProfileName gameDir:gameDir];
+    
+    // Make sure the destination directory exists
     NSError *dirError = nil;
-    [[NSFileManager defaultManager] createDirectoryAtPath:destDir
+    [[NSFileManager defaultManager] createDirectoryAtPath:destPath
                             withIntermediateDirectories:YES
                                              attributes:nil
                                                   error:&dirError];
@@ -768,16 +779,17 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         return;
     }
     
-    // Download the modpack ZIP
-    NSString *zipPath = [tempDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.zip", profileName]];
+    // Create mods directory up front
+    NSString *modsDir = [destPath stringByAppendingPathComponent:@"mods"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:modsDir
+                           withIntermediateDirectories:YES
+                                            attributes:nil
+                                                 error:nil];
+    
     NSLog(@"[CurseForge-Modpack] Downloading modpack to %@", zipPath);
     
     // Add to file list for progress tracking
     [downloadTask.fileList addObject:[NSString stringWithFormat:@"Downloading %@", modDetail[@"title"]]];
-    
-    // Create a download task that's tracked in the progress UI
-    NSURL *url = [NSURL URLWithString:downloadUrl];
-    NSURLRequest *request = [NSURLRequest requestWithURL:url];
     
     // Create progress for this file
     NSProgress *fileProgress = [NSProgress progressWithTotalUnitCount:1]; 
@@ -786,7 +798,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     [downloadTask.progress addChild:fileProgress withPendingUnitCount:1];
     
     __weak typeof(self) weakSelf = self;
-    NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithRequest:request completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+    NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:downloadUrl]] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         if (error) {
             fileProgress.completedUnitCount = 0;
             NSLog(@"[CurseForge-Modpack] Failed to download modpack: %@", error);
@@ -925,61 +937,43 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 }
             }
             
-            // Create a profile for this modpack
+            // Setup profile with the same approach as Modrinth
             NSString *profileName = manifestDict[@"name"] ?: @"Unknown Modpack";
-            NSString *safeProfileName = @"";
-            NSString *gameDir = @"";
             
-            if (profileName.length > 0) {
-                // Create a unique gameDir for this modpack
-                safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-                safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
-                safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
-                
-                gameDir = [NSString stringWithFormat:@"./profiles/%@", safeProfileName];
-                
-                // Create profile with basic icon
-                NSDictionary *profileInfo = @{
-                    @"gameDir": gameDir,
-                    @"name": profileName,
-                    @"lastVersionId": finalVersionString,
-                    @"icon": manifestDict[@"overrides"] ? @"" : @"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAABGdBTUEAALGPC/xhBQAAAAFzUkdCAK7OHOkAAAA8UExURUxpcejp6erp6erp6ejo6Onp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6VvMQMcAAAATdFJOUwBAv4BATz8Q798Qr1+vn3+fYL+Qu+0AAAE+SURBVFjD7ZZLkoQgDEApFHzPqPe/7MQZp3WwSQrX7mXDg5BAvkaj0fgfuMRJ8gw5SadHwPMLQXbBExA0Mp8A/d0ToCXIQD6fkLItoAb/wB8CjVJEPQbhTxUwEzZZAnTERUBERPR2ERDfERIBoEzQb2IQZudP8gS+DgAiIpoPAO1APkbsV2CAqAK+FlBflQHUAV5WgFfiVYCfWp4iMCcVcAtQS9RlQFQ8A/FVAFqCXASUE78L4OUBVEsQfwfAM1Hwc0BRAWoB6KQZcEoB2LEFXAuITgFYeQwkNQHnJSCrCYiaALWAtSbAbwKeRTbgPwCLZsARlYBZM2AsEsBmzYDnJ8CnzYBPAFQnuKzAbF23DQj9ZY0a3z3A7LZnvjuuJnN7b7r3Xn3G/H5dDwfIb/j1Jb57o9FoXHEDgWAupBBbCjcAAAAASUVORK5CYII="
-                };
-                
-                // Ensure the profile directory exists
-                [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
-                
-                // Save the profile
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    NSLog(@"[CurseForge-Modpack] Setting profile: %@", profileName);
-                    PLProfiles.current.profiles[safeProfileName] = [profileInfo mutableCopy];
-                    PLProfiles.current.selectedProfileName = safeProfileName;
-                    [PLProfiles.current save];
-                });
-                
-                // Create the simplified JSON file for the mod loader
-                if ([modLoaderId isEqualToString:@"forge"]) {
-                    [strongSelf createForgeJSONWithVersion:vanillaVersion loaderVersion:modLoaderVersion];
-                } else if ([modLoaderId isEqualToString:@"fabric"]) {
-                    [strongSelf createFabricJSONWithVersion:finalVersionString];
-                } else if ([modLoaderId isEqualToString:@"neoforge"]) {
-                    [strongSelf createNeoForgeJSONWithVersion:vanillaVersion loaderVersion:modLoaderVersion];
-                }
+            // Create profile with basic icon
+            NSDictionary *profileInfo = @{
+                @"gameDir": gameDir,
+                @"name": profileName,
+                @"lastVersionId": finalVersionString,
+                @"icon": manifestDict[@"overrides"] ? @"" : @"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAABGdBTUEAALGPC/xhBQAAAAFzUkdCAK7OHOkAAAA8UExURUxpcejp6erp6erp6ejo6Onp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6VvMQMcAAAATdFJOUwBAv4BATz8Q798Qr1+vn3+fYL+Qu+0AAAE+SURBVFjD7ZZLkoQgDEApFHzPqPe/7MQZp3WwSQrX7mXDg5BAvkaj0fgfuMRJ8gw5SadHwPMLQXbBExA0Mp8A/d0ToCXIQD6fkLItoAb/wB8CjVJEPQbhTxUwEzZZAnTERUBERPR2ERDfERIBoEzQb2IQZudP8gS+DgAiIpoPAO1APkbsV2CAqAK+FlBflQHUAV5WgFfiVYCfWp4iMCcVcAtQS9RlQFQ8A/FVAFqCXASUE78L4OUBVEsQfwfAM1Hwc0BRAWoB6KQZcEoB2LEFXAuITgFYeQwkNQHnJSCrCYiaALWAtSbAbwKeRTbgPwCLZsARlYBZM2AsEsBmzYDnJ8CnzYBPAFQnuKzAbF23DQj9ZY0a3z3A7LZnvjuuJnN7b7r3Xn3G/H5dDwfIb/j1Jb57o9FoXHEDgWAupBBbCjcAAAAASUVORK5CYII="
+            };
+            
+            // Ensure the profile directory exists
+            [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
+            
+            // Save the profile
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSLog(@"[CurseForge-Modpack] Setting profile: %@", profileName);
+                PLProfiles.current.profiles[safeProfileName] = [profileInfo mutableCopy];
+                PLProfiles.current.selectedProfileName = safeProfileName;
+                [PLProfiles.current save];
+            });
+            
+            // Create the simplified JSON file for the mod loader
+            if ([modLoaderId isEqualToString:@"forge"]) {
+                [strongSelf createForgeJSONWithVersion:vanillaVersion loaderVersion:modLoaderVersion];
+            } else if ([modLoaderId isEqualToString:@"fabric"]) {
+                [strongSelf createFabricJSONWithVersion:finalVersionString];
+            } else if ([modLoaderId isEqualToString:@"neoforge"]) {
+                [strongSelf createNeoForgeJSONWithVersion:vanillaVersion loaderVersion:modLoaderVersion];
             }
-            
-            // Create mods directory
-            NSString *modsDir = [destDir stringByAppendingPathComponent:@"mods"];
-            [[NSFileManager defaultManager] createDirectoryAtPath:modsDir
-                                     withIntermediateDirectories:YES
-                                                      attributes:nil
-                                                           error:nil];
             
             // Extract overrides
             NSLog(@"[CurseForge-Modpack] Extracting overrides");
             NSString *overridesDir = manifestDict[@"overrides"];
             if (overridesDir) {
                 NSError *overridesError = nil;
-                [ModpackUtils archive:archive extractDirectory:overridesDir toPath:destDir error:&overridesError];
+                [ModpackUtils archive:archive extractDirectory:overridesDir toPath:destPath error:&overridesError];
                 if (overridesError) {
                     NSLog(@"[CurseForge-Modpack] Failed to extract overrides: %@", overridesError);
                 }
@@ -1034,7 +1028,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                         fileName = [NSString stringWithFormat:@"mod_%@_%@.jar", projectID, fileID];
                     }
                     
-                    // Download to temporary mods directory
+                    // Download directly to final mods directory
                     NSString *modPath = [modsDir stringByAppendingPathComponent:fileName];
                     
                     NSURL *modURL = [NSURL URLWithString:url];
@@ -1062,7 +1056,8 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                                 NSLog(@"[CurseForge-Modpack] Failed to save mod %@: %@", fileName, moveError);
                                 failedFiles++;
                             } else {
-                                NSLog(@"[CurseForge-Modpack] Downloaded mod %@ (%ld/%ld)", fileName, (long)completedFiles+1, (long)totalFiles);
+                                NSLog(@"[CurseForge-Modpack] Downloaded mod %@ to %@ (%ld/%ld)", 
+                                     fileName, modPath, (long)completedFiles+1, (long)totalFiles);
                                 
                                 // Update progress
                                 modProgress.totalUnitCount = 1;
@@ -1084,71 +1079,22 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 NSLog(@"[CurseForge-Modpack] All downloads completed (%ld/%ld, %ld failed)", 
                       (long)completedFiles, (long)totalFiles, (long)failedFiles);
                 
-                // Get the actual profile directory path
-                NSString *fullProfilePath = [PLProfiles fullPathForProfileWithName:safeProfileName gameDir:gameDir];
-                NSString *profileModsDir = [fullProfilePath stringByAppendingPathComponent:@"mods"];
+                // Create a log file in the destination directory to help with troubleshooting
+                NSString *logContent = [NSString stringWithFormat:@"CurseForge modpack installation completed\n"
+                                       "Profile: %@\n"
+                                       "Directory: %@\n"
+                                       "Total files: %ld\n"
+                                       "Completed: %ld\n"
+                                       "Failed: %ld\n"
+                                       "Date: %@",
+                                       profileName, destPath, (long)totalFiles, 
+                                       (long)completedFiles, (long)failedFiles,
+                                       [NSDate date]];
                 
-                // Create the mods directory in the profile if it doesn't exist
-                NSError *modsError = nil;
-                [[NSFileManager defaultManager] createDirectoryAtPath:profileModsDir
-                                         withIntermediateDirectories:YES
-                                                          attributes:nil
-                                                               error:&modsError];
-                
-                if (modsError) {
-                    NSLog(@"[CurseForge-Modpack] Failed to create profile mods directory: %@", modsError);
-                    // Continue anyway and try to copy what we can
-                }
-                
-                // Copy all mods from temporary directory to profile directory
-                NSArray *modFiles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:modsDir error:nil];
-                NSInteger copiedFiles = 0;
-                NSInteger copyErrors = 0;
-                
-                for (NSString *modFile in modFiles) {
-                    NSString *sourcePath = [modsDir stringByAppendingPathComponent:modFile];
-                    NSString *destPath = [profileModsDir stringByAppendingPathComponent:modFile];
-                    
-                    NSError *copyError = nil;
-                    // Remove existing file if it exists
-                    if ([[NSFileManager defaultManager] fileExistsAtPath:destPath]) {
-                        [[NSFileManager defaultManager] removeItemAtPath:destPath error:nil];
-                    }
-                    
-                    // Copy the file
-                    BOOL success = [[NSFileManager defaultManager] copyItemAtPath:sourcePath toPath:destPath error:&copyError];
-                    
-                    if (success) {
-                        copiedFiles++;
-                    } else {
-                        NSLog(@"[CurseForge-Modpack] Failed to copy mod %@ to profile: %@", modFile, copyError);
-                        copyErrors++;
-                    }
-                }
-                
-                NSLog(@"[CurseForge-Modpack] Copied %ld mod files to profile directory, %ld errors", 
-                      (long)copiedFiles, (long)copyErrors);
-                
-                // Also copy any overrides from temp dir to profile dir
-                NSArray *overrideFiles = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:destDir error:nil];
-                for (NSString *overrideFile in overrideFiles) {
-                    // Skip the mods directory, we already handled it
-                    if ([overrideFile isEqualToString:@"mods"]) {
-                        continue;
-                    }
-                    
-                    NSString *sourcePath = [destDir stringByAppendingPathComponent:overrideFile];
-                    NSString *destPath = [fullProfilePath stringByAppendingPathComponent:overrideFile];
-                    
-                    // Skip if it's not a directory
-                    BOOL isDir = NO;
-                    if (![[NSFileManager defaultManager] fileExistsAtPath:sourcePath isDirectory:&isDir] || !isDir) {
-                        continue;
-                    }
-                    
-                    // Copy or merge the directory
-                    [self copyDirectory:sourcePath toDirectory:destPath];
-                }
+                [logContent writeToFile:[destPath stringByAppendingPathComponent:@"curseforge_install.log"]
+                             atomically:YES
+                               encoding:NSUTF8StringEncoding
+                                  error:nil];
                 
                 // Clean up ZIP file
                 [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
