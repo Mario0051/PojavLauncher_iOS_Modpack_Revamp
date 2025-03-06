@@ -275,8 +275,16 @@
     name = [name stringByReplacingOccurrencesOfString:@" " withString:@"_"];
     NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", name];
 
+    // Generate a safe profile name
+    NSString *safeProfileName = name;
+    // Get the unique game directory path for this profile
+    NSString *gameDir = [PLProfiles uniqueGameDirForProfileName:safeProfileName];
+    // Get the full installation path
+    NSString *path = [PLProfiles fullPathForProfileWithName:safeProfileName gameDir:gameDir];
+    // Ensure the directory exists
+    [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
+
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:packagePath success:^{
-        NSString *path = [NSString stringWithFormat:@"%s/custom_gamedir/%@", getenv("POJAV_GAME_DIR"), name];
         [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:path];
     }];
     [task resume];
