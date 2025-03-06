@@ -202,10 +202,18 @@
         performSelector:@selector(imageName)]];
     if (origImage) {
         UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
-        UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext*_Nonnull myContext) {
-            CGFloat scaleFactor = 40/origImage.size.height;
-            [origImage drawInRect:CGRectMake(20 - origImage.size.width*scaleFactor/2, 0, origImage.size.width*scaleFactor, 40)];
-        }];
+        
+        // Check for iOS 18+ and use the compatibility method
+        UIImage *image;
+        if (@available(iOS 18.0, *)) {
+            image = [origImage compatibleResizedIcon:CGSizeMake(40, 40) forTraitCollection:self.traitCollection];
+        } else {
+            image = [renderer imageWithActions:^(UIGraphicsImageRendererContext*_Nonnull myContext) {
+                CGFloat scaleFactor = 40/origImage.size.height;
+                [origImage drawInRect:CGRectMake(20 - origImage.size.width*scaleFactor/2, 0, origImage.size.width*scaleFactor, 40)];
+            }];
+        }
+        
         cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     }
     
@@ -366,6 +374,32 @@
             [connection disconnect];
         }];
     }];
+}
+
+@end
+
+// Ensure to add the UIImage category for icon compatibility in this file or a separate header
+@interface UIImage (PojavIconCompat)
+- (UIImage *)compatibleResizedIcon:(CGSize)targetSize forTraitCollection:(UITraitCollection *)traitCollection;
+@end
+
+@implementation UIImage (PojavIconCompat)
+
+- (UIImage *)compatibleResizedIcon:(CGSize)targetSize forTraitCollection:(UITraitCollection *)traitCollection {
+    // Check for iOS 18 and above
+    if (@available(iOS 18.0, *)) {
+        // Custom resizing logic for iOS 18+
+        UIImage *resizedImage = [self _imageWithSize:targetSize];
+        
+        // Ensure the image maintains its original rendering mode and scale
+        UIImage *finalImage = [resizedImage imageWithRenderingMode:self.renderingMode];
+        finalImage = [finalImage imageWithAlignmentRectInsets:self.alignmentRectInsets];
+        
+        return finalImage;
+    } else {
+        // Maintain existing behavior for iOS 14 and later
+        return self;
+    }
 }
 
 @end
