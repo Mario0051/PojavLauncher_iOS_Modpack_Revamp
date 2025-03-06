@@ -576,14 +576,25 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 #pragma mark - Version Filtering and Action Sheet
 - (void)showModDetails:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+    
+    // Check for valid version data
     NSArray *versionNames = mod[@"versionNames"];
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
     NSArray *loadersArray = mod[@"versionLoaders"];
     
-    NSLog(@"[DEBUG] About to show version selector with %lu versions", (unsigned long)versionNames.count);
-    
+    if (!versionNames || ![versionNames isKindOfClass:[NSArray class]] || versionNames.count == 0) {
+        [UIAlertUtilities presentAlertWithTitle:@"Error" 
+                                      message:@"No versions available for this mod." 
+                              viewController:self];
+        return;
+    }
+
     // Limit number of versions to prevent UI freezing
     const NSUInteger MAX_VERSIONS_TO_SHOW = 50;
+    
+    NSLog(@"[DEBUG] About to show version selector with %lu versions", 
+          (unsigned long)versionNames.count);
     
     NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
@@ -592,69 +603,112 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     NSMutableArray<NSNumber *> *supportedIndices = [NSMutableArray array];
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
-    if (profileMCVer.length == 0 || profileLoader.length == 0) {
-        for (NSUInteger i = 0; i < MIN(versionNames.count, MAX_VERSIONS_TO_SHOW); i++) {
-            NSString *verStr = [self stringFromVersionObject:versionNames[i]];
-            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-            NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
-            [supportedIndices addObject:@(i)];
-            [supportedDisplayNames addObject:modFileVersion];
+    // Original version comparison logic with relaxed matching
+    for (NSUInteger i = 0; i < versionNames.count; i++) {
+        NSArray *gameVers = @[];
+        if (i < gameVersionsArray.count) {
+            id gameVerItem = gameVersionsArray[i];
+            gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : @[gameVerItem];
         }
-    } else {
-        for (NSUInteger i = 0; i < versionNames.count; i++) {
-            NSArray *gameVers = @[];
-            if (i < gameVersionsArray.count) {
-                id gameVerItem = gameVersionsArray[i];
-                gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : @[gameVerItem];
-            }
-            BOOL mcMatch = NO;
+        
+        BOOL mcMatch = NO;
+        if (profileMCVer.length == 0) {
+            mcMatch = YES; // If no specific MC version is selected, consider it a match
+        } else {
             for (NSString *gv in gameVers) {
                 if (![gv isKindOfClass:[NSString class]]) continue;
                 
                 NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                
+                // More relaxed version matching - checking for exact match, prefix match, or if version contains the requested version
                 if ([trimmedGV isEqualToString:profileMCVer] ||
                     [trimmedGV hasPrefix:profileMCVer] ||
-                    [profileMCVer hasPrefix:trimmedGV]) {
+                    [profileMCVer hasPrefix:trimmedGV] ||
+                    [trimmedGV containsString:profileMCVer]) {
                     mcMatch = YES;
                     break;
                 }
+                
+                // Handle partial version matches (e.g., "1.21" matches "1.21.4")
+                NSArray *gvComponents = [trimmedGV componentsSeparatedByString:@"."];
+                NSArray *profComponents = [profileMCVer componentsSeparatedByString:@"."];
+                
+                if (gvComponents.count > 0 && profComponents.count > 0) {
+                    if ([gvComponents[0] isEqualToString:profComponents[0]]) {
+                        if (gvComponents.count > 1 && profComponents.count > 1) {
+                            if ([gvComponents[1] isEqualToString:profComponents[1]]) {
+                                mcMatch = YES;
+                                break;
+                            }
+                        }
+                    }
+                }
             }
-            NSArray *versionLoaders = @[];
-            if (loadersArray && i < loadersArray.count) {
-                id loaderItem = loadersArray[i];
-                versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
-            }
-            BOOL loaderMatch = NO;
+        }
+        
+        NSArray *versionLoaders = @[];
+        if (loadersArray && i < loadersArray.count) {
+            id loaderItem = loadersArray[i];
+            versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
+        }
+        
+        BOOL loaderMatch = NO;
+        if (profileLoader.length == 0) {
+            loaderMatch = YES; // If no specific loader is selected, consider it a match
+        } else {
             for (NSString *ld in versionLoaders) {
                 if (![ld isKindOfClass:[NSString class]]) continue;
                 
                 NSString *trimmedLD = [[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                if ([trimmedLD isEqualToString:profileLoader]) {
+                
+                // More relaxed loader matching
+                if ([trimmedLD isEqualToString:profileLoader] ||
+                    [trimmedLD containsString:profileLoader] ||
+                    [profileLoader containsString:trimmedLD]) {
                     loaderMatch = YES;
                     break;
                 }
             }
-            NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
-            if (mcMatch && loaderMatch) {
-                [supportedIndices addObject:@(i)];
-                NSString *verStr = [self stringFromVersionObject:versionNames[i]];
-                NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-                NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
-                [supportedDisplayNames addObject:modFileVersion];
-                
-                // Limit to prevent UI freezing with too many options
-                if (supportedIndices.count >= MAX_VERSIONS_TO_SHOW) {
-                    break;
-                }
+            
+            // If we didn't match but the version loaders list is empty, assume compatibility
+            if (!loaderMatch && versionLoaders.count == 0) {
+                loaderMatch = YES;
             }
         }
-        if (supportedIndices.count == 0) {
-            NSLog(@"No supported versions found for mod: %@", mod[@"title"]);
-            [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                           message:@"No supported versions available for your selected profile." 
-                                   viewController:self];
-            return;
+        
+        NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
+        if (mcMatch && loaderMatch) {
+            [supportedIndices addObject:@(i)];
+            NSString *verStr = [self stringFromVersionObject:versionNames[i]];
+            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+            NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
+            [supportedDisplayNames addObject:modFileVersion];
+            
+            // Limit to prevent UI freezing with too many options
+            if (supportedIndices.count >= MAX_VERSIONS_TO_SHOW) {
+                break;
+            }
         }
+    }
+
+    // If still no matches found, add a fallback to show all versions
+    if (supportedIndices.count == 0 && versionNames.count > 0) {
+        // As a fallback, show all versions
+        for (NSUInteger i = 0; i < MIN(versionNames.count, MAX_VERSIONS_TO_SHOW); i++) {
+            [supportedIndices addObject:@(i)];
+            NSString *verStr = [self stringFromVersionObject:versionNames[i]];
+            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+            NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
+            [supportedDisplayNames addObject:modFileVersion];
+        }
+    }
+    
+    if (supportedIndices.count == 0) {
+        NSLog(@"No supported versions found for mod: %@", mod[@"title"]);
+        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                       message:@"No supported versions available for your selected profile." 
+                               viewController:self];
+        return;
     }
     
     NSLog(@"[DEBUG] Found %lu filtered versions to display", (unsigned long)supportedIndices.count);
