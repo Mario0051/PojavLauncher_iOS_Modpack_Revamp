@@ -8,6 +8,8 @@
 #import "utils.h"
 #import "PLProfiles.h"
 #import "UIAlertUtilities.h"
+#import "DownloadProgressViewController.h"
+#import "MinecraftResourceDownloadTask.h"
 
 typedef NS_ENUM(NSInteger, ModpackSource) {
     ModpackSourceModrinth = 0,
@@ -427,41 +429,30 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
 #pragma mark - Installation
 
 - (void)installModpackWithDetails:(NSDictionary *)modpack atIndex:(NSUInteger)index source:(ModpackSource)source {
-    // Show loading alert
-    UIAlertController *loadingAlert = [UIAlertController alertControllerWithTitle:@"Installing Modpack"
-                                                                         message:@"Please wait..."
-                                                                  preferredStyle:UIAlertControllerStyleAlert];
+    NSLog(@"[ModpackInstall] Starting installation for modpack %@ (version index: %lu)", modpack[@"title"], (unsigned long)index);
     
-    UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithFrame:CGRectMake(10, 60, 20, 20)];
-    indicator.activityIndicatorViewStyle = UIActivityIndicatorViewStyleMedium;
-    [indicator startAnimating];
-    [loadingAlert.view addSubview:indicator];
+    // Create a download task
+    MinecraftResourceDownloadTask *downloadTask = [[MinecraftResourceDownloadTask alloc] init];
     
-    [self presentViewController:loadingAlert animated:YES completion:^{
-        // Install on background thread
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            if (source == ModpackSourceModrinth) {
-                [self.modrinthAPI installModpackFromDetail:modpack atIndex:index];
-            } else {
-                [self.curseForgeAPI installModpackFromDetail:modpack atIndex:index completion:^(NSError *error) {
-                    if (error) {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            [loadingAlert dismissViewControllerAnimated:YES completion:^{
-                                [self showErrorAlert:error.localizedDescription];
-                            }];
-                        });
-                        return;
-                    }
-                    
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [loadingAlert dismissViewControllerAnimated:YES completion:^{
-                            [self actionClose];
-                        }];
-                    });
-                }];
+    // Present download progress view controller
+    DownloadProgressViewController *progressVC = [[DownloadProgressViewController alloc] initWithTask:downloadTask];
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:progressVC];
+    [self presentViewController:navController animated:YES completion:nil];
+    
+    // Start the actual installation
+    if (source == ModpackSourceModrinth) {
+        [self.modrinthAPI installModpackFromDetail:modpack atIndex:index];
+    } else {
+        [self.curseForgeAPI installModpackFromDetail:modpack atIndex:index completion:^(NSError *error) {
+            if (error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [UIAlertUtilities presentAlertWithTitle:@"Installation Error" 
+                                                    message:error.localizedDescription 
+                                            viewController:self];
+                });
             }
-        });
-    }];
+        }];
+    }
 }
 
 @end
