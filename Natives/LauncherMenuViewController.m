@@ -200,34 +200,22 @@
     
     UIImage *origImage = [UIImage systemImageNamed:[self.options[indexPath.row]
         performSelector:@selector(imageName)]];
+    UIImage *image = nil;
+    
     if (origImage) {
-        UIImage *image;
-        
-        // Specific handling for iOS 18+ icon sizing
-        if (@available(iOS 18.0, *)) {
-            // Create a renderer with the target size
-            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
+        // Consistent rendering approach for both iOS 14 and iOS 18
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
+        image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+            // Calculate scale factor to fit the image while maintaining aspect ratio
+            CGFloat scaleFactor = fmin(40.0 / origImage.size.width, 40.0 / origImage.size.height);
             
-            // Render the image, maintaining its original characteristics
-            image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-                // Calculate scale factor to fit the image while maintaining aspect ratio
-                CGFloat scaleFactor = fmin(40.0 / origImage.size.width, 40.0 / origImage.size.height);
-                
-                // Calculate centered position
-                CGFloat x = (40 - origImage.size.width * scaleFactor) / 2.0;
-                CGFloat y = (40 - origImage.size.height * scaleFactor) / 2.0;
-                
-                // Draw the image
-                [origImage drawInRect:CGRectMake(x, y, origImage.size.width * scaleFactor, origImage.size.height * scaleFactor)];
-            }];
-        } else {
-            // Existing renderer for earlier iOS versions
-            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
-            image = [renderer imageWithActions:^(UIGraphicsImageRendererContext*_Nonnull myContext) {
-                CGFloat scaleFactor = 40/origImage.size.height;
-                [origImage drawInRect:CGRectMake(20 - origImage.size.width*scaleFactor/2, 0, origImage.size.width*scaleFactor, 40)];
-            }];
-        }
+            // Calculate centered position
+            CGFloat x = (40 - origImage.size.width * scaleFactor) / 2.0;
+            CGFloat y = (40 - origImage.size.height * scaleFactor) / 2.0;
+            
+            // Draw the image
+            [origImage drawInRect:CGRectMake(x, y, origImage.size.width * scaleFactor, origImage.size.height * scaleFactor)];
+        }];
         
         cell.imageView.image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
     }
@@ -240,27 +228,6 @@
         cell.imageView.image = [cell.imageView.image _imageWithSize:CGSizeMake(40, 40)];
     }
     return cell;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
-{
-    LauncherMenuCustomItem *selected = self.options[indexPath.row];
-    
-    if (selected.action != nil) {
-        [self restoreHighlightedSelection];
-        ((LauncherMenuCustomItem *)selected).action();
-    } else {
-        if(self.isInitialVc) {
-            self.isInitialVc = NO;
-        } else {
-            self.options[self.lastSelectedIndex].vcArray = contentNavigationController.viewControllers;
-            [contentNavigationController setViewControllers:selected.vcArray animated:NO];
-            self.lastSelectedIndex = indexPath.row;
-        }
-        selected.vcArray[0].navigationItem.rightBarButtonItem = self.accountBtnItem;
-        selected.vcArray[0].navigationItem.leftBarButtonItem = self.splitViewController.displayModeButtonItem;
-        selected.vcArray[0].navigationItem.leftItemsSupplementBackButton = true;
-    }
 }
 
 - (void)selectAccount:(UIButton *)sender {
