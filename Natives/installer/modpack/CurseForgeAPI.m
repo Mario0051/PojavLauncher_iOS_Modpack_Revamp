@@ -27,25 +27,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     CurseForgeErrorCodeInvalidManifest = 1006
 };
 
-// Helper to save JSON to file
-static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
-    NSError *error = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:jsonDict options:0 error:&error];
-    if (!data) {
-        NSLog(@"saveJSONToFile: Failed to serialize JSON: %@", error);
-        return error;
-    }
-    
-    BOOL success = [data writeToFile:filePath options:NSDataWritingAtomic error:&error];
-    if (!success) {
-        NSLog(@"saveJSONToFile: Failed to write JSON to %@: %@", filePath, error);
-        return error;
-    }
-    
-    NSLog(@"saveJSONToFile: Successfully wrote JSON to %@", filePath);
-    return nil;
-}
-
 #pragma mark - Private Interface
 
 @interface CurseForgeAPI ()
@@ -651,204 +632,42 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
     return YES;
 }
 
-#pragma mark - Profile Setup
+#pragma mark - Simplified mod installation - Just creates JSON files
 
-- (void)setupProfileWithManifest:(NSDictionary *)manifestDict destPath:(NSString *)destPath finalVersionString:(NSString *)finalVersionString {
-    // Create a profile for this modpack
-    NSString *profileName = manifestDict[@"name"] ?: @"Unknown Modpack";
-    if (profileName.length > 0) {
-        // Create a unique gameDir for this modpack
-        NSString *safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-        safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
-        safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
-        
-        NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", safeProfileName];
-        
-        // Create profile with basic icon
-        NSDictionary *profileInfo = @{
-            @"gameDir": gameDir,
-            @"name": profileName,
-            @"lastVersionId": finalVersionString,
-            @"icon": manifestDict[@"overrides"] ? @"" : @"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAABGdBTUEAALGPC/xhBQAAAAFzUkdCAK7OHOkAAAA8UExURUxpcejp6erp6erp6ejo6Onp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6VvMQMcAAAATdFJOUwBAv4BATz8Q798Qr1+vn3+fYL+Qu+0AAAE+SURBVFjD7ZZLkoQgDEApFHzPqPe/7MQZp3WwSQrX7mXDg5BAvkaj0fgfuMRJ8gw5SadHwPMLQXbBExA0Mp8A/d0ToCXIQD6fkLItoAb/wB8CjVJEPQbhTxUwEzZZAnTERUBERPR2ERDfERIBoEzQb2IQZudP8gS+DgAiIpoPAO1APkbsV2CAqAK+FlBflQHUAV5WgFfiVYCfWp4iMCcVcAtQS9RlQFQ8A/FVAFqCXASUE78L4OUBVEsQfwfAM1Hwc0BRAWoB6KQZcEoB2LEFXAuITgFYeQwkNQHnJSCrCYiaALWAtSbAbwKeRTbgPwCLZsARlYBZM2AsEsBmzYDnJ8CnzYBPAFQnuKzAbF23DQj9ZY0a3z3A7LZnvjuuJnN7b7r3Xn3G/H5dDwfIb/j1Jb57o9FoXHEDgWAupBBbCjcAAAAASUVORK5CYII="
-        };
-        
-        // Ensure the profile directory exists
-        [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
-        
-        // Save the profile
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSLog(@"[CurseForge-Modpack] Setting profile: %@", profileName);
-            PLProfiles.current.profiles[safeProfileName] = [profileInfo mutableCopy];
-            PLProfiles.current.selectedProfileName = safeProfileName;
-            [PLProfiles.current save];
-        });
+- (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    // Resolve the download URL if needed
+    NSArray *versionUrls = modDetail[@"versionUrls"];
+    if (!versionUrls || selectedVersion >= versionUrls.count) {
+        NSLog(@"[CurseForge] Invalid version index for mod installation");
+        return;
     }
-}
-
-#pragma mark - Mod Loader Installation
-
-- (void)installModLoaderFromManifest:(NSDictionary *)manifestDict {
-    NSDictionary *minecraft = manifestDict[@"minecraft"];
-    NSString *vanillaVersion = minecraft[@"version"] ?: @"";
-    NSString *modLoaderId = @"";
-    NSString *modLoaderVersion = @"";
-    NSString *finalVersionString = @"";
     
-    // Find the primary mod loader
-    NSArray *modLoaders = minecraft[@"modLoaders"];
-    NSDictionary *primaryModLoader = nil;
+    NSString *urlString = versionUrls[selectedVersion];
     
-    for (NSDictionary *loader in modLoaders) {
-        if ([loader[@"primary"] boolValue]) {
-            primaryModLoader = loader;
-            break;
+    // Check if we need to resolve a placeholder URL
+    if ([urlString hasPrefix:@"placeholder:"]) {
+        NSArray *components = [urlString componentsSeparatedByString:@":"];
+        if (components.count >= 3) {
+            NSString *projectId = components[1];
+            NSString *fileId = components[2];
+            
+            // Get download URL and install
+            [self getDownloadUrlForProject:[projectId longLongValue] fileID:[fileId longLongValue] completion:^(NSString *downloadUrl, NSError *error) {
+                if (downloadUrl) {
+                    NSDictionary *userInfo = @{@"detail": modDetail, @"index": @(selectedVersion)};
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" object:self userInfo:userInfo];
+                } else {
+                    NSLog(@"[CurseForge] Failed to get download URL for mod: %@", error);
+                    [UIAlertUtilities presentAlertWithTitle:@"Download Error" 
+                                               message:[NSString stringWithFormat:@"Could not retrieve download URL: %@", error.localizedDescription]
+                                       viewController:nil];
+                }
+            }];
         }
-    }
-    
-    if (!primaryModLoader && modLoaders.count > 0) {
-        primaryModLoader = modLoaders[0];
-    }
-    
-    // Parse the loader ID
-    NSString *rawId = primaryModLoader[@"id"] ?: @"";
-    NSRange dashRange = [rawId rangeOfString:@"-"];
-    if (dashRange.location != NSNotFound) {
-        NSString *loaderName = [rawId substringToIndex:dashRange.location];
-        NSString *loaderVer = [rawId substringFromIndex:(dashRange.location + 1)];
-        
-        if ([loaderName isEqualToString:@"forge"]) {
-            modLoaderId = @"forge";
-            modLoaderVersion = loaderVer;
-            finalVersionString = [NSString stringWithFormat:@"%@-forge-%@", vanillaVersion, modLoaderVersion];
-            [self autoInstallForge:vanillaVersion loaderVersion:modLoaderVersion];
-        } else if ([loaderName isEqualToString:@"fabric"]) {
-            modLoaderId = @"fabric";
-            modLoaderVersion = loaderVer;
-            finalVersionString = [NSString stringWithFormat:@"fabric-loader-%@-%@", modLoaderVersion, vanillaVersion];
-            [self autoInstallFabricWithFullString:finalVersionString];
-        } else if ([loaderName isEqualToString:@"quilt"]) {
-            modLoaderId = @"quilt";
-            modLoaderVersion = loaderVer;
-            finalVersionString = [NSString stringWithFormat:@"quilt-loader-%@-%@", modLoaderVersion, vanillaVersion];
-            // Install Quilt loader if needed
-        } else if ([loaderName isEqualToString:@"neoforge"]) {
-            modLoaderId = @"neoforge";
-            modLoaderVersion = loaderVer;
-            finalVersionString = [NSString stringWithFormat:@"%@-neoforge-%@", vanillaVersion, modLoaderVersion];
-            [self autoInstallNeoForgeWithVanillaVersion:vanillaVersion loaderVersion:modLoaderVersion];
-        }
-    }
-    
-    NSLog(@"[CurseForge-Modpack] Installed mod loader: %@ %@", modLoaderId, modLoaderVersion);
-}
-
-- (void)autoInstallForge:(NSString *)vanillaVer loaderVersion:(NSString *)forgeVer {
-    if (!vanillaVer.length || !forgeVer.length) {
-        NSLog(@"[CurseForge-Forge] Missing version information (vanilla: %@, forge: %@)", vanillaVer, forgeVer);
-        return;
-    }
-    
-    NSString *finalId = [NSString stringWithFormat:@"%@-forge-%@", vanillaVer, forgeVer];
-    NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", 
-                         [NSString stringWithUTF8String:getenv("POJAV_GAME_DIR")], finalId, finalId];
-    
-    [[NSFileManager defaultManager] createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent 
-                             withIntermediateDirectories:YES 
-                                              attributes:nil 
-                                                   error:nil];
-    
-    NSDictionary *forgeDict = @{
-        @"id": finalId,
-        @"type": @"custom",
-        @"minecraft": vanillaVer,
-        @"loader": @"forge",
-        @"loaderVersion": forgeVer
-    };
-    
-    NSError *writeErr = saveJSONToFile(forgeDict, jsonPath);
-    if (writeErr) {
-        NSLog(@"[CurseForge-Forge] Failed to write Forge JSON: %@", writeErr);
-        [UIAlertUtilities presentAlertWithTitle:@"Forge Setup Error" 
-                                  message:[NSString stringWithFormat:@"Failed to setup Forge: %@", writeErr.localizedDescription]
-                          viewController:nil];
     } else {
-        NSLog(@"[CurseForge-Forge] Successfully created Forge JSON at %@", jsonPath);
-    }
-}
-
-- (void)autoInstallFabricWithFullString:(NSString *)fabricString {
-    if (!fabricString.length) {
-        NSLog(@"[CurseForge-Fabric] Missing fabric version string");
-        return;
-    }
-    
-    NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", 
-                         [NSString stringWithUTF8String:getenv("POJAV_GAME_DIR")], fabricString, fabricString];
-    
-    [[NSFileManager defaultManager] createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent 
-                             withIntermediateDirectories:YES 
-                                              attributes:nil 
-                                                   error:nil];
-    
-    // Extract Minecraft version from the fabricString if possible
-    NSArray *components = [fabricString componentsSeparatedByString:@"-"];
-    NSString *mcVersion = @"";
-    
-    if ([fabricString hasPrefix:@"fabric-loader"] && components.count >= 3) {
-        // Format: fabric-loader-0.14.22-1.20.1
-        mcVersion = components.lastObject;
-    }
-    
-    NSDictionary *fabricDict = @{
-        @"id": fabricString,
-        @"type": @"custom",
-        @"loader": @"fabric",
-        @"loaderVersion": fabricString,
-        @"minecraft": mcVersion.length > 0 ? mcVersion : @""
-    };
-    
-    NSError *writeErr = saveJSONToFile(fabricDict, jsonPath);
-    if (writeErr) {
-        NSLog(@"[CurseForge-Fabric] Failed to write Fabric JSON: %@", writeErr);
-        [UIAlertUtilities presentAlertWithTitle:@"Fabric Setup Error" 
-                                  message:[NSString stringWithFormat:@"Failed to setup Fabric: %@", writeErr.localizedDescription]
-                          viewController:nil];
-    } else {
-        NSLog(@"[CurseForge-Fabric] Successfully created Fabric JSON at %@", jsonPath);
-    }
-}
-
-- (void)autoInstallNeoForgeWithVanillaVersion:(NSString *)vanillaVer loaderVersion:(NSString *)neoforgeVer {
-    if (!vanillaVer.length || !neoforgeVer.length) {
-        NSLog(@"[CurseForge-NeoForge] Missing version information (vanilla: %@, neoforge: %@)", vanillaVer, neoforgeVer);
-        return;
-    }
-    
-    NSString *finalId = [NSString stringWithFormat:@"%@-neoforge-%@", vanillaVer, neoforgeVer];
-    NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", 
-                         [NSString stringWithUTF8String:getenv("POJAV_GAME_DIR")], finalId, finalId];
-    
-    [[NSFileManager defaultManager] createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent 
-                             withIntermediateDirectories:YES 
-                                              attributes:nil 
-                                                   error:nil];
-    
-    NSDictionary *neoforgeDict = @{
-        @"id": finalId,
-        @"type": @"custom",
-        @"minecraft": vanillaVer,
-        @"loader": @"neoforge",
-        @"loaderVersion": neoforgeVer
-    };
-    
-    NSError *writeErr = saveJSONToFile(neoforgeDict, jsonPath);
-    if (writeErr) {
-        NSLog(@"[CurseForge-NeoForge] Failed to write NeoForge JSON: %@", writeErr);
-        [UIAlertUtilities presentAlertWithTitle:@"NeoForge Setup Error" 
-                                  message:[NSString stringWithFormat:@"Failed to setup NeoForge: %@", writeErr.localizedDescription]
-                          viewController:nil];
-    } else {
-        NSLog(@"[CurseForge-NeoForge] Successfully created NeoForge JSON at %@", jsonPath);
+        // URL already resolved
+        NSDictionary *userInfo = @{@"detail": modDetail, @"index": @(selectedVersion)};
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" object:self userInfo:userInfo];
     }
 }
 
@@ -1039,8 +858,44 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
                 }
             }
             
-            // Create the profile
-            [strongSelf setupProfileWithManifest:manifestDict destPath:destDir finalVersionString:finalVersionString];
+            // Create a profile for this modpack
+            NSString *profileName = manifestDict[@"name"] ?: @"Unknown Modpack";
+            if (profileName.length > 0) {
+                // Create a unique gameDir for this modpack
+                NSString *safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+                safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+                safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+                
+                NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", safeProfileName];
+                
+                // Create profile with basic icon
+                NSDictionary *profileInfo = @{
+                    @"gameDir": gameDir,
+                    @"name": profileName,
+                    @"lastVersionId": finalVersionString,
+                    @"icon": manifestDict[@"overrides"] ? @"" : @"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAABGdBTUEAALGPC/xhBQAAAAFzUkdCAK7OHOkAAAA8UExURUxpcejp6erp6erp6ejo6Onp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6VvMQMcAAAATdFJOUwBAv4BATz8Q798Qr1+vn3+fYL+Qu+0AAAE+SURBVFjD7ZZLkoQgDEApFHzPqPe/7MQZp3WwSQrX7mXDg5BAvkaj0fgfuMRJ8gw5SadHwPMLQXbBExA0Mp8A/d0ToCXIQD6fkLItoAb/wB8CjVJEPQbhTxUwEzZZAnTERUBERPR2ERDfERIBoEzQb2IQZudP8gS+DgAiIpoPAO1APkbsV2CAqAK+FlBflQHUAV5WgFfiVYCfWp4iMCcVcAtQS9RlQFQ8A/FVAFqCXASUE78L4OUBVEsQfwfAM1Hwc0BRAWoB6KQZcEoB2LEFXAuITgFYeQwkNQHnJSCrCYiaALWAtSbAbwKeRTbgPwCLZsARlYBZM2AsEsBmzYDnJ8CnzYBPAFQnuKzAbF23DQj9ZY0a3z3A7LZnvjuuJnN7b7r3Xn3G/H5dDwfIb/j1Jb57o9FoXHEDgWAupBBbCjcAAAAASUVORK5CYII="
+                };
+                
+                // Ensure the profile directory exists
+                [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
+                
+                // Save the profile
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSLog(@"[CurseForge-Modpack] Setting profile: %@", profileName);
+                    PLProfiles.current.profiles[safeProfileName] = [profileInfo mutableCopy];
+                    PLProfiles.current.selectedProfileName = safeProfileName;
+                    [PLProfiles.current save];
+                });
+                
+                // Create the simplified JSON file for the mod loader
+                if ([modLoaderId isEqualToString:@"forge"]) {
+                    [strongSelf createForgeJSONWithVersion:vanillaVersion loaderVersion:modLoaderVersion];
+                } else if ([modLoaderId isEqualToString:@"fabric"]) {
+                    [strongSelf createFabricJSONWithVersion:finalVersionString];
+                } else if ([modLoaderId isEqualToString:@"neoforge"]) {
+                    [strongSelf createNeoForgeJSONWithVersion:vanillaVersion loaderVersion:modLoaderVersion];
+                }
+            }
             
             // Create mods directory
             NSString *modsDir = [destDir stringByAppendingPathComponent:@"mods"];
@@ -1128,9 +983,6 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
                 NSLog(@"[CurseForge-Modpack] All downloads completed (%ld/%ld, %ld failed)", 
                       (long)completedFiles, (long)totalFiles, (long)failedFiles);
                 
-                // Install mod loader
-                [strongSelf installModLoaderFromManifest:manifestDict];
-                
                 // Clean up ZIP file
                 [[NSFileManager defaultManager] removeItemAtPath:zipPath error:nil];
                 
@@ -1143,6 +995,109 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
     }];
     
     [downloadTask resume];
+}
+
+#pragma mark - Simple JSON File Creation
+
+- (void)createForgeJSONWithVersion:(NSString *)vanillaVer loaderVersion:(NSString *)forgeVer {
+    if (!vanillaVer.length || !forgeVer.length) {
+        NSLog(@"[CurseForge-Forge] Missing version information (vanilla: %@, forge: %@)", vanillaVer, forgeVer);
+        return;
+    }
+    
+    NSString *finalId = [NSString stringWithFormat:@"%@-forge-%@", vanillaVer, forgeVer];
+    NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", 
+                         [NSString stringWithUTF8String:getenv("POJAV_GAME_DIR")], finalId, finalId];
+    
+    [[NSFileManager defaultManager] createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent 
+                             withIntermediateDirectories:YES 
+                                              attributes:nil 
+                                                   error:nil];
+    
+    NSDictionary *forgeDict = @{
+        @"id": finalId,
+        @"type": @"custom",
+        @"minecraft": vanillaVer,
+        @"loader": @"forge",
+        @"loaderVersion": forgeVer
+    };
+    
+    NSError *writeErr = saveJSONToFile(forgeDict, jsonPath);
+    if (writeErr) {
+        NSLog(@"[CurseForge-Forge] Failed to write Forge JSON: %@", writeErr);
+    } else {
+        NSLog(@"[CurseForge-Forge] Successfully created Forge JSON at %@", jsonPath);
+    }
+}
+
+- (void)createFabricJSONWithVersion:(NSString *)fabricString {
+    if (!fabricString.length) {
+        NSLog(@"[CurseForge-Fabric] Missing fabric version string");
+        return;
+    }
+    
+    NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", 
+                         [NSString stringWithUTF8String:getenv("POJAV_GAME_DIR")], fabricString, fabricString];
+    
+    [[NSFileManager defaultManager] createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent 
+                             withIntermediateDirectories:YES 
+                                              attributes:nil 
+                                                   error:nil];
+    
+    // Extract Minecraft version from the fabricString if possible
+    NSArray *components = [fabricString componentsSeparatedByString:@"-"];
+    NSString *mcVersion = @"";
+    
+    if ([fabricString hasPrefix:@"fabric-loader"] && components.count >= 3) {
+        // Format: fabric-loader-0.14.22-1.20.1
+        mcVersion = components.lastObject;
+    }
+    
+    NSDictionary *fabricDict = @{
+        @"id": fabricString,
+        @"type": @"custom",
+        @"loader": @"fabric",
+        @"loaderVersion": fabricString,
+        @"minecraft": mcVersion.length > 0 ? mcVersion : @""
+    };
+    
+    NSError *writeErr = saveJSONToFile(fabricDict, jsonPath);
+    if (writeErr) {
+        NSLog(@"[CurseForge-Fabric] Failed to write Fabric JSON: %@", writeErr);
+    } else {
+        NSLog(@"[CurseForge-Fabric] Successfully created Fabric JSON at %@", jsonPath);
+    }
+}
+
+- (void)createNeoForgeJSONWithVersion:(NSString *)vanillaVer loaderVersion:(NSString *)neoforgeVer {
+    if (!vanillaVer.length || !neoforgeVer.length) {
+        NSLog(@"[CurseForge-NeoForge] Missing version information (vanilla: %@, neoforge: %@)", vanillaVer, neoforgeVer);
+        return;
+    }
+    
+    NSString *finalId = [NSString stringWithFormat:@"%@-neoforge-%@", vanillaVer, neoforgeVer];
+    NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", 
+                         [NSString stringWithUTF8String:getenv("POJAV_GAME_DIR")], finalId, finalId];
+    
+    [[NSFileManager defaultManager] createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent 
+                             withIntermediateDirectories:YES 
+                                              attributes:nil 
+                                                   error:nil];
+    
+    NSDictionary *neoforgeDict = @{
+        @"id": finalId,
+        @"type": @"custom",
+        @"minecraft": vanillaVer,
+        @"loader": @"neoforge",
+        @"loaderVersion": neoforgeVer
+    };
+    
+    NSError *writeErr = saveJSONToFile(neoforgeDict, jsonPath);
+    if (writeErr) {
+        NSLog(@"[CurseForge-NeoForge] Failed to write NeoForge JSON: %@", writeErr);
+    } else {
+        NSLog(@"[CurseForge-NeoForge] Successfully created NeoForge JSON at %@", jsonPath);
+    }
 }
 
 @end
