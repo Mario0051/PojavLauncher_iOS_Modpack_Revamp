@@ -1,17 +1,16 @@
+#import "ModpackInstallViewController.h"
+#import "modpack/ModrinthAPI.h"
+#import "modpack/CurseForgeAPI.h"
+#import "ModpackUtils.h"
 #import "AFNetworking.h"
 #import "LauncherNavigationController.h"
-#import "ModpackInstallViewController.h"
 #import "UIKit+AFNetworking.h"
 #import "UIKit+hook.h"
 #import "WFWorkflowProgressView.h"
-#import "modpack/ModrinthAPI.h"
-#import "modpack/CurseForgeAPI.h"
-#import "ModMenuViewController.h"
 #import "config.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
 #import "PLProfiles.h"
-#import "modpack/ModpackUtils.h"
 #import "UIAlertUtilities.h"
 #include <dlfcn.h>
 
@@ -66,9 +65,12 @@
 
 @interface ModpackInstallViewController () <UISearchResultsUpdating, UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UISearchController *searchController;
+@property (nonatomic, strong) UISegmentedControl *apiSegmentedControl;
 @property (nonatomic, strong) NSMutableArray *list;
 @property (nonatomic, strong) NSMutableDictionary *filters;
 @property (nonatomic, strong) ModrinthAPI *modrinth;
+@property (nonatomic, strong) CurseForgeAPI *curseForge;
+@property (nonatomic, assign) BOOL hasPromptedForAPIKey;
 - (void)installModpackFromDetail:(NSDictionary *)details atIndex:(NSUInteger)index;
 - (void)showVersionSelectorTableForModpack:(NSDictionary *)modpack withVersions:(NSArray<UIAction *> *)versionActions;
 @end
@@ -78,17 +80,56 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    // Setup search controller.
+    // Initialize our modpack APIs
+    self.modrinth = [ModrinthAPI defaultAPI];
+    self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:@""];
+    self.hasPromptedForAPIKey = NO;
+    
+    // Setup search controller
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.searchResultsUpdater = self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.navigationItem.searchController = self.searchController;
     
-    // Only load modpacks (isModpack = YES)
-    self.modrinth = [ModrinthAPI defaultAPI];
+    // Add API selection segmented control
+    self.apiSegmentedControl = [[UISegmentedControl alloc] initWithItems:@[@"Modrinth", @"CurseForge"]];
+    self.apiSegmentedControl.selectedSegmentIndex = 0;
+    [self.apiSegmentedControl addTarget:self action:@selector(apiSourceChanged:) forControlEvents:UIControlEventValueChanged];
+    self.tableView.tableHeaderView = self.apiSegmentedControl;
+    
+    // Set filter for modpacks only
     self.filters = [@{@"isModpack": @(YES), @"name": @" "} mutableCopy];
     
     [self updateSearchResults];
+}
+
+- (void)apiSourceChanged:(UISegmentedControl *)sender {
+    // Reset list and prompt for CurseForge API key if needed
+    if (sender.selectedSegmentIndex == 1 && !self.hasPromptedForAPIKey) {
+        self.hasPromptedForAPIKey = YES;
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
+                                                                       message:@"Please enter your CurseForge API key to search modpacks on CurseForge."
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+            textField.placeholder = @"API Key";
+        }];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            NSString *enteredKey = alert.textFields.firstObject.text;
+            if (enteredKey.length > 0) {
+                [self.curseForge setValue:enteredKey forKey:@"apiKey"];
+            } else {
+                [UIAlertUtilities presentAlertWithTitle:@"API Key Missing" message:@"No API key entered. Some functionality may not work." viewController:self];
+            }
+            [self updateSearchResults];
+        }]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+            // Switch back to Modrinth if they cancel
+            self.apiSegmentedControl.selectedSegmentIndex = 0;
+        }]];
+        [self presentViewController:alert animated:YES completion:nil];
+    } else {
+        [self updateSearchResults];
+    }
 }
 
 - (void)updateSearchResults {
@@ -105,22 +146,43 @@
     if (!prevList && [self.filters[@"name"] isEqualToString:name]) {
         return;
     }
+    
     [self switchToLoadingState];
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        self.filters[@"name"] = name;
-        self.list = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.list : nil];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.list) {
-                [self switchToReadyState];
-                [self.tableView reloadData];
-            } else {
-                [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                               message:self.modrinth.lastError.localizedDescription 
-                                       viewController:self];
-                [self actionClose];
-            }
+    self.filters[@"name"] = name ?: @"";
+    
+    if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
+        // Modrinth API
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            self.list = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.list : nil];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (self.list) {
+                    [self switchToReadyState];
+                    [self.tableView reloadData];
+                } else {
+                    [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                   message:self.modrinth.lastError.localizedDescription 
+                                           viewController:self];
+                    [self actionClose];
+                }
+            });
         });
-    });
+    } else {
+        // CurseForge API
+        [self.curseForge searchModWithFilters:self.filters previousPageResult:prevList ? self.list : nil completion:^(NSMutableArray *results, NSError *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (results) {
+                    self.list = results;
+                    [self switchToReadyState];
+                    [self.tableView reloadData];
+                } else {
+                    [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                   message:error.localizedDescription 
+                                           viewController:self];
+                    [self actionClose];
+                }
+            });
+        }];
+    }
 }
 
 - (void)actionClose {
@@ -148,9 +210,11 @@
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return 1;
 }
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.list.count;
 }
+
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"modpackCell"];
     if (!cell) {
@@ -158,23 +222,72 @@
         cell.imageView.contentMode = UIViewContentModeScaleToFill;
         cell.imageView.clipsToBounds = YES;
     }
+    
     NSDictionary *item = self.list[indexPath.row];
     cell.textLabel.text = item[@"title"];
     cell.detailTextLabel.text = item[@"description"];
     UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
     [cell.imageView setImageWithURL:[NSURL URLWithString:item[@"imageUrl"]] placeholderImage:fallbackImage];
-    // Auto-load more if at end.
-    if (indexPath.row == self.list.count - 1 && !self.modrinth.reachedLastPage) {
-        [self loadModpackResultsWithPrevList:YES];
+    
+    // Auto-load more if at end
+    if (indexPath.row == self.list.count - 1) {
+        BOOL shouldLoadMore = NO;
+        if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
+            shouldLoadMore = !self.modrinth.reachedLastPage;
+        } else {
+            shouldLoadMore = !self.curseForge.reachedLastPage;
+        }
+        
+        if (shouldLoadMore) {
+            [self loadModpackResultsWithPrevList:YES];
+        }
     }
+    
     return cell;
 }
 
-#pragma mark - UIContextMenu Interaction
-
-- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location {
-    // This is a stub for the protocol
-    return nil;
+#pragma mark - UITableView Delegate
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSDictionary *item = self.list[indexPath.row];
+    if ([item[@"versionDetailsLoaded"] boolValue]) {
+        [self showModpackDetails:item atIndexPath:indexPath];
+    } else {
+        [tableView deselectRowAtIndexPath:indexPath animated:NO];
+        [self switchToLoadingState];
+        
+        // Load details using the appropriate API
+        if (self.apiSegmentedControl.selectedSegmentIndex == 0) {
+            // Modrinth
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [self.modrinth loadDetailsOfMod:self.list[indexPath.row] completion:^(NSError *error) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [self switchToReadyState];
+                        if ([item[@"versionDetailsLoaded"] boolValue]) {
+                            [self showModpackDetails:item atIndexPath:indexPath];
+                        } else {
+                            [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                           message:self.modrinth.lastError.localizedDescription 
+                                                   viewController:self];
+                        }
+                    });
+                }];
+            });
+        } else {
+            // CurseForge
+            [self.curseForge loadDetailsOfMod:self.list[indexPath.row] completion:^(NSError *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self switchToReadyState];
+                    if ([item[@"versionDetailsLoaded"] boolValue]) {
+                        [self showModpackDetails:item atIndexPath:indexPath];
+                    } else {
+                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                       message:self.curseForge.lastError.localizedDescription 
+                                               viewController:self];
+                    }
+                });
+            }];
+        }
+    }
 }
 
 - (void)showModpackDetails:(NSDictionary *)details atIndexPath:(NSIndexPath *)indexPath {
@@ -252,23 +365,18 @@
     }
 }
 
-// Helper method for installing modpack
-- (void)installModpackFromDetail:(NSDictionary *)details atIndex:(NSUInteger)index {
-    [self actionClose];
-    [self.modrinth installModpackFromDetail:details atIndex:index];
-}
-
 // Table-based version selection for iPhone
 - (void)showVersionSelectorTableForModpack:(NSDictionary *)modpack withVersions:(NSArray<UIAction *> *)versionActions {
     UITableViewController *versionTableVC = [[UITableViewController alloc] initWithStyle:UITableViewStylePlain];
     versionTableVC.title = @"Select Version";
     
-    versionTableVC.tableView.dataSource = [[ModpackVersionSelectorDataSource alloc] 
-                                          initWithVersionActions:versionActions 
-                                                        modpack:modpack 
-                                                       delegate:self];
+    ModpackVersionSelectorDataSource *dataSource = [[ModpackVersionSelectorDataSource alloc] 
+                                                  initWithVersionActions:versionActions 
+                                                                modpack:modpack 
+                                                               delegate:self];
     
-    versionTableVC.tableView.delegate = versionTableVC.tableView.dataSource;
+    versionTableVC.tableView.dataSource = dataSource;
+    versionTableVC.tableView.delegate = dataSource;
     
     UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:versionTableVC];
     navController.modalPresentationStyle = UIModalPresentationFullScreen;
@@ -276,27 +384,25 @@
     [self presentViewController:navController animated:YES completion:nil];
 }
 
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSDictionary *item = self.list[indexPath.row];
-    if ([item[@"versionDetailsLoaded"] boolValue]) {
-        [self showModpackDetails:item atIndexPath:indexPath];
+// Handle installation of modpack
+- (void)installModpackFromDetail:(NSDictionary *)details atIndex:(NSUInteger)index {
+    [self actionClose];
+    
+    // Use the appropriate API based on the source
+    if ([details[@"apiSource"] integerValue] == 1) {
+        // Modrinth API (source = 1)
+        [self.modrinth installModpackFromDetail:details atIndex:index];
     } else {
-        [tableView deselectRowAtIndexPath:indexPath animated:NO];
-        [self switchToLoadingState];
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            [self.modrinth loadDetailsOfMod:self.list[indexPath.row] completion:^(NSError *error) {
+        // CurseForge API (source = 0 or anything else)
+        [self.curseForge installModpackFromDetail:details atIndex:index completion:^(NSError *error) {
+            if (error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [self switchToReadyState];
-                    if ([item[@"versionDetailsLoaded"] boolValue]) {
-                        [self showModpackDetails:item atIndexPath:indexPath];
-                    } else {
-                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
-                                                       message:self.modrinth.lastError.localizedDescription 
-                                               viewController:self];
-                    }
+                    [UIAlertUtilities presentAlertWithTitle:@"Installation Error" 
+                                                   message:error.localizedDescription 
+                                           viewController:nil];
                 });
-            }];
-        });
+            }
+        }];
     }
 }
 
