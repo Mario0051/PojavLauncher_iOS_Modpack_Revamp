@@ -103,10 +103,6 @@
     return task;
 }
 
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
-    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil];
-}
-
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSInteger)size {
     NSProgress *progress = [self.manager downloadProgressForTask:task];
     NSUInteger fileSize = size>0 ? size : 1;
