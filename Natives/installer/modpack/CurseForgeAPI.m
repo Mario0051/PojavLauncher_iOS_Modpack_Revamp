@@ -694,7 +694,17 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     // Create a download task that will be visible in the download progress view
     MinecraftResourceDownloadTask *downloadTask = [[MinecraftResourceDownloadTask alloc] init];
     
-    [downloadTask prepareForDownload];
+    // Initialize progress tracking data - alternative to prepareForDownload
+    downloadTask.textProgress = [NSProgress new];
+    downloadTask.textProgress.kind = NSProgressKindFile;
+    downloadTask.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
+    downloadTask.textProgress.totalUnitCount = -1;
+
+    downloadTask.progress = [NSProgress new];
+    // Push 1 byte so it won't accidentally finish after downloading assets index
+    downloadTask.progress.totalUnitCount = 1;
+    downloadTask.fileList = [NSMutableArray new];
+    downloadTask.progressList = [NSMutableArray new];
     
     // Check if we need to resolve a placeholder URL
     if ([urlString hasPrefix:@"placeholder:"]) {
@@ -712,8 +722,8 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 }
                 
                 [self downloadAndInstallModpackWithURL:downloadUrl 
-                                            modDetail:modDetail 
-                                      selectedVersion:selectedVersion 
+                                             modDetail:modDetail 
+                                       selectedVersion:selectedVersion 
                                           downloadTask:downloadTask
                                            completion:completion];
             }];
@@ -727,10 +737,10 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         }
     } else {
         [self downloadAndInstallModpackWithURL:urlString 
-                                      modDetail:modDetail 
-                                selectedVersion:selectedVersion 
-                                    downloadTask:downloadTask
-                                     completion:completion];
+                                     modDetail:modDetail 
+                               selectedVersion:selectedVersion 
+                                  downloadTask:downloadTask
+                                   completion:completion];
     }
 }
 
@@ -1083,6 +1093,123 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     }];
     
     [task resume];
+}
+
+#pragma mark - Modloader Installation
+
+- (void)autoInstallForge:(NSString *)vanillaVer loaderVersion:(NSString *)forgeVer {
+    if (!vanillaVer.length || !forgeVer.length) {
+        NSLog(@"[CurseForge-Forge] Missing version information (vanilla: %@, forge: %@)", vanillaVer, forgeVer);
+        return;
+    }
+    
+    NSString *finalId = [NSString stringWithFormat:@"%@-forge-%@", vanillaVer, forgeVer];
+    NSString *jsonPath = [NSString stringWithFormat:@"%@/versions/%@/%@.json", 
+                         [NSString stringWithUTF8String:getenv("POJAV_GAME_DIR")], finalId, finalId];
+    
+    [[NSFileManager defaultManager] createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent 
+                             withIntermediateDirectories:YES 
+                                              attributes:nil 
+                                                   error:nil];
+    
+    // Create basic JSON file for Forge
+    NSDictionary *forgeDict = @{
+        @"id": finalId,
+        @"type": @"custom",
+        @"minecraft": vanillaVer,
+        @"loader": @"forge",
+        @"loaderVersion": forgeVer
+    };
+    
+    NSError *writeErr = saveJSONToFile(forgeDict, jsonPath);
+    if (writeErr) {
+        NSLog(@"[CurseForge-Forge] Failed to write Forge JSON: %@", writeErr);
+    } else {
+        NSLog(@"[CurseForge-Forge] Successfully created Forge JSON at %@", jsonPath);
+    }
+}
+
+- (void)setupProfileWithManifest:(NSDictionary *)manifestDict destPath:(NSString *)destPath finalVersionString:(NSString *)finalVersionString {
+    // Create a profile for this modpack
+    NSString *profileName = manifestDict[@"name"] ?: @"Unknown Modpack";
+    if (profileName.length > 0) {
+        // Create a unique gameDir for this modpack
+        NSString *safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+        safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+        safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+        
+        NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", safeProfileName];
+        
+        // Create profile with basic icon
+        NSDictionary *profileInfo = @{
+            @"gameDir": gameDir,
+            @"name": profileName,
+            @"lastVersionId": finalVersionString,
+            @"icon": manifestDict[@"overrides"] ? @"" : @"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAABGdBTUEAALGPC/xhBQAAAAFzUkdCAK7OHOkAAAA8UExURUxpcejp6erp6erp6ejo6Onp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6enp6VvMQMcAAAATdFJOUwBAv4BATz8Q798Qr1+vn3+fYL+Qu+0AAAE+SURBVFjD7ZZLkoQgDEApFHzPqPe/7MQZp3WwSQrX7mXDg5BAvkaj0fgfuMRJ8gw5SadHwPMLQXbBExA0Mp8A/d0ToCXIQD6fkLItoAb/wB8CjVJEPQbhTxUwEzZZAnTERUBERPR2ERDfERIBoEzQb2IQZudP8gS+DgAiIpoPAO1APkbsV2CAqAK+FlBflQHUAV5WgFfiVYCfWp4iMCcVcAtQS9RlQFQ8A/FVAFqCXASUE78L4OUBVEsQfwfAM1Hwc0BRAWoB6KQZcEoB2LEFXAuITgFYeQwkNQHnJSCrCYiaALWAtSbAbwKeRTbgPwCLZsARlYBZM2AsEsBmzYDnJ8CnzYBPAFQnuKzAbF23DQj9ZY0a3z3A7LZnvjuuJnN7b7r3Xn3G/H5dDwfIb/j1Jb57o9FoXHEDgWAupBBbCjcAAAAASUVORK5CYII="
+        };
+        
+        // Ensure the profile directory exists
+        [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
+        
+        // Save the profile
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSLog(@"[CurseForge-Modpack] Setting profile: %@", profileName);
+            PLProfiles.current.profiles[safeProfileName] = [profileInfo mutableCopy];
+            PLProfiles.current.selectedProfileName = safeProfileName;
+            [PLProfiles.current save];
+        });
+    }
+}
+
+- (void)installModLoaderFromManifest:(NSDictionary *)manifestDict {
+    // Extract Minecraft version and mod loader info from manifest
+    NSDictionary *minecraft = manifestDict[@"minecraft"];
+    if (!minecraft) return;
+    
+    NSString *vanillaVersion = minecraft[@"version"] ?: @"";
+    NSString *modLoaderId = @"";
+    NSString *modLoaderVersion = @"";
+    
+    // Find the primary mod loader
+    NSArray *modLoaders = minecraft[@"modLoaders"];
+    NSDictionary *primaryModLoader = nil;
+    
+    for (NSDictionary *loader in modLoaders) {
+        if ([loader[@"primary"] boolValue]) {
+            primaryModLoader = loader;
+            break;
+        }
+    }
+    
+    if (!primaryModLoader && modLoaders.count > 0) {
+        primaryModLoader = modLoaders[0];
+    }
+    
+    // Parse the loader ID
+    NSString *rawId = primaryModLoader[@"id"] ?: @"";
+    NSRange dashRange = [rawId rangeOfString:@"-"];
+    if (dashRange.location != NSNotFound) {
+        NSString *loaderName = [rawId substringToIndex:dashRange.location];
+        NSString *loaderVer = [rawId substringFromIndex:(dashRange.location + 1)];
+        
+        if ([loaderName isEqualToString:@"forge"]) {
+            modLoaderId = @"forge";
+            modLoaderVersion = loaderVer;
+            [self createForgeJSONWithVersion:vanillaVersion loaderVersion:modLoaderVersion];
+        } else if ([loaderName isEqualToString:@"fabric"]) {
+            modLoaderId = @"fabric";
+            modLoaderVersion = loaderVer;
+            [self createFabricJSONWithVersion:[NSString stringWithFormat:@"fabric-loader-%@-%@", modLoaderVersion, vanillaVersion]];
+        } else if ([loaderName isEqualToString:@"quilt"]) {
+            modLoaderId = @"quilt";
+            modLoaderVersion = loaderVer;
+            [self createFabricJSONWithVersion:[NSString stringWithFormat:@"quilt-loader-%@-%@", modLoaderVersion, vanillaVersion]];
+        } else if ([loaderName isEqualToString:@"neoforge"]) {
+            modLoaderId = @"neoforge";
+            modLoaderVersion = loaderVer;
+            [self createNeoForgeJSONWithVersion:vanillaVersion loaderVersion:modLoaderVersion];
+        }
+    }
 }
 
 #pragma mark - Simple JSON File Creation
