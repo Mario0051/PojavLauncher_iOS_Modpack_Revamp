@@ -47,6 +47,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 #pragma mark - Private Method Declarations
 @interface ModMenuViewController ()
+@property (nonatomic, assign) BOOL hasPromptedForAPIKey;
 - (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion;
 - (NSString *)stringFromVersionObject:(id)rawVersion;
 - (void)updateProfileFromSavedSettings;
@@ -294,7 +295,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    
+    self.hasPromptedForAPIKey = NO;
     self.title = @"Mods";
     self.modrinth = [ModrinthAPI defaultAPI];
     // Initialize CurseForgeAPI with an empty key so the user is always prompted.
@@ -377,23 +378,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 // Always prompt for CurseForge API key when the CurseForge segment is active.
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
-    if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
-         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
-                message:@"Please enter your CurseForge API key to search mods on CurseForge."
-                preferredStyle:UIAlertControllerStyleAlert];
-         [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-             textField.placeholder = @"API Key";
-         }];
-         [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-             NSString *enteredKey = alert.textFields.firstObject.text;
-             if (enteredKey.length > 0) {
-                 [self.curseForge setValue:enteredKey forKey:@"apiKey"];
-             } else {
-                 presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
-             }
-         }]];
-         [self presentViewController:alert animated:YES completion:nil];
-    }
+    // API key prompt is now handled in updateModsList
 }
 
 - (void)dealloc {
@@ -439,23 +424,33 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     }
     
     if (self.apiSegmentedControl.selectedSegmentIndex == 1) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
-                                                                       message:@"Please enter your CurseForge API key to search mods on CurseForge."
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-            textField.placeholder = @"API Key";
-        }];
-        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            NSString *enteredKey = alert.textFields.firstObject.text;
-            if (enteredKey.length > 0) {
-                [self.curseForge setValue:enteredKey forKey:@"apiKey"];
-            } else {
-                presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
-            }
-            [self refreshModsListWithPrevList:NO];
-        }]];
-        [self presentViewController:alert animated:YES completion:nil];
+        if (!self.hasPromptedForAPIKey) {
+            self.hasPromptedForAPIKey = YES;
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Enter CurseForge API Key"
+                                                                           message:@"Please enter your CurseForge API key to search mods on CurseForge."
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+                textField.placeholder = @"API Key";
+            }];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                NSString *enteredKey = alert.textFields.firstObject.text;
+                if (enteredKey.length > 0) {
+                    self.curseForge.apiKey = enteredKey;
+                } else {
+                    presentAlertDialog(@"API Key Missing", @"No API key entered. Some functionality may not work.");
+                }
+                [self refreshModsListWithPrevList:NO];
+            }]];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+                // Switch back to Modrinth if they cancel
+                self.apiSegmentedControl.selectedSegmentIndex = 0;
+                [self refreshModsListWithPrevList:NO];
+            }]];
+            [self presentViewController:alert animated:YES completion:nil];
+            return;
+        }
     } else {
+        self.hasPromptedForAPIKey = NO;
         [self.modsList removeAllObjects];
         [self refreshModsListWithPrevList:NO];
     }
@@ -488,6 +483,14 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             });
         }];
     }
+}
+
+- (void)segmentChanged:(UISegmentedControl *)segment {
+    // If switching from Modrinth to CurseForge, reset the prompt flag
+    if (segment.selectedSegmentIndex == 1) {
+        self.hasPromptedForAPIKey = NO;
+    }
+    [self updateModsList];
 }
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
