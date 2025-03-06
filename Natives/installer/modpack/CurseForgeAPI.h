@@ -17,48 +17,24 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithAPIKey:(NSString *)apiKey NS_DESIGNATED_INITIALIZER;
 
 /**
- * Searches for mods or modpacks on CurseForge
- * @param searchFilters Dictionary of search filters
- * @param prevResult Previous search results for pagination
- * @param completion Block to call when the search completes
- */
-- (void)searchModWithFilters:(NSDictionary *)searchFilters 
-         previousPageResult:(nullable NSMutableArray *)prevResult 
-                 completion:(void (^)(NSMutableArray * _Nullable results, NSError * _Nullable error))completion;
-
-/**
- * Loads details for a mod or modpack
- * @param item The mod or modpack to load details for
- * @param completion Block to call when the operation completes
- */
-- (void)loadDetailsOfMod:(NSMutableDictionary *)item 
-              completion:(void (^)(NSError * _Nullable error))completion;
-
-/**
- * Installs a modpack from the provided detail at the selected version
- * @param modDetail The modpack details
- * @param selectedVersion The index of the selected version
- * @param completion Block to call when the installation completes
- */
-- (void)installModpackFromDetail:(NSDictionary *)modDetail 
-                        atIndex:(NSUInteger)selectedVersion 
-                     completion:(void (^)(NSError * _Nullable error))completion;
-
-/**
- * Installs a mod from the provided detail at the selected version
- * @param modDetail The mod details
- * @param selectedVersion The index of the selected version
- */
-- (void)installModFromDetail:(NSDictionary *)modDetail 
-                     atIndex:(NSUInteger)selectedVersion;
-
-/**
  * Auto-installs Forge for a Minecraft version
  * @param vanillaVer The Minecraft version
  * @param forgeVer The Forge version
+ * @param completion Block to call when the installation completes
  */
 - (void)autoInstallForge:(NSString *)vanillaVer 
-           loaderVersion:(NSString *)forgeVer;
+           loaderVersion:(NSString *)forgeVer
+              completion:(void (^)(BOOL success, NSError * _Nullable error))completion;
+
+/**
+ * Gets a download URL for a CurseForge project file
+ * @param projectID The CurseForge project ID
+ * @param fileID The file ID
+ * @param completion Block to call with the URL or error
+ */
+- (void)getDownloadUrlForProject:(unsigned long long)projectID 
+                          fileID:(unsigned long long)fileID 
+                      completion:(void (^)(NSString * _Nullable downloadUrl, NSError * _Nullable error))completion;
 
 /**
  * Parent view controller for displaying alerts
