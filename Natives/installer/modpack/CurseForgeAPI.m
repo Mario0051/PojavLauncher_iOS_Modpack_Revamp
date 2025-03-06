@@ -5,7 +5,7 @@
 #import "UnzipKit.h"
 #import "AFNetworking.h"
 #import "UIAlertUtilities.h"
-#import "FabricUtils.h"
+#import "installer/FabricUtils.h"
 #import "config.h"
 #import "utils.h"
 
