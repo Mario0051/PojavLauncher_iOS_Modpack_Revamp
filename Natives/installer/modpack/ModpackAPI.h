@@ -37,30 +37,51 @@ NS_ASSUME_NONNULL_BEGIN
  * Searches for mods or modpacks based on the provided filters
  * @param filters Dictionary of search filters
  * @param prevResult Previous search results for pagination
- * @return Array of search results
+ * @param completion Block to call when the search completes
  */
-- (nullable NSMutableArray *)searchModWithFilters:(NSDictionary *)filters previousPageResult:(nullable NSMutableArray *)prevResult;
+- (void)searchModWithFilters:(NSDictionary *)filters 
+            previousPageResult:(nullable NSMutableArray *)prevResult 
+                    completion:(void (^)(NSMutableArray * _Nullable results, NSError * _Nullable error))completion;
 
 /**
  * Loads detailed information for a mod or modpack
  * @param item The mod or modpack to load details for
+ * @param completion Block to call when the operation completes
  */
-- (void)loadDetailsOfMod:(NSMutableDictionary *)item;
+- (void)loadDetailsOfMod:(NSMutableDictionary *)item 
+              completion:(void (^)(NSError * _Nullable error))completion;
 
 /**
  * Installs a modpack from the provided detail at the selected version
  * @param modDetail The modpack details
  * @param selectedVersion The index of the selected version
+ * @param completion Block to call when the installation completes
  */
-- (void)installModpackFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
+- (void)installModpackFromDetail:(NSDictionary *)modDetail 
+                         atIndex:(NSUInteger)selectedVersion 
+                      completion:(void (^)(NSError * _Nullable error))completion;
+
+/**
+ * Installs a mod from the provided detail at the selected version
+ * @param modDetail The mod details
+ * @param selectedVersion The index of the selected version
+ * @param completion Block to call when the installation completes
+ */
+- (void)installModFromDetail:(NSDictionary *)modDetail 
+                     atIndex:(NSUInteger)selectedVersion
+                  completion:(void (^)(NSError * _Nullable error))completion;
 
 /**
  * Submits download tasks for a modpack package
  * @param downloader The download task manager
  * @param packagePath Path to the modpack package
  * @param destPath Destination path for extraction
+ * @param completion Block to call when processing completes
  */
-- (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath;
+- (void)downloader:(MinecraftResourceDownloadTask *)downloader 
+submitDownloadTasksFromPackage:(NSString *)packagePath 
+             toPath:(NSString *)destPath
+         completion:(void (^)(NSError * _Nullable error))completion;
 
 /**
  * Synchronously requests data from an API endpoint
@@ -76,7 +97,9 @@ NS_ASSUME_NONNULL_BEGIN
  * @param params The parameters to include in the request
  * @param completion Block to call when the request completes
  */
-- (void)getEndpoint:(NSString *)endpoint params:(nullable NSDictionary *)params completion:(void (^)(id _Nullable result, NSError * _Nullable error))completion;
+- (void)getEndpoint:(NSString *)endpoint 
+             params:(nullable NSDictionary *)params 
+         completion:(void (^)(id _Nullable result, NSError * _Nullable error))completion;
 
 // Unavailable initializers
 - (instancetype)init NS_UNAVAILABLE;
