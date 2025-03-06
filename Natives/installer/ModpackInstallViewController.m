@@ -73,6 +73,7 @@
 @property (nonatomic, assign) BOOL hasPromptedForAPIKey;
 - (void)installModpackFromDetail:(NSDictionary *)details atIndex:(NSUInteger)index;
 - (void)showVersionSelectorTableForModpack:(NSDictionary *)modpack withVersions:(NSArray<UIAction *> *)versionActions;
+- (void)handleModpackInstallNotification:(NSNotification *)notification;
 @end
 
 @implementation ModpackInstallViewController
@@ -99,6 +100,12 @@
     
     // Set filter for modpacks only
     self.filters = [@{@"isModpack": @(YES), @"name": @" "} mutableCopy];
+    
+    // Register for modpack installation notifications
+    [[NSNotificationCenter defaultCenter] addObserver:self 
+                                             selector:@selector(handleModpackInstallNotification:) 
+                                                 name:@"InstallModpack" 
+                                               object:nil];
     
     [self updateSearchResults];
 }
@@ -384,17 +391,53 @@
     [self presentViewController:navController animated:YES completion:nil];
 }
 
+- (void)dealloc {
+    // Remove all notification observers
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
 // Handle installation of modpack
 - (void)installModpackFromDetail:(NSDictionary *)details atIndex:(NSUInteger)index {
     [self actionClose];
     
+    // Create userInfo dictionary for notification
+    NSDictionary *userInfo = @{
+        @"detail": details,
+        @"index": @(index)
+    };
+    
     // Use the appropriate API based on the source
     if ([details[@"apiSource"] integerValue] == 1) {
         // Modrinth API (source = 1)
-        [self.modrinth installModpackFromDetail:details atIndex:index];
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack" 
+                                                            object:self.modrinth 
+                                                          userInfo:userInfo];
     } else {
         // CurseForge API (source = 0 or anything else)
-        [self.curseForge installModpackFromDetail:details atIndex:index completion:^(NSError *error) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack" 
+                                                            object:self.curseForge 
+                                                          userInfo:userInfo];
+    }
+}
+
+// Handle modpack installation notification
+- (void)handleModpackInstallNotification:(NSNotification *)notification {
+    NSDictionary *userInfo = notification.userInfo;
+    NSDictionary *detail = userInfo[@"detail"];
+    NSNumber *indexNumber = userInfo[@"index"];
+    
+    if (!detail || !indexNumber) {
+        NSLog(@"Invalid modpack installation notification: missing detail or index");
+        return;
+    }
+    
+    NSUInteger index = [indexNumber unsignedIntegerValue];
+    
+    // Determine which API to use based on the notification object
+    if (notification.object == self.modrinth) {
+        [self.modrinth installModpackFromDetail:detail atIndex:index];
+    } else if (notification.object == self.curseForge) {
+        [self.curseForge installModpackFromDetail:detail atIndex:index completion:^(NSError *error) {
             if (error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [UIAlertUtilities presentAlertWithTitle:@"Installation Error" 
@@ -403,6 +446,8 @@
                 });
             }
         }];
+    } else {
+        NSLog(@"Unknown modpack installation source");
     }
 }
 
