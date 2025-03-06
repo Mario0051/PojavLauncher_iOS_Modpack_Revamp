@@ -9,6 +9,7 @@
 #import "PLProfiles.h"
 #import "UIAlertUtilities.h"
 #import "LauncherPreferences.h"
+#import <objc/runtime.h>
 
 // Constants for better code maintenance
 static NSString * const kCurseForgeAPIKeyPrefKey = @"curseforge.api_key";
