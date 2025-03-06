@@ -1,7 +1,7 @@
 #import "ModpackInstallViewController.h"
 #import "modpack/ModrinthAPI.h"
 #import "modpack/CurseForgeAPI.h"
-#import "ModpackUtils.h"
+#import "modpack/ModpackUtils.h"
 #import "AFNetworking.h"
 #import "LauncherNavigationController.h"
 #import "UIKit+AFNetworking.h"
