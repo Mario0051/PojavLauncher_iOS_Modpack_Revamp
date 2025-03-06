@@ -201,13 +201,28 @@
     UIImage *origImage = [UIImage systemImageNamed:[self.options[indexPath.row]
         performSelector:@selector(imageName)]];
     if (origImage) {
-        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
-        
-        // Check for iOS 18+ and use the compatibility method
         UIImage *image;
+        
+        // Specific handling for iOS 18+ icon sizing
         if (@available(iOS 18.0, *)) {
-            image = [origImage compatibleResizedIcon:CGSizeMake(40, 40) forTraitCollection:self.traitCollection];
+            // Create a renderer with the target size
+            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
+            
+            // Render the image, maintaining its original characteristics
+            image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+                // Calculate scale factor to fit the image while maintaining aspect ratio
+                CGFloat scaleFactor = fmin(40.0 / origImage.size.width, 40.0 / origImage.size.height);
+                
+                // Calculate centered position
+                CGFloat x = (40 - origImage.size.width * scaleFactor) / 2.0;
+                CGFloat y = (40 - origImage.size.height * scaleFactor) / 2.0;
+                
+                // Draw the image
+                [origImage drawInRect:CGRectMake(x, y, origImage.size.width * scaleFactor, origImage.size.height * scaleFactor)];
+            }];
         } else {
+            // Existing renderer for earlier iOS versions
+            UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
             image = [renderer imageWithActions:^(UIGraphicsImageRendererContext*_Nonnull myContext) {
                 CGFloat scaleFactor = 40/origImage.size.height;
                 [origImage drawInRect:CGRectMake(20 - origImage.size.width*scaleFactor/2, 0, origImage.size.width*scaleFactor, 40)];
@@ -374,32 +389,6 @@
             [connection disconnect];
         }];
     }];
-}
-
-@end
-
-// Ensure to add the UIImage category for icon compatibility in this file or a separate header
-@interface UIImage (PojavIconCompat)
-- (UIImage *)compatibleResizedIcon:(CGSize)targetSize forTraitCollection:(UITraitCollection *)traitCollection;
-@end
-
-@implementation UIImage (PojavIconCompat)
-
-- (UIImage *)compatibleResizedIcon:(CGSize)targetSize forTraitCollection:(UITraitCollection *)traitCollection {
-    // Check for iOS 18 and above
-    if (@available(iOS 18.0, *)) {
-        // Custom resizing logic for iOS 18+
-        UIImage *resizedImage = [self _imageWithSize:targetSize];
-        
-        // Ensure the image maintains its original rendering mode and scale
-        UIImage *finalImage = [resizedImage imageWithRenderingMode:self.renderingMode];
-        finalImage = [finalImage imageWithAlignmentRectInsets:self.alignmentRectInsets];
-        
-        return finalImage;
-    } else {
-        // Maintain existing behavior for iOS 14 and later
-        return self;
-    }
 }
 
 @end
