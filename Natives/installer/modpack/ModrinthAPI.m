@@ -610,11 +610,12 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         });
         
         // Extract overrides
-        [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
-        if (error) {
-            NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", error.localizedDescription);
+        NSError *extractError = nil;
+        [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&extractError];
+        if (extractError) {
+            NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", extractError.localizedDescription);
             dispatch_async(dispatch_get_main_queue(), ^{
-                downloader.textProgress.localizedDescription = [NSString stringWithFormat:@"Warning: %@", error.localizedDescription];
+                downloader.textProgress.localizedDescription = [NSString stringWithFormat:@"Warning: %@", extractError.localizedDescription];
             });
         }
         
@@ -623,9 +624,11 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             NSProgress *extractProgress = [downloader.progressList lastObject];
             extractProgress.completedUnitCount = 1;
         });
-
+        
         // Extract client-overrides if present
-        [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&error];
+        NSError *clientExtractError = nil;
+        [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&clientExtractError];
+        // We don't fail if client-overrides extraction fails - it's optional
         
         // Delete package cache
         [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
