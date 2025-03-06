@@ -760,7 +760,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
     
     // Use the same directory structure as Modrinth
-    NSString *gameDir = [NSString stringWithFormat:@"./custom_gamedir/%@", safeProfileName];
+    NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", safeProfileName];
     
     // Create actual destination directory path
     NSString *destPath = [PLProfiles fullPathForProfileWithName:safeProfileName gameDir:gameDir];
