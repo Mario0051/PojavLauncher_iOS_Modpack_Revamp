@@ -43,33 +43,60 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     self.tableView.allowsSelection = NO;
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
     
-    // Add overall progress header
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 80)];
+    // Add overall progress header with proper layout
+    CGFloat headerHeight = 100;
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, headerHeight)];
+    headerView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     headerView.backgroundColor = [UIColor systemBackgroundColor];
     
-    // Overall progress label
-    _statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(15, 10, headerView.bounds.size.width - 30, 20)];
+    // Status label - positioned at the top with proper margins
+    _statusLabel = [[UILabel alloc] init];
+    _statusLabel.frame = CGRectMake(16, 10, headerView.bounds.size.width - 32, 20);
+    _statusLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     _statusLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     _statusLabel.textColor = [UIColor labelColor];
     _statusLabel.text = @"Preparing download...";
     [headerView addSubview:_statusLabel];
     
-    // Overall progress bar
+    // Progress view - positioned below the status label with proper height
+    // Note: UIProgressView has a fixed height of 2 points (4 for .bar style)
     _overallProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-    _overallProgressView.frame = CGRectMake(15, 40, headerView.bounds.size.width - 30, 20);
+    _overallProgressView.frame = CGRectMake(16, 40, headerView.bounds.size.width - 32, 2); // Only width matters for UIProgressView
+    _overallProgressView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     _overallProgressView.progress = 0.0;
-    _overallProgressView.tintColor = [UIColor systemBlueColor];
+    _overallProgressView.progressTintColor = [UIColor systemBlueColor];
+    _overallProgressView.trackTintColor = [UIColor systemFillColor];
+    _overallProgressView.layer.cornerRadius = 1.0; // Optional: rounded corners
+    _overallProgressView.clipsToBounds = YES;      // Required for corner radius
     [headerView addSubview:_overallProgressView];
     
-    // Progress percentage label
-    UILabel *percentLabel = [[UILabel alloc] initWithFrame:CGRectMake(15, 50, headerView.bounds.size.width - 30, 20)];
+    // Percentage label - positioned below the progress view
+    UILabel *percentLabel = [[UILabel alloc] init];
+    percentLabel.frame = CGRectMake(16, 50, headerView.bounds.size.width - 32, 20);
+    percentLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     percentLabel.font = [UIFont systemFontOfSize:12];
     percentLabel.textColor = [UIColor secondaryLabelColor];
-    percentLabel.textAlignment = NSTextAlignmentCenter;
+    percentLabel.textAlignment = NSTextAlignmentRight;
     percentLabel.text = @"0%";
     objc_setAssociatedObject(_overallProgressView, @"percentLabel", percentLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [headerView addSubview:percentLabel];
     
+    // Add a separator line at the bottom of the header
+    UIView *separatorLine = [[UIView alloc] init];
+    separatorLine.frame = CGRectMake(0, headerHeight - 0.5, headerView.bounds.size.width, 0.5);
+    separatorLine.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    separatorLine.backgroundColor = [UIColor separatorColor];
+    [headerView addSubview:separatorLine];
+    
+    self.tableView.tableHeaderView = headerView;
+    
+    // Make sure the header view has a valid size
+    [headerView setNeedsLayout];
+    [headerView layoutIfNeeded];
+    CGSize headerSize = [headerView systemLayoutSizeFittingSize:UILayoutFittingCompressedSize];
+    CGRect headerFrame = headerView.frame;
+    headerFrame.size.height = headerHeight;
+    headerView.frame = headerFrame;
     self.tableView.tableHeaderView = headerView;
     
     // Detect if this is a modpack install based on initial file list
