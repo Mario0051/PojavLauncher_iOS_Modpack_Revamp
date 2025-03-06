@@ -43,6 +43,9 @@
 @property(nonatomic) NSMutableArray<LauncherMenuCustomItem*> *options;
 @property(nonatomic) UILabel *statusLabel;
 @property(nonatomic) int lastSelectedIndex;
+@property(nonatomic) BOOL isInitialVc;
+@property(nonatomic, strong) UIBarButtonItem *accountBtnItem;
+@property(nonatomic, strong) UIButton *accountButton;
 @end
 
 @implementation LauncherMenuViewController
@@ -51,6 +54,10 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    
+    // Ensure table view delegate and datasource are set
+    self.tableView.delegate = self;
+    self.tableView.dataSource = self;
     
     self.isInitialVc = YES;
     
@@ -64,6 +71,7 @@
         [LauncherMenuCustomItem vcClass:LauncherProfilesViewController.class],
         [LauncherMenuCustomItem vcClass:LauncherPreferencesViewController.class],
     ].mutableCopy;
+    
     if (realUIIdiom != UIUserInterfaceIdiomTV) {
         [self.options addObject:(id)[LauncherMenuCustomItem
                                      title:localize(@"launcher.menu.custom_controls", nil)
@@ -71,6 +79,7 @@
             [contentNavigationController performSelector:@selector(enterCustomControls)];
         }]];
     }
+    
     [self.options addObject:
      (id)[LauncherMenuCustomItem
           title:localize(@"launcher.menu.execute_jar", nil)
@@ -78,7 +87,7 @@
         [contentNavigationController performSelector:@selector(enterModInstaller)];
     }]];
     
-    // TODO: Finish log-uploading service integration
+    // Log uploading service integration
     [self.options addObject:
      (id)[LauncherMenuCustomItem
           title:localize(@"login.menu.sendlogs", nil)
@@ -124,6 +133,9 @@
         [[UIBarButtonItem alloc] init]
     ];
     self.toolbarItems[1].tintColor = UIColor.labelColor;
+    
+    // Ensure table view is properly configured
+    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"cell"];
     
     // Setup the account button
     self.accountBtnItem = [self drawAccountButton];
@@ -184,13 +196,11 @@
     [self.tableView selectRowAtIndexPath:indexPath animated:NO scrollPosition:UITableViewScrollPositionNone];
 }
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
-{
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.options.count;
 }
 
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
-{
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"];
     if (cell == nil) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"cell"];
@@ -203,17 +213,13 @@
     UIImage *image = nil;
     
     if (origImage) {
-        // Consistent rendering approach for both iOS 14 and iOS 18
         UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(40, 40)];
         image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-            // Calculate scale factor to fit the image while maintaining aspect ratio
             CGFloat scaleFactor = fmin(40.0 / origImage.size.width, 40.0 / origImage.size.height);
             
-            // Calculate centered position
             CGFloat x = (40 - origImage.size.width * scaleFactor) / 2.0;
             CGFloat y = (40 - origImage.size.height * scaleFactor) / 2.0;
             
-            // Draw the image
             [origImage drawInRect:CGRectMake(x, y, origImage.size.width * scaleFactor, origImage.size.height * scaleFactor)];
         }];
         
@@ -228,6 +234,41 @@
         cell.imageView.image = [cell.imageView.image _imageWithSize:CGSizeMake(40, 40)];
     }
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    // Ensure this method is properly implemented
+    LauncherMenuCustomItem *selected = self.options[indexPath.row];
+    
+    // If there's a custom action, execute it
+    if (selected.action != nil) {
+        selected.action();
+        return;
+    }
+    
+    // Handle view controller navigation
+    if (self.isInitialVc) {
+        self.isInitialVc = NO;
+    } else {
+        // Store current view controllers before switching
+        if (self.lastSelectedIndex < self.options.count) {
+            self.options[self.lastSelectedIndex].vcArray = contentNavigationController.viewControllers;
+        }
+        
+        // Set new view controllers
+        [contentNavigationController setViewControllers:selected.vcArray animated:NO];
+    }
+    
+    // Update last selected index
+    self.lastSelectedIndex = indexPath.row;
+    
+    // Set navigation items for the selected view controller
+    if (selected.vcArray.count > 0) {
+        UIViewController *topVC = selected.vcArray[0];
+        topVC.navigationItem.rightBarButtonItem = self.accountBtnItem;
+        topVC.navigationItem.leftBarButtonItem = self.splitViewController.displayModeButtonItem;
+        topVC.navigationItem.leftItemsSupplementBackButton = YES;
+    }
 }
 
 - (void)selectAccount:(UIButton *)sender {
@@ -265,7 +306,7 @@
     if (selected == nil) {
         if((size.width / 3) > 200) {
             [self.accountButton setAttributedTitle:[[NSAttributedString alloc] initWithString:localize(@"login.option.select", nil)] forState:UIControlStateNormal];
-        } else {
+} else {
             [self.accountButton setAttributedTitle:(NSAttributedString *)@"" forState:UIControlStateNormal];
         }
         [self.accountButton setImage:[UIImage imageNamed:@"DefaultAccount"] forState:UIControlStateNormal];
