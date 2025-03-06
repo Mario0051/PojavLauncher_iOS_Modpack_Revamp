@@ -9,7 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 @interface ModrinthAPI : ModpackAPI
 
 /**
- * Initializes a Modrinth API instance with the default base URL
+ * Creates a default instance of ModrinthAPI with standard Modrinth URL
  * @return An initialized ModrinthAPI instance
  */
 + (instancetype)defaultAPI;
@@ -20,17 +20,11 @@ NS_ASSUME_NONNULL_BEGIN
  * @param modrinthSearchResult Previous search results for pagination
  * @return Array of search results
  */
-- (nullable NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters 
+- (nullable NSMutableArray *)searchModWithFilters:(NSDictionary *)searchFilters 
                                 previousPageResult:(nullable NSMutableArray *)modrinthSearchResult;
 
 /**
- * Synchronously loads details for a mod or modpack
- * @param item The mod or modpack to load details for
- */
-- (void)loadDetailsOfModSync:(NSMutableDictionary *)item;
-
-/**
- * Asynchronously loads details for a mod or modpack
+ * Loads details for a mod or modpack asynchronously
  * @param item The mod or modpack to load details for
  * @param completion Block to call when the operation completes
  */
@@ -44,6 +38,17 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (void)installModFromDetail:(NSDictionary *)modDetail 
                      atIndex:(NSUInteger)selectedVersion;
+
+/**
+ * Filters versions based on game version and loader compatibility
+ * @param gameVersion The Minecraft version to filter for (can be nil)
+ * @param loader The mod loader to filter for (can be nil)
+ * @param versions Array of version dictionaries to filter
+ * @return Filtered array of versions
+ */
+- (NSArray *)filterVersionsForGameVersion:(nullable NSString *)gameVersion 
+                                   loader:(nullable NSString *)loader 
+                             fromVersions:(NSArray *)versions;
 
 @end
 
