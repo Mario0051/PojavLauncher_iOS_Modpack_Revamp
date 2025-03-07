@@ -518,17 +518,22 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         [task resume];
     }
     
-    // Add extraction task to display
-    [downloader.fileList addObject:@"Extracting overrides"];
+    // Create extraction progress object
+    __block NSProgress *extractionProgress;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Add extraction task to display
+        [downloader.fileList addObject:@"Extracting overrides"];
+        
+        // Create progress for extraction and add to tracking
+        extractionProgress = [NSProgress progressWithTotalUnitCount:1];
+        extractionProgress.kind = NSProgressKindFile;
+        [downloader.progressList addObject:extractionProgress];
+        [downloader.progress addChild:extractionProgress withPendingUnitCount:1];
+    });
     
     // Set up a background thread to monitor downloads and do post-processing
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // We need to wait a bit for all the downloads to complete
-        // Note: In a better implementation, we would track each task's completion
-        // but here we'll use a simple delay-based approach since the UI already tracks progress
-        
-        // Wait a reasonable time for downloads to finish
-        // This is a fallback mechanism - the UI will still update correctly
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             // Check periodically if all downloads are complete
             dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
@@ -562,15 +567,28 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                         NSLog(@"[ModrinthAPI] Successfully extracted overrides");
                     }
                     
+                    // Mark extraction as complete
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        extractionProgress.completedUnitCount = 1;
+                    });
+                    
                     // Extract client-overrides if present (optional)
                     [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:nil];
                     
                     // Delete package cache
                     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
                     
-                    // Add profile setup task to display
+                    // Create profile setup progress
+                    __block NSProgress *setupProgress;
                     dispatch_async(dispatch_get_main_queue(), ^{
+                        // Add profile setup task to display
                         [downloader.fileList addObject:@"Setting up profile"];
+                        
+                        // Create progress for profile setup
+                        setupProgress = [NSProgress progressWithTotalUnitCount:1];
+                        setupProgress.kind = NSProgressKindFile;
+                        [downloader.progressList addObject:setupProgress];
+                        [downloader.progress addChild:setupProgress withPendingUnitCount:1];
                     });
 
                     // Download dependency client json (if available)
@@ -585,6 +603,11 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                         NSURLSessionDownloadTask *jsonTask = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath];
                         if (jsonTask) {
                             [jsonTask resume];
+                            
+                            // Wait for JSON download to complete
+                            while (jsonTask.state != NSURLSessionTaskStateCompleted) {
+                                [NSThread sleepForTimeInterval:0.1];
+                            }
                         }
                     }
 
@@ -610,8 +633,18 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                         PLProfiles.current.selectedProfileName = safeProfileName;
                         [PLProfiles.current save];
                         
-                        // Add completion message to progress
+                        // Mark setup as complete
+                        setupProgress.completedUnitCount = 1;
+                        
+                        // Add completion progress
                         [downloader.fileList addObject:@"Complete"];
+                        
+                        // Create completion progress
+                        NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+                        completeProgress.completedUnitCount = 1; // Already complete
+                        completeProgress.kind = NSProgressKindFile;
+                        [downloader.progressList addObject:completeProgress];
+                        [downloader.progress addChild:completeProgress withPendingUnitCount:1];
                     });
                     
                     // Create installation log
@@ -636,7 +669,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         });
     });
 }
-
 #pragma mark - Mod Installation
 
 - (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
