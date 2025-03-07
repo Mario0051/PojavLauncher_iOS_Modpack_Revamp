@@ -4,6 +4,7 @@
 #import "modpack/ModpackUtils.h"
 #import "AFNetworking.h"
 #import "UIKit+AFNetworking.h"
+#import "LauncherPreferences.h"
 #import "config.h"
 #import "utils.h"
 #import "PLProfiles.h"
