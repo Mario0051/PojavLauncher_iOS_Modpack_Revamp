@@ -11,65 +11,147 @@
 
 #include <CommonCrypto/CommonDigest.h>
 
+// Define constants for better code maintenance
+static NSTimeInterval const kDownloadTimeout = 60.0; // 60 seconds timeout
+static NSUInteger const kDefaultPlaceholderSize = 100 * 1024; // 100KB default size
+static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress every 250ms
+
 @interface MinecraftResourceDownloadTask ()
 @property (nonatomic, strong) AFURLSessionManager* manager;
 @property (nonatomic, assign) DownloadSource currentDownloadSource;
 @property (nonatomic, strong) NSMutableDictionary *downloadMetadata;
+@property (nonatomic, strong) dispatch_queue_t progressQueue;
+@property (nonatomic, strong) NSOperationQueue *backgroundQueue;
+@property (nonatomic, strong) NSMutableSet *observedTasks;
 @end
 
 @implementation MinecraftResourceDownloadTask
 
 - (instancetype)init {
     self = [super init];
-    // TODO: implement background download
-    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-    configuration.timeoutIntervalForRequest = 86400;
-    configuration.waitsForConnectivity = YES;
-    configuration.networkServiceType = NSURLNetworkServiceTypeBackground;
-    
-    self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
-    self.fileList = [NSMutableArray new];
-    self.progressList = [NSMutableArray new];
-    self.downloadMetadata = [NSMutableDictionary new];
-    self.currentDownloadSource = DownloadSourceMinecraft;
+    if (self) {
+        // Improve session configuration with better timeout and connectivity settings
+        NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+        configuration.timeoutIntervalForRequest = 300; // 5 minutes
+        configuration.timeoutIntervalForResource = 3600; // 1 hour for large downloads
+        configuration.waitsForConnectivity = YES;
+        configuration.HTTPMaximumConnectionsPerHost = 8; // Increase parallel connections
+        configuration.networkServiceType = NSURLNetworkServiceTypeBackground;
+        
+        self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
+        self.fileList = [NSMutableArray new];
+        self.progressList = [NSMutableArray new];
+        self.downloadMetadata = [NSMutableDictionary new];
+        self.currentDownloadSource = DownloadSourceMinecraft;
+        
+        // Create dedicated queues for progress tracking and background operations
+        self.progressQueue = dispatch_queue_create("com.minecraft.progress", DISPATCH_QUEUE_SERIAL);
+        self.backgroundQueue = [[NSOperationQueue alloc] init];
+        self.backgroundQueue.maxConcurrentOperationCount = 4;
+        
+        self.observedTasks = [NSMutableSet new];
+    }
     return self;
 }
 
-// Add file to the queue
+- (void)prepareForDownload {
+    // Create a fake progress which is used to update completedUnitCount properly
+    self.textProgress = [NSProgress new];
+    self.textProgress.kind = NSProgressKindFile;
+    self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
+    self.textProgress.totalUnitCount = 0; // Start at 0 instead of -1
+    self.textProgress.localizedDescription = @"Preparing download...";
+
+    self.progress = [NSProgress new];
+    // Don't push 1 byte anymore - start at 0 and adjust properly
+    self.progress.totalUnitCount = 0;
+    [self.fileList removeAllObjects];
+    [self.progressList removeAllObjects];
+    
+    // Reset download metadata
+    [self.downloadMetadata removeAllObjects];
+    
+    // Reset observed tasks set
+    [self.observedTasks removeAllObjects];
+}
+
+// Add file to the queue with improved error handling and progress tracking
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil];
 }
 
-// Add file to the queue with success callback
+// Add file to the queue with success callback - significantly improved implementation
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+    // Safety check for nil URL
+    if (!url || url.length == 0) {
+        NSLog(@"[MCDL] Error: Attempted to create download task with empty URL for %@", altName ?: path.lastPathComponent);
+        return nil;
+    }
+    
+    // Check if file already exists and has valid SHA
     BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    // logSuccess?
     if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+        NSLog(@"[MCDL] File already exists with matching SHA: %@", altName ?: path.lastPathComponent);
         if (success) success();
         return nil;
     } else if (![self checkAccessWithDialog:YES]) {
+        NSLog(@"[MCDL] Access check failed for downloading");
         return nil;
     }
 
     NSString *name = altName ?: path.lastPathComponent;
-    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:url]];
+    
+    // Improved URL validation
+    NSURL *requestURL = [NSURL URLWithString:url];
+    if (!requestURL) {
+        NSLog(@"[MCDL] Error: Invalid URL format: %@", url);
+        return nil;
+    }
+    
+    NSURLRequest *request = [NSURLRequest requestWithURL:requestURL];
     __block NSProgress *progress;
     __weak typeof(self) weakSelf = self;
     __block NSInteger retryCount = 0;
+    
+    // Create the download task with improved error handling
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
         NSLog(@"[MCDL] Downloading %@", name);
+        
+        // Get progress for the task
         progress = [weakSelf.manager downloadProgressForTask:task];
+        
+        // If size wasn't provided, get it from the response
         if (!size && task) {
-            [weakSelf addDownloadTaskToProgress:task size:response.expectedContentLength];
+            NSUInteger responseSize = response.expectedContentLength > 0 ? 
+                                     (NSUInteger)response.expectedContentLength : 
+                                     kDefaultPlaceholderSize;
+            
+            [weakSelf addDownloadTaskToProgress:task size:responseSize];
             [weakSelf.fileList addObject:name];
         }
-        [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        
+        // Ensure directory exists before trying to write file
+        NSString *dirPath = path.stringByDeletingLastPathComponent;
+        NSError *dirError = nil;
+        if (![NSFileManager.defaultManager fileExistsAtPath:dirPath]) {
+            [NSFileManager.defaultManager createDirectoryAtPath:dirPath 
+                                   withIntermediateDirectories:YES 
+                                                    attributes:nil 
+                                                         error:&dirError];
+            if (dirError) {
+                NSLog(@"[MCDL] Error creating directory for %@: %@", path, dirError);
+            }
+        }
+        
+        // Remove existing file to prevent issues
         [NSFileManager.defaultManager removeItemAtPath:path error:nil];
         return [NSURL fileURLWithPath:path];
     } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
         if (weakSelf.progress.cancelled) {
-            // Ignore any further errors
+            // Ignore any further errors if cancelled
+            NSLog(@"[MCDL] Download cancelled for %@", name);
+            return;
         } else if (error != nil) {
             // Check if we should retry (up to 3 times)
             if (retryCount < 3 && (error.code == NSURLErrorTimedOut || 
@@ -78,18 +160,28 @@
                 retryCount++;
                 NSLog(@"[MCDL] Retrying download for %@ (attempt %ld): %@", name, (long)retryCount, error);
                 
-                // Create a new task with the same parameters and try again
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                // Wait before retrying (exponential backoff)
+                NSTimeInterval delay = pow(2.0, retryCount - 1) * 0.5;
+                
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), 
+                               dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     NSURLSessionDownloadTask *retryTask = [weakSelf.manager downloadTaskWithRequest:request progress:nil destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
                         return [NSURL fileURLWithPath:path];
                     } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
+                        [weakSelf removeTaskObserver:task];
+                        
                         if (error) {
                             [weakSelf finishDownloadWithError:error file:name];
                         } else if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
                             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
                         } else {
-                            progress.totalUnitCount = progress.completedUnitCount;
-                            if (success) success();
+                            dispatch_async(weakSelf.progressQueue, ^{
+                                // Mark progress as complete
+                                if (progress) {
+                                    progress.totalUnitCount = progress.completedUnitCount;
+                                }
+                                if (success) success();
+                            });
                         }
                     }];
                     [retryTask resume];
@@ -101,11 +193,20 @@
         } else if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
         } else {
-            progress.totalUnitCount = progress.completedUnitCount;
-            if (success) success();
+            // Success - mark progress as complete
+            dispatch_async(weakSelf.progressQueue, ^{
+                if (progress) {
+                    progress.totalUnitCount = progress.completedUnitCount;
+                }
+                if (success) success();
+            });
         }
+        
+        // Remove task observer on completion or error
+        [weakSelf removeTaskObserver:task];
     }];
 
+    // After task is created, add it to progress tracking
     if (size && task) {
         [self addDownloadTaskToProgress:task size:size];
         [self.fileList addObject:name];
@@ -121,32 +222,78 @@
         taskInfo[@"path"] = path;
         taskInfo[@"source"] = @(self.currentDownloadSource);
         
-        [self.downloadMetadata setObject:taskInfo forKey:task];
+        @synchronized(self.downloadMetadata) {
+            [self.downloadMetadata setObject:taskInfo forKey:task];
+        }
     }
 
     return task;
 }
 
+// Improved progress tracking for download tasks
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSInteger)size {
-    NSProgress *progress = [self.manager downloadProgressForTask:task];
-    
-    progress.kind = NSProgressKindFile;
-    progress.fileOperationKind = NSProgressFileOperationKindDownloading;
-    
-    // Set initial size - real size will be updated when response is received
-    NSUInteger initialSize = 1; // Just 1 byte initially to avoid division by zero issues
-    progress.totalUnitCount = initialSize;
-    
-    [self.progressList addObject:progress];
-    [self.progress addChild:progress withPendingUnitCount:initialSize];
-    self.progress.totalUnitCount += initialSize;
-    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-    
-    // Add observer to update size when Content-Length becomes available
-    [task addObserver:self forKeyPath:@"countOfBytesExpectedToReceive" options:NSKeyValueObservingOptionNew context:NULL];
-    [task addObserver:self forKeyPath:@"response" options:NSKeyValueObservingOptionNew context:NULL];
+    // Work on the progress queue to avoid threading issues
+    dispatch_async(self.progressQueue, ^{
+        NSProgress *progress = [self.manager downloadProgressForTask:task];
+        
+        progress.kind = NSProgressKindFile;
+        progress.fileOperationKind = NSProgressFileOperationKindDownloading;
+        
+        // Use a more reasonable initial size estimate if actual size is unavailable
+        NSUInteger initialSize = size > 0 ? size : kDefaultPlaceholderSize;
+        progress.totalUnitCount = initialSize;
+        
+        [self.progressList addObject:progress];
+        [self.progress addChild:progress withPendingUnitCount:initialSize];
+        self.progress.totalUnitCount += initialSize;
+        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+        
+        // Add observer to update size when Content-Length becomes available
+        @synchronized(self.observedTasks) {
+            if (![self.observedTasks containsObject:task]) {
+                [task addObserver:self forKeyPath:@"countOfBytesExpectedToReceive" options:NSKeyValueObservingOptionNew context:NULL];
+                [task addObserver:self forKeyPath:@"response" options:NSKeyValueObservingOptionNew context:NULL];
+                [self.observedTasks addObject:task];
+            }
+        }
+    });
 }
 
+// Improved progress size update with proper synchronization and error handling
+- (void)updateProgressSize:(NSProgress *)progress forTask:(NSURLSessionDownloadTask *)task withSize:(NSUInteger)newSize {
+    if (!progress || newSize == 0) {
+        return;
+    }
+    
+    // Ensure we're on the progress queue
+    dispatch_async(self.progressQueue, ^{
+        // Avoid unnecessary updates if size hasn't changed significantly
+        if (progress.totalUnitCount == newSize) {
+            return;
+        }
+        
+        // Calculate the size difference
+        NSInteger sizeDifference = (NSInteger)newSize - (NSInteger)progress.totalUnitCount;
+        
+        // Log the adjustment we're making
+        NSLog(@"[MCDL] Updating size for download: %@ from %lld to %lu bytes", 
+              [task.originalRequest.URL lastPathComponent], 
+              progress.totalUnitCount, 
+              (unsigned long)newSize);
+        
+        // Update progress size
+        progress.totalUnitCount = newSize;
+        
+        // Update parent progress
+        if (self.progress && sizeDifference != 0) {
+            // Adjust the parent's total by the difference
+            self.progress.totalUnitCount += sizeDifference;
+            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+        }
+    });
+}
+
+// Better KVO handling with proper error management
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
     if ([object isKindOfClass:[NSURLSessionDownloadTask class]]) {
         NSURLSessionDownloadTask *task = (NSURLSessionDownloadTask *)object;
@@ -156,11 +303,10 @@
             return;
         }
         
-        // Check if we need to update size from countOfBytesExpectedToReceive
+        // Handle size updates from different sources
         if ([keyPath isEqualToString:@"countOfBytesExpectedToReceive"] && task.countOfBytesExpectedToReceive > 0) {
             [self updateProgressSize:progress forTask:task withSize:task.countOfBytesExpectedToReceive];
         }
-        // Check if we need to update size from Content-Length header
         else if ([keyPath isEqualToString:@"response"] && [task.response isKindOfClass:[NSHTTPURLResponse class]]) {
             NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
             NSString *contentLength = [httpResponse.allHeaderFields objectForKey:@"Content-Length"];
@@ -176,34 +322,22 @@
     }
 }
 
-- (void)updateProgressSize:(NSProgress *)progress forTask:(NSURLSessionDownloadTask *)task withSize:(NSUInteger)newSize {
-    if (!progress || progress.totalUnitCount == newSize) {
-        return; // No need to update if size is already correct
-    }
-    
-    // Log the adjustment we're making
-    NSLog(@"[MCDL] Updating size for download: %@ from %lld to %lu bytes", 
-          [task.originalRequest.URL lastPathComponent], 
-          progress.totalUnitCount, 
-          (unsigned long)newSize);
-    
-    // Calculate the difference to adjust parent progress
-    NSInteger sizeDifference = newSize - progress.totalUnitCount;
-    
-    // Update on main thread to avoid KVO issues
-    dispatch_async(dispatch_get_main_queue(), ^{
-        // Update progress size
-        progress.totalUnitCount = newSize;
-        
-        // Update parent progress
-        if (self.progress && sizeDifference != 0) {
-            // Adjust the parent's total by the difference
-            self.progress.totalUnitCount += sizeDifference;
-            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+// Cleanup to avoid KVO crashes
+- (void)removeTaskObserver:(NSURLSessionDownloadTask *)task {
+    @synchronized(self.observedTasks) {
+        if ([self.observedTasks containsObject:task]) {
+            @try {
+                [task removeObserver:self forKeyPath:@"countOfBytesExpectedToReceive"];
+                [task removeObserver:self forKeyPath:@"response"];
+                [self.observedTasks removeObject:task];
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Warning: Failed to remove observer: %@", exception);
+            }
         }
-    });
+    }
 }
 
+// Improved version metadata download with better error handling
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
     // Download base json
     NSString *versionStr = version[@"id"];
@@ -258,6 +392,7 @@
     [task resume];
 }
 
+// Improved asset metadata download
 - (void)downloadAssetMetadataWithSuccess:(void (^)())success {
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
     if (!assetIndex) {
@@ -269,6 +404,7 @@
     NSString *url = assetIndex[@"url"];
     NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
     NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
+    
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:^{
         self.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
         success();
@@ -359,9 +495,9 @@
         [self downloadAssetMetadataWithSuccess:^{
             NSArray *libTasks = [self downloadClientLibraries];
             NSArray *assetTasks = [self downloadClientAssets];
-            // Drop the 1 byte we set initially
-            self.progress.totalUnitCount--;
-            self.textProgress.totalUnitCount--;
+            
+            // Drop the 1 byte we set initially if we had set it, but now we start at 0 so nothing to drop
+            
             if (self.progress.totalUnitCount == 0) {
                 // We have nothing to download, invoke completion observer
                 self.progress.totalUnitCount = 1;
@@ -411,70 +547,21 @@
     [task resume];
 }
 
-- (void)prepareForDownload {
-    // Create a fake progress which is used to update completedUnitCount properly
-    // (completedUnitCount does not update unless subprogress completes)
-    self.textProgress = [NSProgress new];
-    self.textProgress.kind = NSProgressKindFile;
-    self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
-    self.textProgress.totalUnitCount = -1;
-
-    self.progress = [NSProgress new];
-    // Push 1 byte so it won't accidentally finish after downloading assets index
-    self.progress.totalUnitCount = 1;
-    [self.fileList removeAllObjects];
-    [self.progressList removeAllObjects];
-    
-    // Reset download metadata
-    [self.downloadMetadata removeAllObjects];
-}
-
-#pragma mark - Tracking and Logging Methods
-
-- (NSDictionary *)getDownloadTaskInfo:(NSURLSessionDownloadTask *)task {
-    return self.downloadMetadata[task];
-}
-
-- (NSArray<NSDictionary *> *)getAllDownloadedFiles {
-    NSMutableArray *downloadedFiles = [NSMutableArray array];
-    
-    for (NSURLSessionDownloadTask *task in self.downloadMetadata.allKeys) {
-        NSDictionary *taskInfo = self.downloadMetadata[task];
-        if (taskInfo) {
-            [downloadedFiles addObject:taskInfo];
-        }
-    }
-    
-    return [downloadedFiles copy];
-}
-
-- (void)logDownloadSource:(DownloadSource)source {
-    NSString *sourceString;
-    switch (source) {
-        case DownloadSourceMinecraft:
-            sourceString = @"Minecraft";
-            break;
-        case DownloadSourceCurseForge:
-            sourceString = @"CurseForge";
-            break;
-        case DownloadSourceModrinth:
-            sourceString = @"Modrinth";
-            break;
-        default:
-            sourceString = @"Unknown";
-            break;
-    }
-    
-    NSLog(@"[DownloadTask] Current Download Source: %@", sourceString);
-}
-
-#pragma mark - Existing Utility Methods
-
+// Better error handling and cleanup
 - (void)finishDownloadWithErrorString:(NSString *)error {
     [self.progress cancel];
+    
+    // Stop all tasks
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
-    showDialog(localize(@"Error", nil), error);
-    self.handleError();
+    
+    // Always show error dialog on main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        showDialog(localize(@"Error", nil), error);
+        
+        if (self.handleError) {
+            self.handleError();
+        }
+    });
 }
 
 - (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
@@ -542,15 +629,59 @@
     return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
 }
 
+// Tracking and utility methods
+- (NSDictionary *)getDownloadTaskInfo:(NSURLSessionDownloadTask *)task {
+    return self.downloadMetadata[task];
+}
+
+- (NSArray<NSDictionary *> *)getAllDownloadedFiles {
+    NSMutableArray *downloadedFiles = [NSMutableArray array];
+    
+    @synchronized(self.downloadMetadata) {
+        for (NSURLSessionDownloadTask *task in self.downloadMetadata.allKeys) {
+            NSDictionary *taskInfo = self.downloadMetadata[task];
+            if (taskInfo) {
+                [downloadedFiles addObject:taskInfo];
+            }
+        }
+    }
+    
+    return [downloadedFiles copy];
+}
+
+- (void)logDownloadSource:(DownloadSource)source {
+    NSString *sourceString;
+    switch (source) {
+        case DownloadSourceMinecraft:
+            sourceString = @"Minecraft";
+            break;
+        case DownloadSourceCurseForge:
+            sourceString = @"CurseForge";
+            break;
+        case DownloadSourceModrinth:
+            sourceString = @"Modrinth";
+            break;
+        default:
+            sourceString = @"Unknown";
+            break;
+    }
+    
+    NSLog(@"[DownloadTask] Current Download Source: %@", sourceString);
+}
+
+// Cleanup on dealloc to prevent KVO crashes
 - (void)dealloc {
     // Remove any remaining observers to prevent crashes
-    for (NSURLSessionDownloadTask *task in [self.manager downloadTasks]) {
-        @try {
-            [task removeObserver:self forKeyPath:@"countOfBytesExpectedToReceive"];
-            [task removeObserver:self forKeyPath:@"response"];
-        } @catch (NSException *exception) {
-            // Ignore if observer wasn't registered
+    @synchronized(self.observedTasks) {
+        for (NSURLSessionDownloadTask *task in self.observedTasks) {
+            @try {
+                [task removeObserver:self forKeyPath:@"countOfBytesExpectedToReceive"];
+                [task removeObserver:self forKeyPath:@"response"];
+            } @catch (NSException *exception) {
+                // Ignore if observer wasn't registered
+            }
         }
+        [self.observedTasks removeAllObjects];
     }
 }
 
