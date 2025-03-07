@@ -11,12 +11,6 @@
 
 #include <CommonCrypto/CommonDigest.h>
 
-typedef NS_ENUM(NSInteger, DownloadSource) {
-    DownloadSourceMinecraft,
-    DownloadSourceCurseForge,
-    DownloadSourceModrinth
-};
-
 @interface MinecraftResourceDownloadTask ()
 @property (nonatomic, strong) AFURLSessionManager* manager;
 @property (nonatomic, assign) DownloadSource currentDownloadSource;
