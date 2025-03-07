@@ -477,6 +477,9 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                                                         (unsigned long)files.count];
     });
     
+    // Create a task tracker dictionary to map tasks to their progress objects
+    NSMutableDictionary *taskProgressMap = [NSMutableDictionary dictionary];
+    
     // Create download queue and tracker
     dispatch_group_t downloadGroup = dispatch_group_create();
     __block NSUInteger completedDownloads = 0;
@@ -522,37 +525,41 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         // Enter the download group
         dispatch_group_enter(downloadGroup);
         
-        // Add to file list for progress tracking
+        // Create progress object for this file
+        NSProgress *fileProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000]; // Use actual size or estimate
+        fileProgress.kind = NSProgressKindFile;
+        fileProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
+        
+        // Add to file list and progress tracking on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
             [downloader.fileList addObject:fileName];
-            
-            // Create progress for this file
-            NSProgress *fileProgress = [NSProgress progressWithTotalUnitCount:1];
-            fileProgress.kind = NSProgressKindFile;
             [downloader.progressList addObject:fileProgress];
-            [downloader.progress addChild:fileProgress withPendingUnitCount:1];
+            [downloader.progress addChild:fileProgress withPendingUnitCount:fileProgress.totalUnitCount];
         });
         
         // Limit concurrent downloads
         dispatch_semaphore_wait(self.downloadSemaphore, DISPATCH_TIME_FOREVER);
         
-        // Create and start download task
-        NSURLSessionDownloadTask *task = [[NSURLSession sharedSession] downloadTaskWithURL:[NSURL URLWithString:url] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
+        // Create and start download task with progress tracking
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+        NSURLSession *session = [NSURLSession sessionWithConfiguration:config
+                                                              delegate:nil
+                                                         delegateQueue:[NSOperationQueue mainQueue]];
+        
+        NSURLSessionDownloadTask *task = [session downloadTaskWithURL:[NSURL URLWithString:url]
+                                                 completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
             // Signal semaphore to allow another download
             dispatch_semaphore_signal(self.downloadSemaphore);
-            
-            // Find the corresponding progress object
-            NSProgress *fileProgress = downloader.progressList.lastObject;
             
             if (downloadError) {
                 failedDownloads++;
                 NSLog(@"[ModrinthAPI] Failed to download %@: %@", fileName, downloadError);
                 
-                // Mark progress as failed
-                if (fileProgress) {
-                    fileProgress.totalUnitCount = 1;
+                // Mark progress as failed but "complete" for tracking purposes
+                dispatch_async(dispatch_get_main_queue(), ^{
                     fileProgress.completedUnitCount = 0;
-                }
+                    fileProgress.totalUnitCount = 1; // Zero out the contribution to parent
+                });
             } else {
                 // Move file to destination
                 NSError *moveError = nil;
@@ -567,18 +574,28 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                     NSLog(@"[ModrinthAPI] Failed to save %@: %@", fileName, moveError);
                     
                     // Mark progress as failed
-                    if (fileProgress) {
-                        fileProgress.totalUnitCount = 1;
+                    dispatch_async(dispatch_get_main_queue(), ^{
                         fileProgress.completedUnitCount = 0;
-                    }
+                    });
                 } else {
                     completedDownloads++;
                     
-                    // Mark progress as complete
-                    if (fileProgress) {
-                        fileProgress.totalUnitCount = 1;
-                        fileProgress.completedUnitCount = 1;
-                    }
+                    // Mark progress as complete with proper size
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        // Get actual file size
+                        NSError *attributesError = nil;
+                        NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path 
+                                                                                                   error:&attributesError];
+                        if (!attributesError) {
+                            NSUInteger actualSize = [attributes fileSize];
+                            fileProgress.totalUnitCount = actualSize;
+                            fileProgress.completedUnitCount = actualSize;
+                        } else {
+                            // Use response size or fall back to 1
+                            fileProgress.totalUnitCount = response.expectedContentLength > 0 ? response.expectedContentLength : 1;
+                            fileProgress.completedUnitCount = fileProgress.totalUnitCount;
+                        }
+                    });
                 }
             }
             
@@ -586,6 +603,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             dispatch_group_leave(downloadGroup);
         }];
         
+        // Start the download
         [task resume];
     }
     
@@ -688,6 +706,9 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             
             // Update progress to show completion
             downloader.textProgress.localizedDescription = @"Modpack installation complete";
+            
+            // Add completion message to progress
+            [downloader.fileList addObject:@"Complete"];
         });
         
         // Create installation log
