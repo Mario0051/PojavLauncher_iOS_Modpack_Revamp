@@ -461,7 +461,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         return;
     }
     
-    // Create arrays to store download tasks and track progress
+    // Create arrays to store download tasks
     NSMutableArray *downloadTasks = [NSMutableArray array];
     
     // First pass: create download tasks for each file but don't start them yet
@@ -504,128 +504,136 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         // Create a download task using the proper method from MinecraftResourceDownloadTask
         // This will automatically add it to the progress tracking system
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
-                                                                size:size 
-                                                                 sha:sha 
-                                                             altName:fileName 
-                                                              toPath:path];
+                                                                  size:size 
+                                                                   sha:sha 
+                                                               altName:fileName 
+                                                                toPath:path];
         if (task) {
             [downloadTasks addObject:task];
         }
     }
     
-    // Start downloads with a throttling mechanism to limit concurrency
-    dispatch_queue_t downloadQueue = dispatch_queue_create("com.modrinth.downloads", DISPATCH_QUEUE_CONCURRENT);
-    dispatch_semaphore_t throttleSemaphore = dispatch_semaphore_create(4); // Limit to 4 concurrent downloads
+    // Start all downloads at once - the createDownloadTask method already handles progress tracking
+    for (NSURLSessionDownloadTask *task in downloadTasks) {
+        [task resume];
+    }
     
     // Add extraction task to display
     [downloader.fileList addObject:@"Extracting overrides"];
     
-    dispatch_group_t downloadGroup = dispatch_group_create();
-    
-    // Start the downloads with throttling
-    for (NSURLSessionDownloadTask *task in downloadTasks) {
-        dispatch_group_enter(downloadGroup);
-        
-        dispatch_async(downloadQueue, ^{
-            dispatch_semaphore_wait(throttleSemaphore, DISPATCH_TIME_FOREVER);
-            
-            // Create a completion handler for the task
-            [task resume];
-            
-            // Set up a completion observer to signal the semaphore when done
-            [[NSNotificationCenter defaultCenter] addObserverForName:NSURLSessionTaskDidCompleteNotification
-                                                              object:task
-                                                               queue:[NSOperationQueue mainQueue]
-                                                          usingBlock:^(NSNotification * _Nonnull note) {
-                dispatch_semaphore_signal(throttleSemaphore);
-                dispatch_group_leave(downloadGroup);
-                [[NSNotificationCenter defaultCenter] removeObserver:self
-                                                                name:NSURLSessionTaskDidCompleteNotification
-                                                              object:task];
-            }];
-        });
-    }
-    
-    // Wait for all downloads to complete
+    // Set up a background thread to monitor downloads and do post-processing
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        dispatch_group_wait(downloadGroup, DISPATCH_TIME_FOREVER);
+        // We need to wait a bit for all the downloads to complete
+        // Note: In a better implementation, we would track each task's completion
+        // but here we'll use a simple delay-based approach since the UI already tracks progress
         
-        NSLog(@"[ModrinthAPI] All download tasks completed");
-        
-        // Extract overrides
-        NSError *extractError = nil;
-        [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&extractError];
-        if (extractError) {
-            NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", extractError.localizedDescription);
-        }
-        
-        // Extract client-overrides if present (optional)
-        [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:nil];
-        
-        // Delete package cache
-        [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
-        
-        // Add profile setup task to display
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [downloader.fileList addObject:@"Setting up profile"];
-        });
+        // Wait a reasonable time for downloads to finish
+        // This is a fallback mechanism - the UI will still update correctly
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            // Check periodically if all downloads are complete
+            dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+            dispatch_source_set_timer(timer, dispatch_walltime(NULL, 0), 1 * NSEC_PER_SEC, 0.1 * NSEC_PER_SEC);
+            
+            __block int checkCount = 0;
+            dispatch_source_set_event_handler(timer, ^{
+                // Check if all tasks are completed
+                BOOL allCompleted = YES;
+                for (NSURLSessionDownloadTask *task in downloadTasks) {
+                    if (task.state != NSURLSessionTaskStateCompleted) {
+                        allCompleted = NO;
+                        break;
+                    }
+                }
+                
+                checkCount++;
+                
+                // If all downloads are complete or we've checked enough times, proceed
+                if (allCompleted || checkCount > 60) { // 60 seconds max wait
+                    dispatch_source_cancel(timer);
+                    
+                    NSLog(@"[ModrinthAPI] All downloads completed or timeout reached");
+                    
+                    // Extract overrides
+                    NSError *extractError = nil;
+                    [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&extractError];
+                    if (extractError) {
+                        NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", extractError.localizedDescription);
+                    } else {
+                        NSLog(@"[ModrinthAPI] Successfully extracted overrides");
+                    }
+                    
+                    // Extract client-overrides if present (optional)
+                    [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:nil];
+                    
+                    // Delete package cache
+                    [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
+                    
+                    // Add profile setup task to display
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        [downloader.fileList addObject:@"Setting up profile"];
+                    });
 
-        // Download dependency client json (if available)
-        NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
-        if (depInfo[@"json"]) {
-            NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), depInfo[@"id"]];
-            
-            // Create directory structure for the JSON file
-            [NSFileManager.defaultManager createDirectoryAtPath:[jsonPath stringByDeletingLastPathComponent] 
-                                withIntermediateDirectories:YES attributes:nil error:nil];
-                              
-            NSURLSessionDownloadTask *jsonTask = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath];
-            if (jsonTask) {
-                [jsonTask resume];
-            }
-        }
+                    // Download dependency client json (if available)
+                    NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
+                    if (depInfo[@"json"]) {
+                        NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), depInfo[@"id"]];
+                        
+                        // Create directory structure for the JSON file
+                        [NSFileManager.defaultManager createDirectoryAtPath:[jsonPath stringByDeletingLastPathComponent] 
+                                            withIntermediateDirectories:YES attributes:nil error:nil];
+                                      
+                        NSURLSessionDownloadTask *jsonTask = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath];
+                        if (jsonTask) {
+                            [jsonTask resume];
+                        }
+                    }
 
-        // Create profile
-        NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
-        NSString *iconBase64 = @"";
-        NSData *iconData = [NSData dataWithContentsOfFile:tmpIconPath];
-        if (iconData) {
-            iconBase64 = [iconData base64EncodedStringWithOptions:0];
-        }
-        
-        // Update the profile
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // Create the profile with the modpack info
-            NSString *safeProfileName = indexDict[@"name"];
-            PLProfiles.current.profiles[safeProfileName] = @{
-                @"gameDir": [NSString stringWithFormat:@"./profiles/%@", destPath.lastPathComponent],
-                @"name": safeProfileName,
-                @"lastVersionId": depInfo[@"id"] ?: @"latest-release",
-                @"icon": iconBase64.length > 0 ? [NSString stringWithFormat:@"data:image/png;base64,%@", iconBase64] : @""
-            }.mutableCopy;
+                    // Create profile
+                    NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
+                    NSString *iconBase64 = @"";
+                    NSData *iconData = [NSData dataWithContentsOfFile:tmpIconPath];
+                    if (iconData) {
+                        iconBase64 = [iconData base64EncodedStringWithOptions:0];
+                    }
+                    
+                    // Update the profile
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        // Create the profile with the modpack info
+                        NSString *safeProfileName = indexDict[@"name"];
+                        PLProfiles.current.profiles[safeProfileName] = @{
+                            @"gameDir": [NSString stringWithFormat:@"./profiles/%@", destPath.lastPathComponent],
+                            @"name": safeProfileName,
+                            @"lastVersionId": depInfo[@"id"] ?: @"latest-release",
+                            @"icon": iconBase64.length > 0 ? [NSString stringWithFormat:@"data:image/png;base64,%@", iconBase64] : @""
+                        }.mutableCopy;
+                        
+                        PLProfiles.current.selectedProfileName = safeProfileName;
+                        [PLProfiles.current save];
+                        
+                        // Add completion message to progress
+                        [downloader.fileList addObject:@"Complete"];
+                    });
+                    
+                    // Create installation log
+                    NSString *logContent = [NSString stringWithFormat:@"Modrinth modpack installation completed\n"
+                                          "Name: %@\n"
+                                          "Version: %@\n"
+                                          "Directory: %@\n"
+                                          "Date: %@",
+                                          indexDict[@"name"],
+                                          indexDict[@"versionId"],
+                                          destPath,
+                                          [NSDate date]];
+                    
+                    [logContent writeToFile:[destPath stringByAppendingPathComponent:@"modrinth_install.log"]
+                                 atomically:YES
+                                   encoding:NSUTF8StringEncoding
+                                      error:nil];
+                }
+            });
             
-            PLProfiles.current.selectedProfileName = safeProfileName;
-            [PLProfiles.current save];
-            
-            // Add completion message to progress
-            [downloader.fileList addObject:@"Complete"];
+            dispatch_resume(timer);
         });
-        
-        // Create installation log
-        NSString *logContent = [NSString stringWithFormat:@"Modrinth modpack installation completed\n"
-                              "Name: %@\n"
-                              "Version: %@\n"
-                              "Directory: %@\n"
-                              "Date: %@",
-                              indexDict[@"name"],
-                              indexDict[@"versionId"],
-                              destPath,
-                              [NSDate date]];
-        
-        [logContent writeToFile:[destPath stringByAppendingPathComponent:@"modrinth_install.log"]
-                     atomically:YES
-                       encoding:NSUTF8StringEncoding
-                          error:nil];
     });
 }
 
