@@ -11,8 +11,16 @@
 
 #include <CommonCrypto/CommonDigest.h>
 
+typedef NS_ENUM(NSInteger, DownloadSource) {
+    DownloadSourceMinecraft,
+    DownloadSourceCurseForge,
+    DownloadSourceModrinth
+};
+
 @interface MinecraftResourceDownloadTask ()
-@property AFURLSessionManager* manager;
+@property (nonatomic, strong) AFURLSessionManager* manager;
+@property (nonatomic, assign) DownloadSource currentDownloadSource;
+@property (nonatomic, strong) NSMutableDictionary *downloadMetadata;
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -22,10 +30,14 @@
     // TODO: implement background download
     NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
     configuration.timeoutIntervalForRequest = 86400;
-    //backgroundSessionConfigurationWithIdentifier:@"net.kdt.pojavlauncher.downloadtask"];
+    configuration.waitsForConnectivity = YES;
+    configuration.networkServiceType = NSURLNetworkServiceTypeBackground;
+    
     self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
     self.fileList = [NSMutableArray new];
     self.progressList = [NSMutableArray new];
+    self.downloadMetadata = [NSMutableDictionary new];
+    self.currentDownloadSource = DownloadSourceMinecraft;
     return self;
 }
 
@@ -103,6 +115,19 @@
     if (size && task) {
         [self addDownloadTaskToProgress:task size:size];
         [self.fileList addObject:name];
+    }
+
+    // Track additional download metadata
+    if (task) {
+        NSMutableDictionary *taskInfo = [NSMutableDictionary dictionary];
+        taskInfo[@"url"] = url;
+        taskInfo[@"size"] = @(size);
+        taskInfo[@"sha"] = sha ?: @"";
+        taskInfo[@"altName"] = altName ?: path.lastPathComponent;
+        taskInfo[@"path"] = path;
+        taskInfo[@"source"] = @(self.currentDownloadSource);
+        
+        [self.downloadMetadata setObject:taskInfo forKey:task];
     }
 
     return task;
@@ -239,8 +264,6 @@
     [task resume];
 }
 
-#pragma mark - Minecraft installation
-
 - (void)downloadAssetMetadataWithSuccess:(void (^)())success {
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
     if (!assetIndex) {
@@ -334,6 +357,9 @@
 }
 
 - (void)downloadVersion:(NSDictionary *)version {
+    // Set download source to Minecraft
+    self.currentDownloadSource = DownloadSourceMinecraft;
+    
     [self prepareForDownload];
     [self downloadVersionMetadata:version success:^{
         [self downloadAssetMetadataWithSuccess:^{
@@ -357,9 +383,16 @@
     }];
 }
 
-#pragma mark - Modpack installation
-
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    // Determine the source based on the API type
+    if ([api isKindOfClass:NSClassFromString(@"CurseForgeAPI")]) {
+        self.currentDownloadSource = DownloadSourceCurseForge;
+    } else if ([api isKindOfClass:NSClassFromString(@"ModrinthAPI")]) {
+        self.currentDownloadSource = DownloadSourceModrinth;
+    } else {
+        self.currentDownloadSource = DownloadSourceMinecraft;
+    }
+    
     [self prepareForDownload];
 
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
@@ -384,8 +417,6 @@
     [task resume];
 }
 
-#pragma mark - Utilities
-
 - (void)prepareForDownload {
     // Create a fake progress which is used to update completedUnitCount properly
     // (completedUnitCount does not update unless subprogress completes)
@@ -399,7 +430,51 @@
     self.progress.totalUnitCount = 1;
     [self.fileList removeAllObjects];
     [self.progressList removeAllObjects];
+    
+    // Reset download metadata
+    [self.downloadMetadata removeAllObjects];
 }
+
+#pragma mark - Tracking and Logging Methods
+
+- (NSDictionary *)getDownloadTaskInfo:(NSURLSessionDownloadTask *)task {
+    return self.downloadMetadata[task];
+}
+
+- (NSArray<NSDictionary *> *)getAllDownloadedFiles {
+    NSMutableArray *downloadedFiles = [NSMutableArray array];
+    
+    for (NSURLSessionDownloadTask *task in self.downloadMetadata.allKeys) {
+        NSDictionary *taskInfo = self.downloadMetadata[task];
+        if (taskInfo) {
+            [downloadedFiles addObject:taskInfo];
+        }
+    }
+    
+    return [downloadedFiles copy];
+}
+
+- (void)logDownloadSource:(DownloadSource)source {
+    NSString *sourceString;
+    switch (source) {
+        case DownloadSourceMinecraft:
+            sourceString = @"Minecraft";
+            break;
+        case DownloadSourceCurseForge:
+            sourceString = @"CurseForge";
+            break;
+        case DownloadSourceModrinth:
+            sourceString = @"Modrinth";
+            break;
+        default:
+            sourceString = @"Unknown";
+            break;
+    }
+    
+    NSLog(@"[DownloadTask] Current Download Source: %@", sourceString);
+}
+
+#pragma mark - Existing Utility Methods
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
     [self.progress cancel];
