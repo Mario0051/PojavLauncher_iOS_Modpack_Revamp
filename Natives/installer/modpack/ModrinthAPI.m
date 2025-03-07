@@ -1,8 +1,10 @@
 #import "ModrinthAPI.h"
 #import "MinecraftResourceDownloadTask.h"
 #import "PLProfiles.h"
+#import "ModpackUtils.h"
 #import "AFNetworking.h"
 #import "UIAlertUtilities.h"
+#import "UnzipKit.h"
 
 // Constants
 static NSString * const kModrinthAPIErrorDomain = @"ModrinthAPIErrorDomain";
@@ -19,7 +21,101 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     ModrinthErrorCodeResourceNotFound = 1002,
     ModrinthErrorCodeExtraction = 1003,
     ModrinthErrorCodeInvalidManifest = 1004
-};
+}
+
+#pragma mark - Mod Installation
+
+- (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    if (!modDetail) {
+        NSLog(@"[ModrinthAPI] Cannot install mod: nil modDetail");
+        return;
+    }
+    
+    NSArray *urls = modDetail[@"versionUrls"];
+    if (!urls || selectedVersion >= urls.count) {
+        NSLog(@"[ModrinthAPI] Invalid version index for mod installation");
+        return;
+    }
+    
+    NSDictionary *userInfo = @{
+        @"detail": modDetail,
+        @"index": @(selectedVersion)
+    };
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" 
+                                                            object:self 
+                                                          userInfo:userInfo];
+    });
+}
+
+#pragma mark - Version Filtering
+
+- (NSArray *)filterVersionsForGameVersion:(NSString *)gameVersion 
+                                   loader:(NSString *)loader 
+                             fromVersions:(NSArray *)versions {
+    NSMutableArray *filtered = [NSMutableArray array];
+    
+    for (NSDictionary *version in versions) {
+        // Check game version compatibility
+        NSArray *gameVersions = version[@"game_versions"];
+        BOOL matchesGameVersion = NO;
+        
+        if (!gameVersion || gameVersion.length == 0) {
+            matchesGameVersion = YES;
+        } else {
+            for (NSString *versionStr in gameVersions) {
+                if (![versionStr isKindOfClass:[NSString class]]) continue;
+                
+                NSString *trimmedGV = [[versionStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                NSString *trimmedFilter = [[gameVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                
+                // More relaxed version matching
+                if ([trimmedGV isEqualToString:trimmedFilter] ||
+                    [trimmedGV hasPrefix:[trimmedFilter stringByAppendingString:@"."]] ||
+                    [trimmedFilter hasPrefix:[trimmedGV stringByAppendingString:@"."]]) {
+                    matchesGameVersion = YES;
+                    break;
+                }
+            }
+        }
+        
+        if (!matchesGameVersion) continue;
+        
+        // Check loader compatibility
+        NSArray *loaders = version[@"loaders"];
+        BOOL matchesLoader = NO;
+        
+        if (!loader || loader.length == 0) {
+            matchesLoader = YES;
+        } else {
+            for (NSString *loaderStr in loaders) {
+                if (![loaderStr isKindOfClass:[NSString class]]) continue;
+                
+                if ([loaderStr caseInsensitiveCompare:loader] == NSOrderedSame) {
+                    matchesLoader = YES;
+                    break;
+                }
+            }
+        }
+        
+        if (matchesLoader) {
+            [filtered addObject:version];
+        }
+    }
+    
+    return filtered;
+}
+
+#pragma mark - Queue Management
+
+- (void)queueOperation:(void (^)(void))block withPriority:(NSOperationQueuePriority)priority {
+    NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:block];
+    operation.queuePriority = priority;
+    [self.operationQueue addOperation:operation];
+}
+
+@end;
 
 @interface ModrinthAPI ()
 @property (nonatomic, strong) AFHTTPSessionManager *sessionManager;
@@ -522,72 +618,71 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         // Get a file name for display (just the last component)
         NSString *fileName = [path lastPathComponent];
         
-// Perform HEAD request to get accurate file size if size is 0
-    dispatch_group_enter(downloadGroup);
-    AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
-    [manager HEAD:url parameters:nil headers:nil success:^(NSURLSessionDataTask * _Nonnull task) {
-        NSHTTPURLResponse *response = (NSHTTPURLResponse *)task.response;
-        
-        // Safely handle Content-Length conversion
-        id contentLengthObj = response.allHeaderFields[@"Content-Length"];
-        NSUInteger fileSize = 0;
-        
-        // Multiple safe conversion attempts
-        if ([contentLengthObj isKindOfClass:[NSString class]]) {
-            fileSize = [contentLengthObj respondsToSelector:@selector(unsignedIntegerValue)] 
-                ? [(NSString *)contentLengthObj unsignedIntegerValue] 
-                : 0;
-        } else if ([contentLengthObj isKindOfClass:[NSNumber class]]) {
-            fileSize = [(NSNumber *)contentLengthObj unsignedIntegerValue];
-        }
-        
-        // Use HEAD request size if original size was 0
-        if (fileSize == 0) {
-            fileSize = size > 0 ? size : 1; // Fallback to 1 to prevent division by zero
-            NSLog(@"[ModrinthAPI] Warning: Could not determine file size for %@", fileName);
-        }
-        
-        // Create a download task using the proper method from MinecraftResourceDownloadTask
-        NSURLSessionDownloadTask *downloadTaskRef = [downloader createDownloadTask:url 
-                                                                            size:fileSize 
-                                                                             sha:sha 
-                                                                         altName:fileName 
-                                                                          toPath:path
-                                                                         success:^{
-            // Update progress when download completes
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completedFiles++;
-                modsProgress.completedUnitCount += 1;
-            });
-        }];
-        
-        if (downloadTaskRef) {
-            @synchronized(downloadTasks) {
-                [downloadTasks addObject:downloadTaskRef];
+        // Perform HEAD request to get accurate file size if size is 0
+        dispatch_group_enter(downloadGroup);
+        AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
+        [manager HEAD:url parameters:nil headers:nil success:^(NSURLSessionDataTask * _Nonnull task) {
+            NSHTTPURLResponse *response = (NSHTTPURLResponse *)task.response;
+            
+            // Safely handle Content-Length conversion
+            id contentLengthObj = response.allHeaderFields[@"Content-Length"];
+            NSUInteger fileSize = 0;
+            
+            // Multiple safe conversion attempts
+            if ([contentLengthObj isKindOfClass:[NSString class]]) {
+                fileSize = [(NSString *)contentLengthObj longLongValue]; // Fixed for iOS 14 compatibility
+            } else if ([contentLengthObj isKindOfClass:[NSNumber class]]) {
+                fileSize = [(NSNumber *)contentLengthObj unsignedIntegerValue];
             }
-            [downloadTaskRef resume];
-        } else {
-            failedFiles++;
             
-            // Update progress even for failures
+            // Use HEAD request size if original size was 0
+            if (fileSize == 0) {
+                fileSize = size > 0 ? size : 1; // Fallback to 1 to prevent division by zero
+                NSLog(@"[ModrinthAPI] Warning: Could not determine file size for %@", fileName);
+            }
+            
+            // Create a download task using the proper method from MinecraftResourceDownloadTask
+            NSURLSessionDownloadTask *downloadTaskRef = [downloader createDownloadTask:url 
+                                                                                size:fileSize 
+                                                                                 sha:sha 
+                                                                             altName:fileName 
+                                                                              toPath:path
+                                                                             success:^{
+                // Update progress when download completes
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completedFiles++;
+                    modsProgress.completedUnitCount += 1;
+                });
+            }];
+            
+            if (downloadTaskRef) {
+                @synchronized(downloadTasks) {
+                    [downloadTasks addObject:downloadTaskRef];
+                }
+                [downloadTaskRef resume];
+            } else {
+                failedFiles++;
+                
+                // Update progress even for failures
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    modsProgress.completedUnitCount += 1;
+                });
+                
+                NSLog(@"[ModrinthAPI] Failed to create download task for %@", fileName);
+            }
+            
+            dispatch_group_leave(downloadGroup);
+        } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+            failedFiles++;
+            NSLog(@"[ModrinthAPI] Failed to get file size for %@: %@", fileName, error);
+            
             dispatch_async(dispatch_get_main_queue(), ^{
                 modsProgress.completedUnitCount += 1;
             });
             
-            NSLog(@"[ModrinthAPI] Failed to create download task for %@", fileName);
-        }
-        
-        dispatch_group_leave(downloadGroup);
-    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
-        failedFiles++;
-        NSLog(@"[ModrinthAPI] Failed to get file size for %@: %@", fileName, error);
-        
-        dispatch_async(dispatch_get_main_queue(), ^{
-            modsProgress.completedUnitCount += 1;
-        });
-        
-        dispatch_group_leave(downloadGroup);
-    }];
+            dispatch_group_leave(downloadGroup);
+        }];
+    }
     
     // Wait for URL resolution and download to complete
     dispatch_group_wait(downloadGroup, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
@@ -637,7 +732,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         dispatch_resume(timer);
     });
     
-    // Extract index
+    // Extract overrides
     dispatch_group_enter(completionGroup);
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Extract and parse the index file
@@ -747,107 +842,3 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         [downloader.progress addChild:completeProgress withPendingUnitCount:1];
     });
 }
-
-#pragma mark - Mod Installation
-
-- (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
-    if (!modDetail) {
-        NSLog(@"[ModrinthAPI] Cannot install mod: nil modDetail");
-        return;
-    }
-    
-    NSArray *urls = modDetail[@"versionUrls"];
-    if (!urls || selectedVersion >= urls.count) {
-        NSLog(@"[ModrinthAPI] Invalid version index for mod installation");
-        return;
-    }
-    
-    NSDictionary *userInfo = @{
-        @"detail": modDetail,
-        @"index": @(selectedVersion)
-    };
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" 
-                                                            object:self 
-                                                          userInfo:userInfo];
-    });
-}
-
-#pragma mark - String Encoding
-
-- (NSString *)encodedSearchQuery:(NSString *)query {
-    // Replace multiple spaces with a single space
-    NSString *trimmed = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    NSArray *components = [trimmed componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-    components = [components filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
-    NSString *normalizedQuery = [components componentsJoinedByString:@" "];
-    
-    // Now encode properly for URL
-    return [normalizedQuery stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
-}
-
-#pragma mark - Version Filtering
-
-- (NSArray *)filterVersionsForGameVersion:(NSString *)gameVersion 
-                                   loader:(NSString *)loader 
-                             fromVersions:(NSArray *)versions {
-    NSMutableArray *filtered = [NSMutableArray array];
-    
-    for (NSDictionary *version in versions) {
-        // Check game version compatibility
-        NSArray *gameVersions = version[@"game_versions"];
-        BOOL matchesGameVersion = NO;
-        
-        if (!gameVersion || gameVersion.length == 0) {
-            matchesGameVersion = YES;
-        } else {
-            for (NSString *versionStr in gameVersions) {
-                if (![versionStr isKindOfClass:[NSString class]]) continue;
-                
-                NSString *trimmedGV = [[versionStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                
-                // More relaxed version matching
-                if ([trimmedGV isEqualToString:gameVersion] ||
-                    [trimmedGV hasPrefix:[gameVersion stringByAppendingString:@"."]] ||
-                    [gameVersion hasPrefix:[trimmedGV stringByAppendingString:@"."]]) {
-                    matchesGameVersion = YES;
-                    break;
-                }
-            }
-        }
-        
-        if (!matchesGameVersion) continue;
-        
-        // Check loader compatibility
-        NSArray *loaders = version[@"loaders"];
-        BOOL matchesLoader = NO;
-        
-        if (!loader || loader.length == 0) {
-            matchesLoader = YES;
-        } else {
-            for (NSString *loaderStr in loaders) {
-                if ([loaderStr caseInsensitiveCompare:loader] == NSOrderedSame) {
-                    matchesLoader = YES;
-                    break;
-                }
-            }
-        }
-        
-        if (matchesLoader) {
-            [filtered addObject:version];
-        }
-    }
-    
-    return filtered;
-}
-
-#pragma mark - Queue Management
-
-- (void)queueOperation:(void (^)(void))block withPriority:(NSOperationQueuePriority)priority {
-    NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:block];
-    operation.queuePriority = priority;
-    [self.operationQueue addOperation:operation];
-}
-
-@end
