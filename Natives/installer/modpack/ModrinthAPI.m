@@ -434,9 +434,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:packagePath error:&error];
     if (error) {
         NSLog(@"[ModrinthAPI] Failed to open modpack package: %@", error.localizedDescription);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            downloader.textProgress.localizedDescription = [NSString stringWithFormat:@"Error: %@", error.localizedDescription];
-        });
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to open modpack package: %@", error.localizedDescription]];
         return;
     }
 
@@ -444,18 +442,14 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
     if (!indexData) {
         NSLog(@"[ModrinthAPI] Failed to extract modrinth.index.json: %@", error.localizedDescription);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            downloader.textProgress.localizedDescription = @"Error: Failed to extract modpack index";
-        });
+        [downloader finishDownloadWithErrorString:@"Failed to extract modpack index"];
         return;
     }
     
     NSDictionary *indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:0 error:&error];
     if (error) {
         NSLog(@"[ModrinthAPI] Failed to parse modrinth.index.json: %@", error.localizedDescription);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            downloader.textProgress.localizedDescription = @"Error: Failed to parse modpack index";
-        });
+        [downloader finishDownloadWithErrorString:@"Failed to parse modpack index"];
         return;
     }
 
@@ -463,29 +457,14 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     NSArray *files = indexDict[@"files"];
     if (!files || ![files isKindOfClass:[NSArray class]]) {
         NSLog(@"[ModrinthAPI] Invalid files list in modpack index");
-        dispatch_async(dispatch_get_main_queue(), ^{
-            downloader.textProgress.localizedDescription = @"Error: Invalid files list in modpack";
-        });
+        [downloader finishDownloadWithErrorString:@"Invalid files list in modpack"];
         return;
     }
     
-    // Update progress display
-    dispatch_async(dispatch_get_main_queue(), ^{
-        downloader.progress.totalUnitCount = files.count + 2; // Files + extraction + setup
-        downloader.textProgress.localizedDescription = [NSString stringWithFormat:@"Installing %@ (%lu files)", 
-                                                        indexDict[@"name"] ?: @"Modpack", 
-                                                        (unsigned long)files.count];
-    });
+    // Create arrays to store download tasks and track progress
+    NSMutableArray *downloadTasks = [NSMutableArray array];
     
-    // Create a task tracker dictionary to map tasks to their progress objects
-    NSMutableDictionary *taskProgressMap = [NSMutableDictionary dictionary];
-    
-    // Create download queue and tracker
-    dispatch_group_t downloadGroup = dispatch_group_create();
-    __block NSUInteger completedDownloads = 0;
-    __block NSUInteger failedDownloads = 0;
-    
-    // Download each file
+    // First pass: create download tasks for each file but don't start them yet
     for (NSDictionary *indexFile in files) {
         if (![indexFile isKindOfClass:[NSDictionary class]]) {
             continue;
@@ -522,145 +501,73 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         // Get a file name for display (just the last component)
         NSString *fileName = [path lastPathComponent];
         
-        // Enter the download group
+        // Create a download task using the proper method from MinecraftResourceDownloadTask
+        // This will automatically add it to the progress tracking system
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
+                                                                size:size 
+                                                                 sha:sha 
+                                                             altName:fileName 
+                                                              toPath:path];
+        if (task) {
+            [downloadTasks addObject:task];
+        }
+    }
+    
+    // Start downloads with a throttling mechanism to limit concurrency
+    dispatch_queue_t downloadQueue = dispatch_queue_create("com.modrinth.downloads", DISPATCH_QUEUE_CONCURRENT);
+    dispatch_semaphore_t throttleSemaphore = dispatch_semaphore_create(4); // Limit to 4 concurrent downloads
+    
+    // Add extraction task to display
+    [downloader.fileList addObject:@"Extracting overrides"];
+    
+    dispatch_group_t downloadGroup = dispatch_group_create();
+    
+    // Start the downloads with throttling
+    for (NSURLSessionDownloadTask *task in downloadTasks) {
         dispatch_group_enter(downloadGroup);
         
-        // Create progress object for this file
-        NSProgress *fileProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000]; // Use actual size or estimate
-        fileProgress.kind = NSProgressKindFile;
-        fileProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
-        
-        // Add to file list and progress tracking on main thread
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [downloader.fileList addObject:fileName];
-            [downloader.progressList addObject:fileProgress];
-            [downloader.progress addChild:fileProgress withPendingUnitCount:fileProgress.totalUnitCount];
+        dispatch_async(downloadQueue, ^{
+            dispatch_semaphore_wait(throttleSemaphore, DISPATCH_TIME_FOREVER);
+            
+            // Create a completion handler for the task
+            [task resume];
+            
+            // Set up a completion observer to signal the semaphore when done
+            [[NSNotificationCenter defaultCenter] addObserverForName:NSURLSessionTaskDidCompleteNotification
+                                                              object:task
+                                                               queue:[NSOperationQueue mainQueue]
+                                                          usingBlock:^(NSNotification * _Nonnull note) {
+                dispatch_semaphore_signal(throttleSemaphore);
+                dispatch_group_leave(downloadGroup);
+                [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                                name:NSURLSessionTaskDidCompleteNotification
+                                                              object:task];
+            }];
         });
-        
-        // Limit concurrent downloads
-        dispatch_semaphore_wait(self.downloadSemaphore, DISPATCH_TIME_FOREVER);
-        
-        // Create and start download task with progress tracking
-        NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
-        NSURLSession *session = [NSURLSession sessionWithConfiguration:config
-                                                              delegate:nil
-                                                         delegateQueue:[NSOperationQueue mainQueue]];
-        
-        NSURLSessionDownloadTask *task = [session downloadTaskWithURL:[NSURL URLWithString:url]
-                                                 completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
-            // Signal semaphore to allow another download
-            dispatch_semaphore_signal(self.downloadSemaphore);
-            
-            if (downloadError) {
-                failedDownloads++;
-                NSLog(@"[ModrinthAPI] Failed to download %@: %@", fileName, downloadError);
-                
-                // Mark progress as failed but "complete" for tracking purposes
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    fileProgress.completedUnitCount = 0;
-                    fileProgress.totalUnitCount = 1; // Zero out the contribution to parent
-                });
-            } else {
-                // Move file to destination
-                NSError *moveError = nil;
-                if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-                    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-                }
-                
-                [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:path] error:&moveError];
-                
-                if (moveError) {
-                    failedDownloads++;
-                    NSLog(@"[ModrinthAPI] Failed to save %@: %@", fileName, moveError);
-                    
-                    // Mark progress as failed
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        fileProgress.completedUnitCount = 0;
-                    });
-                } else {
-                    completedDownloads++;
-                    
-                    // Mark progress as complete with proper size
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        // Get actual file size
-                        NSError *attributesError = nil;
-                        NSDictionary *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path 
-                                                                                                   error:&attributesError];
-                        if (!attributesError) {
-                            NSUInteger actualSize = [attributes fileSize];
-                            fileProgress.totalUnitCount = actualSize;
-                            fileProgress.completedUnitCount = actualSize;
-                        } else {
-                            // Use response size or fall back to 1
-                            fileProgress.totalUnitCount = response.expectedContentLength > 0 ? response.expectedContentLength : 1;
-                            fileProgress.completedUnitCount = fileProgress.totalUnitCount;
-                        }
-                    });
-                }
-            }
-            
-            // Leave the download group
-            dispatch_group_leave(downloadGroup);
-        }];
-        
-        // Start the download
-        [task resume];
     }
     
     // Wait for all downloads to complete
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         dispatch_group_wait(downloadGroup, DISPATCH_TIME_FOREVER);
         
-        // Update stats
-        NSLog(@"[ModrinthAPI] Downloads complete: %lu successful, %lu failed",
-              (unsigned long)completedDownloads, (unsigned long)failedDownloads);
-        
-        // Show extraction progress
-        dispatch_async(dispatch_get_main_queue(), ^{
-            downloader.textProgress.localizedDescription = @"Extracting overrides";
-            [downloader.fileList addObject:@"Extracting overrides"];
-            
-            // Create progress for extraction
-            NSProgress *extractProgress = [NSProgress progressWithTotalUnitCount:1];
-            extractProgress.kind = NSProgressKindFile;
-            [downloader.progressList addObject:extractProgress];
-            [downloader.progress addChild:extractProgress withPendingUnitCount:1];
-        });
+        NSLog(@"[ModrinthAPI] All download tasks completed");
         
         // Extract overrides
         NSError *extractError = nil;
         [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&extractError];
         if (extractError) {
             NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", extractError.localizedDescription);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                downloader.textProgress.localizedDescription = [NSString stringWithFormat:@"Warning: %@", extractError.localizedDescription];
-            });
         }
         
-        // Mark extraction as complete
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSProgress *extractProgress = [downloader.progressList lastObject];
-            extractProgress.completedUnitCount = 1;
-        });
-        
-        // Extract client-overrides if present
-        NSError *clientExtractError = nil;
-        [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&clientExtractError];
-        // We don't fail if client-overrides extraction fails - it's optional
+        // Extract client-overrides if present (optional)
+        [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:nil];
         
         // Delete package cache
         [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
         
-        // Show profile setup progress
+        // Add profile setup task to display
         dispatch_async(dispatch_get_main_queue(), ^{
-            downloader.textProgress.localizedDescription = @"Setting up profile";
             [downloader.fileList addObject:@"Setting up profile"];
-            
-            // Create progress for profile setup
-            NSProgress *setupProgress = [NSProgress progressWithTotalUnitCount:1];
-            setupProgress.kind = NSProgressKindFile;
-            [downloader.progressList addObject:setupProgress];
-            [downloader.progress addChild:setupProgress withPendingUnitCount:1];
         });
 
         // Download dependency client json (if available)
@@ -670,7 +577,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             
             // Create directory structure for the JSON file
             [NSFileManager.defaultManager createDirectoryAtPath:[jsonPath stringByDeletingLastPathComponent] 
-                              withIntermediateDirectories:YES attributes:nil error:nil];
+                                withIntermediateDirectories:YES attributes:nil error:nil];
                               
             NSURLSessionDownloadTask *jsonTask = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath];
             if (jsonTask) {
@@ -700,13 +607,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             PLProfiles.current.selectedProfileName = safeProfileName;
             [PLProfiles.current save];
             
-            // Mark profile setup as complete
-            NSProgress *setupProgress = [downloader.progressList lastObject];
-            setupProgress.completedUnitCount = 1;
-            
-            // Update progress to show completion
-            downloader.textProgress.localizedDescription = @"Modpack installation complete";
-            
             // Add completion message to progress
             [downloader.fileList addObject:@"Complete"];
         });
@@ -716,13 +616,10 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                               "Name: %@\n"
                               "Version: %@\n"
                               "Directory: %@\n"
-                              "Files: %lu downloaded (%lu failed)\n"
                               "Date: %@",
                               indexDict[@"name"],
                               indexDict[@"versionId"],
                               destPath,
-                              (unsigned long)completedDownloads,
-                              (unsigned long)failedDownloads,
                               [NSDate date]];
         
         [logContent writeToFile:[destPath stringByAppendingPathComponent:@"modrinth_install.log"]
