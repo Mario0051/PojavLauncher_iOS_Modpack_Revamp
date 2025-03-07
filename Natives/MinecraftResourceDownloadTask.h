@@ -25,6 +25,18 @@
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path;
 
 /**
+ * Creates a new download task with completion callback
+ * @param url The URL to download from
+ * @param size The expected size of the file
+ * @param sha The SHA hash for verification
+ * @param altName An alternate name to display
+ * @param path The destination path
+ * @param success The callback to execute when download completes successfully
+ * @return The created download task
+ */
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)(void))success;
+
+/**
  * Finishes the download process with an error message
  * @param error The error message to display
  */
