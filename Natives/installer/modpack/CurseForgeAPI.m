@@ -972,77 +972,51 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         return;
     }
     
-    NSLog(@"[CurseForge-Modpack] Downloading %lu mod files", (unsigned long)files.count);
+    NSLog(@"[CurseForge-Modpack] Preparing to download %lu mod files", (unsigned long)files.count);
     
     // Update progress
     dispatch_async(dispatch_get_main_queue(), ^{
-        [downloadTask.fileList addObject:@"Setting up mod downloads"];
-        
-        // Create progress for setup
-        NSProgress *setupProgress = [NSProgress progressWithTotalUnitCount:1];
-        setupProgress.kind = NSProgressKindFile;
-        [downloadTask.progressList addObject:setupProgress];
-        [downloadTask.progress addChild:setupProgress withPendingUnitCount:1];
-        
-        // Mark it as complete
-        setupProgress.completedUnitCount = 1;
+        downloadTask.textProgress.localizedDescription = [NSString stringWithFormat:@"Preparing %lu mod downloads", (unsigned long)files.count];
     });
     
     // Keep track of download status
     __block NSInteger totalFiles = files.count;
     __block NSInteger completedFiles = 0;
     __block NSInteger failedFiles = 0;
+    __block NSMutableArray *downloadTasks = [NSMutableArray array];
     
-    // Use a dispatch group to track all downloads
-    dispatch_group_t group = dispatch_group_create();
+    // Use dispatch group to track downloads
+    dispatch_group_t downloadGroup = dispatch_group_create();
     
-    // Process each file entry
+    // Process each file
     for (NSDictionary *file in files) {
-        dispatch_group_enter(group);
-        
         NSNumber *projectID = file[@"projectID"];
         NSNumber *fileID = file[@"fileID"];
         BOOL required = [file[@"required"] boolValue];
         
         if (!projectID || !fileID) {
             NSLog(@"[CurseForge-Modpack] Invalid file entry: missing projectID or fileID");
-            dispatch_group_leave(group);
             failedFiles++;
             continue;
         }
         
-        // Update progress tracking
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *displayName = [NSString stringWithFormat:@"Mod: %@_%@", projectID, fileID];
-            [downloadTask.fileList addObject:displayName];
-            
-            // Create progress for this mod file
-            NSProgress *modProgress = [NSProgress progressWithTotalUnitCount:1];
-            modProgress.kind = NSProgressKindFile;
-            [downloadTask.progressList addObject:modProgress];
-            [downloadTask.progress addChild:modProgress withPendingUnitCount:1];
-        });
-        
-        // Get the download URL for this file
+        // Get download URL for this file
+        dispatch_group_enter(downloadGroup);
         [self getDownloadUrlForProject:[projectID unsignedLongLongValue] 
-                                fileID:[fileID unsignedLongLongValue] 
-                            completion:^(NSString *downloadUrl, NSError *error) {
+                               fileID:[fileID unsignedLongLongValue] 
+                           completion:^(NSString *downloadUrl, NSError *error) {
             if (!downloadUrl) {
+                failedFiles++;
                 NSLog(@"[CurseForge-Modpack] Failed to get download URL for project %@, file %@: %@", 
                       projectID, fileID, error);
-                
-                failedFiles++;
-                dispatch_group_leave(group);
                 
                 // Only fail if the file is required
                 if (required) {
                     NSLog(@"[CurseForge-Modpack] Required mod download failed");
                 }
+                dispatch_group_leave(downloadGroup);
                 return;
             }
-            
-            // Use dispatch_semaphore to limit concurrent downloads
-            dispatch_semaphore_wait(self.downloadSemaphore, DISPATCH_TIME_FOREVER);
             
             // Get file name from URL or use project/file IDs if not available
             NSString *fileName = [NSURL URLWithString:downloadUrl].lastPathComponent;
@@ -1053,66 +1027,82 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             // Path to save the file
             NSString *modPath = [modsDir stringByAppendingPathComponent:fileName];
             
-            // Download the file
-            NSURLSessionDownloadTask *urlTask = [[NSURLSession sharedSession] downloadTaskWithURL:[NSURL URLWithString:downloadUrl] completionHandler:^(NSURL *location, NSURLResponse *response, NSError *downloadError) {
-                // Signal the semaphore to allow another download to start
-                dispatch_semaphore_signal(self.downloadSemaphore);
-                
-                // Get the most recently added progress from the resource download task
-                NSProgress *modProgress = nil;
-                if (downloadTask.progressList.count > 0) {
-                    modProgress = [downloadTask.progressList lastObject];
-                }
-                
-                if (downloadError) {
-                    NSLog(@"[CurseForge-Modpack] Failed to download mod %@: %@", fileName, downloadError);
-                    failedFiles++;
-                    
-                    // Only log failure if the file is required
-                    if (required) {
-                        NSLog(@"[CurseForge-Modpack] Required mod download failed");
-                    }
-                } else {
-                    // Move downloaded file to destination
-                    NSError *moveError = nil;
-                    if ([[NSFileManager defaultManager] fileExistsAtPath:modPath]) {
-                        [[NSFileManager defaultManager] removeItemAtPath:modPath error:nil];
-                    }
-                    
-                    [[NSFileManager defaultManager] moveItemAtURL:location toURL:[NSURL fileURLWithPath:modPath] error:&moveError];
-                    
-                    if (moveError) {
-                        NSLog(@"[CurseForge-Modpack] Failed to save mod %@: %@", fileName, moveError);
-                        failedFiles++;
-                    } else {
-                        NSLog(@"[CurseForge-Modpack] Downloaded mod %@ (%ld/%ld)", 
-                              fileName, (long)completedFiles+1, (long)totalFiles);
-                        
-                        // Update progress
-                        if (modProgress) {
-                            modProgress.totalUnitCount = 1;
-                            modProgress.completedUnitCount = 1;
-                        }
-                    }
-                }
-                
-                completedFiles++;
-                dispatch_group_leave(group);
-            }];
+            // Create a download task using MinecraftResourceDownloadTask's built-in method
+            // This ensures proper tracking with the UI
+            NSURLSessionDownloadTask *task = [downloadTask createDownloadTask:downloadUrl 
+                                                                        size:0 // Size not known yet
+                                                                         sha:nil 
+                                                                     altName:[NSString stringWithFormat:@"Mod: %@", fileName] 
+                                                                      toPath:modPath];
             
-            [urlTask resume];
+            if (task) {
+                @synchronized(downloadTasks) {
+                    [downloadTasks addObject:task];
+                }
+                [task resume];
+            } else {
+                failedFiles++;
+                NSLog(@"[CurseForge-Modpack] Failed to create download task for %@", fileName);
+            }
+            
+            dispatch_group_leave(downloadGroup);
         }];
     }
     
-    // Wait for all downloads to complete
-    dispatch_group_notify(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSLog(@"[CurseForge-Modpack] All downloads completed (%ld/%ld, %ld failed)", 
-              (long)completedFiles, (long)totalFiles, (long)failedFiles);
+    // Wait for URL resolution to complete (this happens quickly)
+    dispatch_group_wait(downloadGroup, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+    
+    // Create a new dispatch group for monitoring downloads
+    dispatch_group_t completionGroup = dispatch_group_create();
+    dispatch_group_enter(completionGroup);
+    
+    // Start a background task to monitor download completion
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Check periodically if all downloads are complete
+        dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+        dispatch_source_set_timer(timer, dispatch_walltime(NULL, 0), 1 * NSEC_PER_SEC, 0.1 * NSEC_PER_SEC);
         
-        if (completion) {
-            completion((NSUInteger)completedFiles, (NSUInteger)totalFiles, (NSUInteger)failedFiles);
-        }
+        __block int checkCount = 0;
+        dispatch_source_set_event_handler(timer, ^{
+            // Check if all tasks are completed
+            BOOL allCompleted = YES;
+            @synchronized(downloadTasks) {
+                for (NSURLSessionDownloadTask *task in downloadTasks) {
+                    if (task.state != NSURLSessionTaskStateCompleted) {
+                        allCompleted = NO;
+                        break;
+                    }
+                }
+            }
+            
+            checkCount++;
+            
+            // If all downloads are complete or we've checked enough times, proceed
+            if (allCompleted || checkCount > 120) { // 2 minutes max wait
+                dispatch_source_cancel(timer);
+                
+                // Count successful downloads
+                completedFiles = totalFiles - failedFiles;
+                NSLog(@"[CurseForge-Modpack] All downloads completed: %ld successful, %ld failed", 
+                      (long)completedFiles, (long)failedFiles);
+                
+                dispatch_group_leave(completionGroup);
+            }
+        });
+        
+        dispatch_resume(timer);
     });
+    
+    // Wait for download completion (with timeout)
+    long result = dispatch_group_wait(completionGroup, dispatch_time(DISPATCH_TIME_NOW, 300 * NSEC_PER_SEC));
+    if (result != 0) {
+        NSLog(@"[CurseForge-Modpack] Timeout waiting for downloads to complete");
+    }
+    
+    // Provide completion info
+    if (completion) {
+        completion((NSUInteger)completedFiles, (NSUInteger)totalFiles, (NSUInteger)failedFiles);
+    }
 }
 
 #pragma mark - Manifest Verification
