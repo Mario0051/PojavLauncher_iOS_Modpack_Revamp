@@ -364,7 +364,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
 - (void)actionChooseProfile {
     NSDictionary *profiles = [PLProfiles current].profiles;
     if (!profiles || profiles.count == 0) {
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                        message:@"No profiles available." 
                                viewController:self];
         return;
@@ -420,7 +420,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
         }]];
     }
     
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
     
@@ -676,7 +676,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
         }]];
     }
     
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                             style:UIAlertActionStyleCancel
                                           handler:nil]];
     
@@ -743,7 +743,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
     // Validate inputs
     NSArray *urls = mod[@"versionUrls"];
     if (index >= urls.count) {
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                        message:@"Invalid version index for installation." 
                                viewController:self];
         return;
@@ -752,7 +752,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
     // Get the profile to install into
     ProfileData *targetProfile = self.currentProfile;
     if (!targetProfile) {
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                        message:@"No profile selected. Please select a profile first." 
                                viewController:self];
         return;
@@ -776,7 +776,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
     
     if (!profile) {
         [self hideLoadingIndicator];
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                        message:@"Profile information is invalid." 
                                viewController:self];
         return;
@@ -800,7 +800,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
                                                         error:&createError];
         if (createError) {
             [self hideLoadingIndicator];
-            [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+            [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                            message:[NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription] 
                                    viewController:self];
             return;
@@ -821,7 +821,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
         if (error) {
             NSLog(@"Download error: %@", error);
             dispatch_async(dispatch_get_main_queue(), ^{
-                [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                                message:[NSString stringWithFormat:@"Failed to download mod: %@", error.localizedDescription] 
                                        viewController:self];
             });
@@ -841,7 +841,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
         if (moveError) {
             NSLog(@"File move error: %@", moveError);
             dispatch_async(dispatch_get_main_queue(), ^{
-                [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                                message:[NSString stringWithFormat:@"Failed to save mod: %@", moveError.localizedDescription] 
                                        viewController:self];
             });
@@ -868,7 +868,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
     
     // Validate input
     if (!mod) {
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                        message:@"Invalid mod data received." 
                                viewController:self];
         return;
@@ -917,7 +917,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
                     self.modsList = results;
                     [self.tableView reloadData];
                 } else if (self.modrinth.lastError) {
-                    [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                    [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                                    message:self.modrinth.lastError.localizedDescription 
                                            viewController:self];
                 }
@@ -933,7 +933,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
                         self.modsList = results;
                         [self.tableView reloadData];
                     } else if (error) {
-                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                                        message:error.localizedDescription 
                                                viewController:self];
                     }
@@ -1092,7 +1092,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
                     [self hideLoadingIndicator];
                     
                     if (error) {
-                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                                        message:error.localizedDescription 
                                                viewController:self];
                         return;
@@ -1105,7 +1105,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
                         [self.modsList replaceObjectAtIndex:indexPath.row withObject:updatedMod];
                         [self showVersionSelectorForMod:updatedMod atIndexPath:indexPath];
                     } else {
-                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                                        message:@"Failed to load mod versions" 
                                                viewController:self];
                     }
@@ -1117,7 +1117,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
                     [self hideLoadingIndicator];
                     
                     if (error) {
-                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                                        message:error.localizedDescription 
                                                viewController:self];
                         return;
@@ -1130,7 +1130,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
                         [self.modsList replaceObjectAtIndex:indexPath.row withObject:updatedMod];
                         [self showVersionSelectorForMod:updatedMod atIndexPath:indexPath];
                     } else {
-                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                        [UIAlertUtilities presentAlertWithTitle:@"Error" 
                                                        message:@"Failed to load mod versions" 
                                                viewController:self];
                     }
@@ -1243,7 +1243,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
 
 - (void)installQueueAction {
     if (self.queue.count == 0) {
-        [UIAlertUtilities presentAlertWithTitle:localize(@"Queue Empty", nil) 
+        [UIAlertUtilities presentAlertWithTitle:@"Queue Empty" 
                                        message:@"There are no mods in the install queue." 
                                viewController:self];
         return;
