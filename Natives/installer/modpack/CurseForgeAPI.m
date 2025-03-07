@@ -735,6 +735,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     NSLog(@"[CurseForge-Modpack] Downloading modpack to %@", zipPath);
     
     // Create a download task for the modpack zip file
+    __weak typeof(self) weakSelf = self;
     NSURLSessionDownloadTask *task = [downloadTask createDownloadTask:downloadUrl 
                                                               size:0
                                                                sha:nil
@@ -770,7 +771,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         if (!manifestData) {
             NSLog(@"[CurseForge-Modpack] Failed to extract manifest.json: %@", extractError);
             if (completion) {
-                NSError *customError = [self errorWithCode:CurseForgeErrorCodeExtraction
+                NSError *customError = [weakSelf errorWithCode:CurseForgeErrorCodeExtraction
                                                message:@"Failed to extract manifest.json from modpack"
                                        underlyingError:extractError];
                 completion(customError);
@@ -783,7 +784,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         if (!manifestDict) {
             NSLog(@"[CurseForge-Modpack] Failed to parse manifest.json: %@", extractError);
             if (completion) {
-                NSError *customError = [self errorWithCode:CurseForgeErrorCodeParsingError
+                NSError *customError = [weakSelf errorWithCode:CurseForgeErrorCodeParsingError
                                                message:@"Failed to parse manifest.json"
                                        underlyingError:extractError];
                 completion(customError);
@@ -792,10 +793,10 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         }
         
         // Verify the manifest
-        if (![self verifyManifestFromDictionary:manifestDict]) {
+        if (![weakSelf verifyManifestFromDictionary:manifestDict]) {
             NSLog(@"[CurseForge-Modpack] Invalid manifest");
             if (completion) {
-                NSError *customError = [self errorWithCode:CurseForgeErrorCodeInvalidManifest
+                NSError *customError = [weakSelf errorWithCode:CurseForgeErrorCodeInvalidManifest
                                                message:@"Invalid manifest format"
                                        underlyingError:nil];
                 completion(customError);
@@ -857,9 +858,9 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         }
         
         // Create the loader JSON file
-        NSString *jsonPath = [self createModLoaderJSON:vanillaVersion 
-                                        loaderVersion:modLoaderVersion 
-                                           loaderType:loaderType];
+        NSString *jsonPath = [weakSelf createModLoaderJSON:vanillaVersion 
+                                            loaderVersion:modLoaderVersion 
+                                               loaderType:loaderType];
         
         // Extract overrides
         NSError *overridesError = nil;
@@ -886,10 +887,10 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         });
         
         // Download mod files
-        [self downloadModFilesFromManifest:manifestDict 
-                               toModsDir:modsDir
-                            downloadTask:downloadTask 
-                              completion:^(NSUInteger completedFiles, NSUInteger totalFiles, NSUInteger failedFiles) {
+        [weakSelf downloadModFilesFromManifest:manifestDict 
+                                   toModsDir:modsDir
+                                downloadTask:downloadTask 
+                                  completion:^(NSUInteger completedFiles, NSUInteger totalFiles, NSUInteger failedFiles) {
             // Create a log file
             NSString *logContent = [NSString stringWithFormat:@"CurseForge modpack installation completed\n"
                                   "Profile: %@\n"
@@ -931,7 +932,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                 // Mark setup as complete
                 setupProgress.completedUnitCount = 1;
                 
-                // Add completion message to progress
+                // Add completion progress
                 [downloadTask.fileList addObject:@"Complete"];
                 
                 // Create completion progress
