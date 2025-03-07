@@ -31,9 +31,15 @@
 
 // Add file to the queue
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
+    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil];
+}
+
+// Add file to the queue with success callback
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
     BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    // Check if file already exists and has the correct SHA
+    // logSuccess?
     if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+        if (success) success();
         return nil;
     } else if (![self checkAccessWithDialog:YES]) {
         return nil;
@@ -77,6 +83,7 @@
                             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
                         } else {
                             progress.totalUnitCount = progress.completedUnitCount;
+                            if (success) success();
                         }
                     }];
                     [retryTask resume];
@@ -89,6 +96,7 @@
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
         } else {
             progress.totalUnitCount = progress.completedUnitCount;
+            if (success) success();
         }
     }];
 
