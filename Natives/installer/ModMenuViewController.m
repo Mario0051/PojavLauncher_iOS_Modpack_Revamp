@@ -8,7 +8,6 @@
 #import "utils.h"
 #import "PLProfiles.h"
 #import "UIAlertUtilities.h"
-#import "LauncherPreferences.h"
 #import <objc/runtime.h>
 
 // Constants for better code maintenance
@@ -18,10 +17,56 @@ static NSTimeInterval const kSearchDebounceDelay = 0.5;
 static NSUInteger const kDefaultPageSize = 50;
 static NSUInteger const kMaxVersionsToShow = 100;
 
-// Add protocol definition for version selection
-@protocol VersionSelectorDelegate <NSObject>
-- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx;
-@property (nonatomic, readonly) UIViewController *presentedViewController;
+// Profile Data Management
+@interface ProfileData : NSObject
+
+@property (nonatomic, strong, readonly) NSString *name;
+@property (nonatomic, strong, readonly) NSString *mcVersion;
+@property (nonatomic, strong, readonly) NSString *modLoader;
+@property (nonatomic, strong, readonly) NSString *gameDir;
+@property (nonatomic, strong, readonly) NSString *versionId;
+
++ (instancetype)fromDictionary:(NSDictionary *)profileDict withName:(NSString *)name;
++ (instancetype)defaultProfile;
+
+@end
+
+@implementation ProfileData {
+    NSString *_name;
+    NSString *_mcVersion;
+    NSString *_modLoader;
+    NSString *_gameDir;
+    NSString *_versionId;
+}
+
++ (instancetype)fromDictionary:(NSDictionary *)profileDict withName:(NSString *)name {
+    if (!profileDict || !name) {
+        return [self defaultProfile];
+    }
+    
+    ProfileData *data = [[ProfileData alloc] init];
+    data->_name = [name copy];
+    data->_gameDir = profileDict[@"gameDir"] ?: @"";
+    data->_versionId = profileDict[@"lastVersionId"] ?: @"latest-release";
+    
+    // Parse version information
+    NSDictionary *parsed = [ModpackUtils parseVersionString:data->_versionId];
+    data->_mcVersion = parsed[@"mcVersion"] ?: data->_versionId;
+    data->_modLoader = parsed[@"loader"] ?: @"";
+    
+    return data;
+}
+
++ (instancetype)defaultProfile {
+    ProfileData *data = [[ProfileData alloc] init];
+    data->_name = @"Default";
+    data->_mcVersion = @"latest-release";
+    data->_modLoader = @"";
+    data->_gameDir = @"";
+    data->_versionId = @"latest-release";
+    return data;
+}
+
 @end
 
 // Version selector data source
@@ -44,22 +89,11 @@ static NSUInteger const kMaxVersionsToShow = 100;
 @property (nonatomic, copy) void (^didFinishInstallation)(void);
 @end
 
-// Helper Functions
-static inline NSString *SafeStringFromVersion(id rawVersion) {
-    if ([rawVersion isKindOfClass:[NSString class]]) {
-        return rawVersion;
-    } else if ([rawVersion respondsToSelector:@selector(stringValue)]) {
-        return [rawVersion stringValue];
-    } else {
-        return [rawVersion description];
-    }
-}
-
-static inline void PresentAlert(NSString *title, NSString *message, UIViewController *viewController) {
-    [UIAlertUtilities presentAlertWithTitle:title message:message viewController:viewController];
-}
-
-#pragma mark - ModMenuViewController Implementation
+// Add protocol definition for version selection
+@protocol VersionSelectorDelegate <NSObject>
+- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx;
+@property (nonatomic, readonly) UIViewController *presentedViewController;
+@end
 
 @interface ModMenuViewController () <UISearchResultsUpdating, UITableViewDelegate, UITableViewDataSource, VersionSelectorDelegate>
 // UI Components
@@ -74,9 +108,7 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
 @property (nonatomic, strong) ModrinthAPI *modrinth;
 @property (nonatomic, strong) CurseForgeAPI *curseForge;
 @property (nonatomic, strong) NSMutableDictionary *searchFilters;
-@property (nonatomic, strong) NSString *selectedProfileName;
-@property (nonatomic, strong) NSString *selectedMCVersion;
-@property (nonatomic, strong) NSString *selectedModLoader;
+@property (nonatomic, strong) ProfileData *currentProfile;
 @property (nonatomic, strong) NSMutableArray *installQueue;
 
 // State Management
@@ -112,6 +144,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     self.isLoading = NO;
     self.hasPromptedForAPIKey = NO;
     self.isFilterByCurrentProfileEnabled = getPrefBool(kFilterByProfilePrefKey);
+    
+    // Initialize profile data with default
+    self.currentProfile = [ProfileData defaultProfile];
     
     // Set up the search controller
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
@@ -176,7 +211,7 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     // Update filter button state
     [self updateFilterButtonAppearance];
     
-    // Auto-select profile if available
+    // Update profile from saved settings
     [self updateProfileFromSavedSettings];
 }
 
@@ -213,87 +248,99 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
+#pragma mark - Profile Management
+
+- (void)updateProfileFromSavedSettings {
+    NSLog(@"[ModMenu] Updating profile from saved settings");
+    
+    // Step 1: Determine which profile to use (default instance or current selection)
+    NSString *profileName = nil;
+    NSDictionary *profileDict = nil;
+    NSDictionary *allProfiles = [PLProfiles current].profiles;
+    
+    // Check if we should use a specified instance
+    if (self.defaultInstance && self.defaultInstance.length > 0) {
+        profileDict = allProfiles[self.defaultInstance];
+        profileName = self.defaultInstance;
+        
+        if (!profileDict) {
+            NSLog(@"[ModMenu] Warning: Specified instance '%@' not found", self.defaultInstance);
+        }
+    }
+    
+    // If no default instance or it wasn't found, use current selection
+    if (!profileDict) {
+        profileName = [PLProfiles current].selectedProfileName;
+        profileDict = allProfiles[profileName];
+    }
+    
+    // Step 2: Create profile data object
+    ProfileData *profile;
+    if (profileDict) {
+        profile = [ProfileData fromDictionary:profileDict withName:profileName];
+        NSLog(@"[ModMenu] Selected profile: %@, MC version: %@, mod loader: %@", 
+              profile.name, profile.mcVersion, profile.modLoader);
+    } else {
+        // Fallback to default profile if nothing was found
+        profile = [ProfileData defaultProfile];
+        NSLog(@"[ModMenu] No valid profile found, using default");
+    }
+    
+    // Step 3: Update current profile
+    self.currentProfile = profile;
+    
+    // Step 4: Update search filters if filtering is enabled
+    [self updateSearchFiltersFromCurrentProfile];
+}
+
+- (void)updateSearchFiltersFromCurrentProfile {
+    if (!self.isFilterByCurrentProfileEnabled || !self.currentProfile) {
+        // Remove profile-specific filters if not filtering
+        [self.searchFilters removeObjectForKey:@"mcVersion"];
+        [self.searchFilters removeObjectForKey:@"loader"];
+        return;
+    }
+    
+    // Add profile-specific filters
+    if (self.currentProfile.mcVersion.length > 0) {
+        self.searchFilters[@"mcVersion"] = self.currentProfile.mcVersion;
+    } else {
+        [self.searchFilters removeObjectForKey:@"mcVersion"];
+    }
+    
+    if (self.currentProfile.modLoader.length > 0) {
+        self.searchFilters[@"loader"] = self.currentProfile.modLoader;
+    } else {
+        [self.searchFilters removeObjectForKey:@"loader"];
+    }
+    
+    NSLog(@"[ModMenu] Updated search filters: %@", self.searchFilters);
+}
+
 #pragma mark - Public Methods
 
 - (void)setDefaultInstance:(NSString *)instanceName {
     self.defaultInstance = instanceName;
     // If instance name is provided, attempt to load its profile
     if (instanceName) {
-        // Implementation would depend on how instances are managed in your app
-        // This would typically involve loading the profile for the given instance
         [self updateProfileFromSavedSettings];
     }
 }
 
 - (void)setFilterByCurrentProfile:(BOOL)filterEnabled {
+    if (self.isFilterByCurrentProfileEnabled == filterEnabled) {
+        return; // No change needed
+    }
+    
     self.isFilterByCurrentProfileEnabled = filterEnabled;
     setPrefBool(kFilterByProfilePrefKey, filterEnabled);
     [self updateFilterButtonAppearance];
     
+    // Update search filters
+    [self updateSearchFiltersFromCurrentProfile];
+    
     // Refresh the list with the new filter setting
     [self performSearch:self.searchController.searchBar.text];
-}
-
-#pragma mark - Profile Management
-
-- (void)updateProfileFromSavedSettings {
-    // If a default instance is set, use it instead of the current profile
-    if (self.defaultInstance && self.defaultInstance.length > 0) {
-        // Look for a profile matching the default instance name
-        NSDictionary *profiles = [PLProfiles current].profiles;
-        NSDictionary *profile = profiles[self.defaultInstance];
-        
-        if (profile) {
-            self.selectedProfileName = self.defaultInstance;
-            NSString *lastVersionId = profile[@"lastVersionId"];
-            if (![lastVersionId isKindOfClass:[NSString class]]) {
-                lastVersionId = [lastVersionId description];
-            }
-            
-            // Parse version info
-            NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
-            self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
-            self.selectedModLoader = parsed[@"loader"] ?: @"";
-            
-            NSLog(@"Using specified instance: %@, mod loader: %@, MC version: %@", 
-                  self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
-            
-            // Only update search filters if filtering is enabled
-            if (self.isFilterByCurrentProfileEnabled) {
-                self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
-                self.searchFilters[@"loader"] = self.selectedModLoader;
-            }
-            return;
-        } else {
-            NSLog(@"Warning: Specified instance '%@' not found, falling back to current profile", self.defaultInstance);
-        }
-    }
-    
-    NSString *savedProfile = [PLProfiles current].selectedProfileName;
-    if (savedProfile) {
-        NSDictionary *profile = [PLProfiles current].profiles[savedProfile];
-        if (profile) {
-            self.selectedProfileName = savedProfile;
-            NSString *lastVersionId = profile[@"lastVersionId"];
-            if (![lastVersionId isKindOfClass:[NSString class]]) {
-                lastVersionId = [lastVersionId description];
-            }
-            
-            // Parse the version ID to get MC version and mod loader
-            NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
-            self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
-            self.selectedModLoader = parsed[@"loader"] ?: @"";
-            
-            NSLog(@"Auto-selected profile: %@, mod loader: %@, MC version: %@", 
-                  self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
-            
-            // Only update search filters if filtering is enabled
-            if (self.isFilterByCurrentProfileEnabled) {
-                self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
-                self.searchFilters[@"loader"] = self.selectedModLoader;
-            }
-        }
-    }
 }
 
 #pragma mark - UI Actions
@@ -305,10 +352,13 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
 - (void)actionChooseProfile {
     NSDictionary *profiles = [PLProfiles current].profiles;
     if (!profiles || profiles.count == 0) {
-        PresentAlert(localize(@"Error", nil), @"No profiles available.", self);
+        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                       message:@"No profiles available." 
+                               viewController:self];
         return;
     }
     
+    // Sort profiles by name for better user experience
     NSArray *sortedProfiles = [[profiles allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *p1, NSDictionary *p2) {
         return [p1[@"name"] compare:p2[@"name"] options:NSCaseInsensitiveSearch];
     }];
@@ -317,31 +367,42 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
                                                                   message:nil
                                                            preferredStyle:UIAlertControllerStyleActionSheet];
     
+    // Add all profiles as options
     for (NSDictionary *profile in sortedProfiles) {
         NSString *profileName = profile[@"name"];
-        NSString *lastVersionId = profile[@"lastVersionId"];
-        NSString *displayName = [NSString stringWithFormat:@"%@ (%@)", profileName, lastVersionId];
+        
+        // Get display name with version info
+        NSString *versionId = profile[@"lastVersionId"] ?: @"latest-release";
+        NSString *displayName = [NSString stringWithFormat:@"%@ (%@)", profileName, versionId];
         
         [alert addAction:[UIAlertAction actionWithTitle:displayName
                                                 style:UIAlertActionStyleDefault
                                               handler:^(UIAlertAction * _Nonnull action) {
-            self.selectedProfileName = profileName;
-            NSString *lastVersionId = profile[@"lastVersionId"];
-            if (![lastVersionId isKindOfClass:[NSString class]]) {
-                lastVersionId = [lastVersionId description];
+            // Get profile name from dictionary keys
+            NSString *key = nil;
+            for (NSString *k in profiles) {
+                if (profiles[k] == profile) {
+                    key = k;
+                    break;
+                }
             }
             
-            NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
-            self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
-            self.selectedModLoader = parsed[@"loader"] ?: @"";
+            if (!key) {
+                NSLog(@"[ModMenu] Error: Couldn't find profile key for %@", profileName);
+                return;
+            }
             
-            NSLog(@"Selected profile: %@, mod loader: %@, MC version: %@", 
-                  self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
+            // Create profile data from selection
+            ProfileData *selectedProfile = [ProfileData fromDictionary:profile withName:key];
+            self.currentProfile = selectedProfile;
             
-            // Only update search filters if filtering is enabled
+            NSLog(@"[ModMenu] User selected profile: %@, MC version: %@, mod loader: %@", 
+                  selectedProfile.name, selectedProfile.mcVersion, selectedProfile.modLoader);
+            
+            // Update search filters and refresh content
+            [self updateSearchFiltersFromCurrentProfile];
+            
             if (self.isFilterByCurrentProfileEnabled) {
-                self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
-                self.searchFilters[@"loader"] = self.selectedModLoader;
                 [self performSearch:self.searchController.searchBar.text];
             }
         }]];
@@ -432,7 +493,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
         } else {
             // Switch back to Modrinth if no key provided
             self.apiSegmentedControl.selectedSegmentIndex = 0;
-            PresentAlert(@"API Key Missing", @"No API key entered. Switching back to Modrinth.", self);
+            [UIAlertUtilities presentAlertWithTitle:@"API Key Missing" 
+                                           message:@"No API key entered. Switching back to Modrinth." 
+                                   viewController:self];
         }
     }]];
     
@@ -452,7 +515,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     NSArray *loadersArray = mod[@"versionLoaders"];
     
     if (!versionNames || ![versionNames isKindOfClass:[NSArray class]] || versionNames.count == 0) {
-        PresentAlert(@"Error", @"No versions available for this mod.", self);
+        [UIAlertUtilities presentAlertWithTitle:@"Error" 
+                                       message:@"No versions available for this mod." 
+                               viewController:self];
         return;
     }
     
@@ -460,8 +525,8 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     NSMutableArray<NSString *> *compatibleVersions = [NSMutableArray array];
     NSMutableArray<NSNumber *> *compatibleIndices = [NSMutableArray array];
     
-    NSString *profileMCVer = self.isFilterByCurrentProfileEnabled ? self.selectedMCVersion : nil;
-    NSString *profileLoader = self.isFilterByCurrentProfileEnabled ? self.selectedModLoader : nil;
+    NSString *profileMCVer = self.isFilterByCurrentProfileEnabled ? self.currentProfile.mcVersion : nil;
+    NSString *profileLoader = self.isFilterByCurrentProfileEnabled ? self.currentProfile.modLoader : nil;
     
     if (profileMCVer.length == 0) profileMCVer = nil;
     if (profileLoader.length == 0) profileLoader = nil;
@@ -469,7 +534,7 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     // If no filtering, just use all versions
     if (!profileMCVer && !profileLoader) {
         for (NSUInteger i = 0; i < MIN(versionNames.count, kMaxVersionsToShow); i++) {
-            NSString *verStr = SafeStringFromVersion(versionNames[i]);
+            NSString *verStr = [self safeStringFromObject:versionNames[i]];
             NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
             NSString *displayName = parsed[@"loaderVersion"] ?: verStr;
             
@@ -527,7 +592,7 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
             
             // Add compatible versions to the list
             if (mcMatch && loaderMatch) {
-                NSString *verStr = SafeStringFromVersion(versionNames[i]);
+                NSString *verStr = [self safeStringFromObject:versionNames[i]];
                 NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
                 NSString *displayName = parsed[@"loaderVersion"] ?: verStr;
                 
@@ -559,7 +624,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
             
             [self presentViewController:alert animated:YES completion:nil];
         } else {
-            PresentAlert(@"No Compatible Versions", @"No versions available for installation.", self);
+            [UIAlertUtilities presentAlertWithTitle:@"No Compatible Versions" 
+                                           message:@"No versions available for installation." 
+                                   viewController:self];
         }
         return;
     }
@@ -652,37 +719,28 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
 #pragma mark - VersionSelectorDelegate
 
 - (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx {
-    UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
-                                                                        message:@"Choose to install now or add to the installation queue."
-                                                                 preferredStyle:UIAlertControllerStyleAlert];
-    [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Install Now"
-                                                style:UIAlertActionStyleDefault
-                                              handler:^(UIAlertAction * _Nonnull action) {
-        [self installModNow:mod versionIndex:idx];
-    }]];
-    [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Add to Queue"
-                                                style:UIAlertActionStyleDefault
-                                              handler:^(UIAlertAction * _Nonnull action) {
-        NSDictionary *queueEntry = @{@"mod": mod, @"versionIndex": @(idx)};
-        [self.installQueue addObject:queueEntry];
-        [self updateQueueButtonTitle];
-        
-        [UIAlertUtilities presentAlertWithTitle:@"Added to Queue" 
-                                       message:[NSString stringWithFormat:@"\"%@\" has been added to the install queue.", mod[@"title"]]
-                               viewController:self];
-    }]];
-    [choiceAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                                style:UIAlertActionStyleCancel
-                                              handler:nil]];
-    [self presentViewController:choiceAlert animated:YES completion:nil];
+    // Directly install the mod instead of showing a popup
+    [self installModNow:mod versionIndex:idx];
 }
 
 #pragma mark - Mod Installation
 
 - (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
+    // Validate inputs
     NSArray *urls = mod[@"versionUrls"];
     if (index >= urls.count) {
-        PresentAlert(localize(@"Error", nil), @"Invalid version index for installation.", self);
+        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                       message:@"Invalid version index for installation." 
+                               viewController:self];
+        return;
+    }
+    
+    // Get the profile to install into
+    ProfileData *targetProfile = self.currentProfile;
+    if (!targetProfile) {
+        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                       message:@"No profile selected. Please select a profile first." 
+                               viewController:self];
         return;
     }
     
@@ -699,12 +757,14 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     }
     
     // Get profile information
-    NSString *profileName = [PLProfiles current].selectedProfileName;
-    NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
+    NSString *profileName = targetProfile.name;
+    NSMutableDictionary *profile = [PLProfiles current].profiles[profileName];
     
     if (!profile) {
         [self hideLoadingIndicator];
-        PresentAlert(localize(@"Error", nil), @"No profile selected. Please select a profile first.", self);
+        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                       message:@"Profile information is invalid." 
+                               viewController:self];
         return;
     }
     
@@ -726,9 +786,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
                                                         error:&createError];
         if (createError) {
             [self hideLoadingIndicator];
-            PresentAlert(localize(@"Error", nil), 
-                      [NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription], 
-                      self);
+            [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                           message:[NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription] 
+                                   viewController:self];
             return;
         }
     }
@@ -747,9 +807,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
         if (error) {
             NSLog(@"Download error: %@", error);
             dispatch_async(dispatch_get_main_queue(), ^{
-                PresentAlert(localize(@"Error", nil), 
-                          [NSString stringWithFormat:@"Failed to download mod: %@", error.localizedDescription], 
-                          self);
+                [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                               message:[NSString stringWithFormat:@"Failed to download mod: %@", error.localizedDescription] 
+                                       viewController:self];
             });
             return;
         }
@@ -767,18 +827,18 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
         if (moveError) {
             NSLog(@"File move error: %@", moveError);
             dispatch_async(dispatch_get_main_queue(), ^{
-                PresentAlert(localize(@"Error", nil), 
-                          [NSString stringWithFormat:@"Failed to save mod: %@", moveError.localizedDescription], 
-                          self);
+                [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                               message:[NSString stringWithFormat:@"Failed to save mod: %@", moveError.localizedDescription] 
+                                       viewController:self];
             });
             return;
         }
         
         // Show success message
         dispatch_async(dispatch_get_main_queue(), ^{
-            PresentAlert(@"Installation Complete", 
-                      [NSString stringWithFormat:@"%@ installed successfully to %@.", fileName, profileName], 
-                      self);
+            [UIAlertUtilities presentAlertWithTitle:@"Installation Complete" 
+                                           message:[NSString stringWithFormat:@"%@ installed successfully to %@.", fileName, profileName] 
+                                   viewController:self];
         });
     }];
     
@@ -794,7 +854,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     
     // Validate input
     if (!mod) {
-        PresentAlert(localize(@"Error", nil), @"Invalid mod data received.", self);
+        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                       message:@"Invalid mod data received." 
+                               viewController:self];
         return;
     }
     
@@ -824,20 +886,8 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
     // Update search filters
     self.searchFilters[@"name"] = searchText ?: @"";
     
-    // If filtering by profile is enabled, add those filters
-    if (self.isFilterByCurrentProfileEnabled) {
-        if (self.selectedMCVersion) {
-            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
-        }
-        
-        if (self.selectedModLoader) {
-            self.searchFilters[@"loader"] = self.selectedModLoader;
-        }
-    } else {
-        // Remove profile-specific filters if not filtering
-        [self.searchFilters removeObjectForKey:@"mcVersion"];
-        [self.searchFilters removeObjectForKey:@"loader"];
-    }
+    // Make sure filters are applied correctly
+    [self updateSearchFiltersFromCurrentProfile];
     
     // Perform search on background thread
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -853,7 +903,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
                     self.modsList = results;
                     [self.tableView reloadData];
                 } else if (self.modrinth.lastError) {
-                    PresentAlert(localize(@"Error", nil), self.modrinth.lastError.localizedDescription, self);
+                    [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                   message:self.modrinth.lastError.localizedDescription 
+                                           viewController:self];
                 }
             });
         } else {
@@ -867,7 +919,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
                         self.modsList = results;
                         [self.tableView reloadData];
                     } else if (error) {
-                        PresentAlert(localize(@"Error", nil), error.localizedDescription, self);
+                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                       message:error.localizedDescription 
+                                               viewController:self];
                     }
                 });
             }];
@@ -927,6 +981,16 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
 
 - (void)updateModsList {
     [self performSearch:self.searchController.searchBar.text];
+}
+
+- (NSString *)safeStringFromObject:(id)obj {
+    if ([obj isKindOfClass:[NSString class]]) {
+        return obj;
+    } else if ([obj respondsToSelector:@selector(stringValue)]) {
+        return [obj stringValue];
+    } else {
+        return [obj description];
+    }
 }
 
 #pragma mark - UITableView DataSource & Delegate
@@ -1014,7 +1078,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
                     [self hideLoadingIndicator];
                     
                     if (error) {
-                        PresentAlert(localize(@"Error", nil), error.localizedDescription, self);
+                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                       message:error.localizedDescription 
+                                               viewController:self];
                         return;
                     }
                     
@@ -1025,7 +1091,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
                         [self.modsList replaceObjectAtIndex:indexPath.row withObject:updatedMod];
                         [self showVersionSelectorForMod:updatedMod atIndexPath:indexPath];
                     } else {
-                        PresentAlert(localize(@"Error", nil), @"Failed to load mod versions", self);
+                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                       message:@"Failed to load mod versions" 
+                                               viewController:self];
                     }
                 });
             }];
@@ -1035,7 +1103,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
                     [self hideLoadingIndicator];
                     
                     if (error) {
-                        PresentAlert(localize(@"Error", nil), error.localizedDescription, self);
+                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                       message:error.localizedDescription 
+                                               viewController:self];
                         return;
                     }
                     
@@ -1046,7 +1116,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
                         [self.modsList replaceObjectAtIndex:indexPath.row withObject:updatedMod];
                         [self showVersionSelectorForMod:updatedMod atIndexPath:indexPath];
                     } else {
-                        PresentAlert(localize(@"Error", nil), @"Failed to load mod versions", self);
+                        [UIAlertUtilities presentAlertWithTitle:localize(@"Error", nil) 
+                                                       message:@"Failed to load mod versions" 
+                                               viewController:self];
                     }
                 });
             }];
@@ -1156,7 +1228,9 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
 
 - (void)installQueueAction {
     if (self.queue.count == 0) {
-        PresentAlert(localize(@"Queue Empty", nil), @"There are no mods in the install queue.", self);
+        [UIAlertUtilities presentAlertWithTitle:localize(@"Queue Empty", nil) 
+                                       message:@"There are no mods in the install queue." 
+                               viewController:self];
         return;
     }
     
@@ -1220,11 +1294,15 @@ static inline void PresentAlert(NSString *title, NSString *message, UIViewContro
         
         // Get version information
         NSArray *versionNames = mod[@"versionNames"];
-        NSString *verStr = (versionIndex < versionNames.count) ? SafeStringFromVersion(versionNames[versionIndex]) : @"";
+        NSString *verStr = (versionIndex < versionNames.count) ? versionNames[versionIndex] : @"";
         
-        // Parse version for better display
-        NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-        cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
+        if ([verStr isKindOfClass:[NSString class]]) {
+            // Parse version for better display
+            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+            cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
+        } else {
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"%@", verStr];
+        }
     }
     
     return cell;
