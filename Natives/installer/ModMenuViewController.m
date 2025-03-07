@@ -5,8 +5,6 @@
 #import "AFNetworking.h"
 #import "UIKit+AFNetworking.h"
 #import "LauncherPreferences.h"
-#import "config.h"
-#import "utils.h"
 #import "PLProfiles.h"
 #import "UIAlertUtilities.h"
 #import <objc/runtime.h>
@@ -17,6 +15,12 @@ static NSString * const kFilterByProfilePrefKey = @"mods.filter_by_profile";
 static NSTimeInterval const kSearchDebounceDelay = 0.5;
 static NSUInteger const kDefaultPageSize = 50;
 static NSUInteger const kMaxVersionsToShow = 100;
+
+// Define the protocol first
+@protocol VersionSelectorDelegate <NSObject>
+- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx;
+- (UIViewController *)presentedViewController;
+@end
 
 // Profile Data Management
 @interface ProfileData : NSObject
@@ -90,12 +94,6 @@ static NSUInteger const kMaxVersionsToShow = 100;
 @property (nonatomic, copy) void (^didFinishInstallation)(void);
 @end
 
-// Add protocol definition for version selection
-@protocol VersionSelectorDelegate <NSObject>
-- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx;
-@property (nonatomic, readonly) UIViewController *presentedViewController;
-@end
-
 @interface ModMenuViewController () <UISearchResultsUpdating, UITableViewDelegate, UITableViewDataSource, VersionSelectorDelegate>
 // UI Components
 @property (nonatomic, strong) UISearchController *searchController;
@@ -134,7 +132,8 @@ static NSUInteger const kMaxVersionsToShow = 100;
     self.modrinth = [ModrinthAPI defaultAPI];
     
     // Get saved API key if available
-    NSString *savedApiKey = getPrefObject(kCurseForgeAPIKeyPrefKey) ?: @"";
+    NSString *savedApiKey = [getPrefObject(kCurseForgeAPIKeyPrefKey) isKindOfClass:[NSString class]] ? 
+                             getPrefObject(kCurseForgeAPIKeyPrefKey) : @"";
     self.curseForge = [[CurseForgeAPI alloc] initWithAPIKey:savedApiKey];
     self.curseForge.parentViewController = self;
     
@@ -318,6 +317,17 @@ static NSUInteger const kMaxVersionsToShow = 100;
     NSLog(@"[ModMenu] Updated search filters: %@", self.searchFilters);
 }
 
+#pragma mark - VersionSelectorDelegate Implementation
+
+- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx {
+    // Directly install the mod instead of showing a popup
+    [self installModNow:mod versionIndex:idx];
+}
+
+- (UIViewController *)presentedViewController {
+    return self.presentedViewController;
+}
+
 #pragma mark - Public Methods
 
 - (void)setDefaultInstance:(NSString *)instanceName {
@@ -450,7 +460,12 @@ static NSUInteger const kMaxVersionsToShow = 100;
     
     // Only prompt for API key if switching to CurseForge and key is not already set
     if (sender.selectedSegmentIndex == 1) {
-        NSString *savedApiKey = getPrefObject(kCurseForgeAPIKeyPrefKey);
+        NSString *savedApiKey = nil;
+        id apiKeyObj = getPrefObject(kCurseForgeAPIKeyPrefKey);
+        if ([apiKeyObj isKindOfClass:[NSString class]]) {
+            savedApiKey = (NSString *)apiKeyObj;
+        }
+        
         if (!savedApiKey || savedApiKey.length == 0) {
             [self promptForCurseForgeAPIKey];
         } else {
@@ -478,9 +493,13 @@ static NSUInteger const kMaxVersionsToShow = 100;
         textField.secureTextEntry = YES;
         
         // Pre-fill with saved API key if available
-        NSString *savedApiKey = getPrefObject(kCurseForgeAPIKeyPrefKey);
-        if (savedApiKey && savedApiKey.length > 0) {
-            textField.text = savedApiKey;
+        id apiKeyObj = getPrefObject(kCurseForgeAPIKeyPrefKey);
+        NSString *savedApiKey = nil;
+        if ([apiKeyObj isKindOfClass:[NSString class]]) {
+            savedApiKey = (NSString *)apiKeyObj;
+            if (savedApiKey.length > 0) {
+                textField.text = savedApiKey;
+            }
         }
     }];
     
@@ -715,13 +734,6 @@ static NSUInteger const kMaxVersionsToShow = 100;
 
 - (void)dismissVersionSelector {
     [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-#pragma mark - VersionSelectorDelegate
-
-- (void)handleVersionSelection:(NSDictionary *)mod selectedVersion:(NSUInteger)idx {
-    // Directly install the mod instead of showing a popup
-    [self installModNow:mod versionIndex:idx];
 }
 
 #pragma mark - Mod Installation
@@ -1192,7 +1204,8 @@ static NSUInteger const kMaxVersionsToShow = 100;
         
         // Small delay to show loading state before dismissing
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self.delegate.presentedViewController dismissViewControllerAnimated:YES completion:^{
+            UIViewController *vc = [self.delegate presentedViewController];
+            [vc dismissViewControllerAnimated:YES completion:^{
                 [self.delegate handleVersionSelection:self.mod selectedVersion:versionIndex];
             }];
         });
@@ -1295,14 +1308,20 @@ static NSUInteger const kMaxVersionsToShow = 100;
         
         // Get version information
         NSArray *versionNames = mod[@"versionNames"];
-        NSString *verStr = (versionIndex < versionNames.count) ? versionNames[versionIndex] : @"";
-        
-        if ([verStr isKindOfClass:[NSString class]]) {
-            // Parse version for better display
-            NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-            cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
+        if (versionIndex < versionNames.count) {
+            id versionObj = versionNames[versionIndex];
+            NSString *verStr = nil;
+            
+            if ([versionObj isKindOfClass:[NSString class]]) {
+                verStr = versionObj;
+                // Parse version for better display
+                NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
+                cell.detailTextLabel.text = parsed[@"loaderVersion"] ?: verStr;
+            } else {
+                cell.detailTextLabel.text = [NSString stringWithFormat:@"%@", versionObj];
+            }
         } else {
-            cell.detailTextLabel.text = [NSString stringWithFormat:@"%@", verStr];
+            cell.detailTextLabel.text = @"Unknown version";
         }
     }
     
