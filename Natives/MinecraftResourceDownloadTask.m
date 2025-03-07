@@ -1,5 +1,3 @@
-#include <CommonCrypto/CommonDigest.h>
-
 #import "authenticator/BaseAuthenticator.h"
 #import "installer/modpack/ModpackAPI.h"
 #import "AFNetworking.h"
@@ -10,6 +8,8 @@
 #import "ios_uikit_bridge.h"
 #import "PLProfiles.h"
 #import "utils.h"
+
+#include <CommonCrypto/CommonDigest.h>
 
 @interface MinecraftResourceDownloadTask ()
 @property AFURLSessionManager* manager;
@@ -110,15 +110,79 @@
 
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSInteger)size {
     NSProgress *progress = [self.manager downloadProgressForTask:task];
-    NSUInteger fileSize = size>0 ? size : 1;
+    
     progress.kind = NSProgressKindFile;
-    if (size > 0) {
-        progress.totalUnitCount = fileSize;
-    }
+    progress.fileOperationKind = NSProgressFileOperationKindDownloading;
+    
+    // Set initial size - real size will be updated when response is received
+    NSUInteger initialSize = 1; // Just 1 byte initially to avoid division by zero issues
+    progress.totalUnitCount = initialSize;
+    
     [self.progressList addObject:progress];
-    [self.progress addChild:progress withPendingUnitCount:fileSize];
-    self.progress.totalUnitCount += fileSize;
+    [self.progress addChild:progress withPendingUnitCount:initialSize];
+    self.progress.totalUnitCount += initialSize;
     self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+    
+    // Add observer to update size when Content-Length becomes available
+    [task addObserver:self forKeyPath:@"countOfBytesExpectedToReceive" options:NSKeyValueObservingOptionNew context:NULL];
+    [task addObserver:self forKeyPath:@"response" options:NSKeyValueObservingOptionNew context:NULL];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
+    if ([object isKindOfClass:[NSURLSessionDownloadTask class]]) {
+        NSURLSessionDownloadTask *task = (NSURLSessionDownloadTask *)object;
+        NSProgress *progress = [self.manager downloadProgressForTask:task];
+        
+        if (!progress) {
+            return;
+        }
+        
+        // Check if we need to update size from countOfBytesExpectedToReceive
+        if ([keyPath isEqualToString:@"countOfBytesExpectedToReceive"] && task.countOfBytesExpectedToReceive > 0) {
+            [self updateProgressSize:progress forTask:task withSize:task.countOfBytesExpectedToReceive];
+        }
+        // Check if we need to update size from Content-Length header
+        else if ([keyPath isEqualToString:@"response"] && [task.response isKindOfClass:[NSHTTPURLResponse class]]) {
+            NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
+            NSString *contentLength = [httpResponse.allHeaderFields objectForKey:@"Content-Length"];
+            if (contentLength) {
+                NSUInteger responseSize = [contentLength longLongValue];
+                if (responseSize > 0) {
+                    [self updateProgressSize:progress forTask:task withSize:responseSize];
+                }
+            }
+        }
+    } else {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+    }
+}
+
+- (void)updateProgressSize:(NSProgress *)progress forTask:(NSURLSessionDownloadTask *)task withSize:(NSUInteger)newSize {
+    if (!progress || progress.totalUnitCount == newSize) {
+        return; // No need to update if size is already correct
+    }
+    
+    // Log the adjustment we're making
+    NSLog(@"[MCDL] Updating size for download: %@ from %lld to %lu bytes", 
+          [task.originalRequest.URL lastPathComponent], 
+          progress.totalUnitCount, 
+          (unsigned long)newSize);
+    
+    // Calculate the difference to adjust parent progress
+    NSInteger sizeDifference = newSize - progress.totalUnitCount;
+    
+    // Update on main thread to avoid KVO issues
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Update progress size
+        progress.totalUnitCount = newSize;
+        
+        // Update parent progress
+        if (self.progress && sizeDifference != 0) {
+            // Adjust the parent's total by the difference
+            self.progress.totalUnitCount += sizeDifference;
+            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+        }
+    });
 }
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
@@ -407,6 +471,18 @@
 
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
     return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
+}
+
+- (void)dealloc {
+    // Remove any remaining observers to prevent crashes
+    for (NSURLSessionDownloadTask *task in [self.manager downloadTasks]) {
+        @try {
+            [task removeObserver:self forKeyPath:@"countOfBytesExpectedToReceive"];
+            [task removeObserver:self forKeyPath:@"response"];
+        } @catch (NSException *exception) {
+            // Ignore if observer wasn't registered
+        }
+    }
 }
 
 @end
