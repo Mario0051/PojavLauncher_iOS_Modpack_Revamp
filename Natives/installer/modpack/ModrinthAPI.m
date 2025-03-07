@@ -21,101 +21,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     ModrinthErrorCodeResourceNotFound = 1002,
     ModrinthErrorCodeExtraction = 1003,
     ModrinthErrorCodeInvalidManifest = 1004
-}
-
-#pragma mark - Mod Installation
-
-- (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
-    if (!modDetail) {
-        NSLog(@"[ModrinthAPI] Cannot install mod: nil modDetail");
-        return;
-    }
-    
-    NSArray *urls = modDetail[@"versionUrls"];
-    if (!urls || selectedVersion >= urls.count) {
-        NSLog(@"[ModrinthAPI] Invalid version index for mod installation");
-        return;
-    }
-    
-    NSDictionary *userInfo = @{
-        @"detail": modDetail,
-        @"index": @(selectedVersion)
-    };
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" 
-                                                            object:self 
-                                                          userInfo:userInfo];
-    });
-}
-
-#pragma mark - Version Filtering
-
-- (NSArray *)filterVersionsForGameVersion:(NSString *)gameVersion 
-                                   loader:(NSString *)loader 
-                             fromVersions:(NSArray *)versions {
-    NSMutableArray *filtered = [NSMutableArray array];
-    
-    for (NSDictionary *version in versions) {
-        // Check game version compatibility
-        NSArray *gameVersions = version[@"game_versions"];
-        BOOL matchesGameVersion = NO;
-        
-        if (!gameVersion || gameVersion.length == 0) {
-            matchesGameVersion = YES;
-        } else {
-            for (NSString *versionStr in gameVersions) {
-                if (![versionStr isKindOfClass:[NSString class]]) continue;
-                
-                NSString *trimmedGV = [[versionStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                NSString *trimmedFilter = [[gameVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                
-                // More relaxed version matching
-                if ([trimmedGV isEqualToString:trimmedFilter] ||
-                    [trimmedGV hasPrefix:[trimmedFilter stringByAppendingString:@"."]] ||
-                    [trimmedFilter hasPrefix:[trimmedGV stringByAppendingString:@"."]]) {
-                    matchesGameVersion = YES;
-                    break;
-                }
-            }
-        }
-        
-        if (!matchesGameVersion) continue;
-        
-        // Check loader compatibility
-        NSArray *loaders = version[@"loaders"];
-        BOOL matchesLoader = NO;
-        
-        if (!loader || loader.length == 0) {
-            matchesLoader = YES;
-        } else {
-            for (NSString *loaderStr in loaders) {
-                if (![loaderStr isKindOfClass:[NSString class]]) continue;
-                
-                if ([loaderStr caseInsensitiveCompare:loader] == NSOrderedSame) {
-                    matchesLoader = YES;
-                    break;
-                }
-            }
-        }
-        
-        if (matchesLoader) {
-            [filtered addObject:version];
-        }
-    }
-    
-    return filtered;
-}
-
-#pragma mark - Queue Management
-
-- (void)queueOperation:(void (^)(void))block withPriority:(NSOperationQueuePriority)priority {
-    NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:block];
-    operation.queuePriority = priority;
-    [self.operationQueue addOperation:operation];
-}
-
-@end;
+};
 
 @interface ModrinthAPI ()
 @property (nonatomic, strong) AFHTTPSessionManager *sessionManager;
@@ -628,9 +534,9 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             id contentLengthObj = response.allHeaderFields[@"Content-Length"];
             NSUInteger fileSize = 0;
             
-            // Multiple safe conversion attempts
+            // Multiple safe conversion attempts for iOS 14 compatibility
             if ([contentLengthObj isKindOfClass:[NSString class]]) {
-                fileSize = [(NSString *)contentLengthObj longLongValue]; // Fixed for iOS 14 compatibility
+                fileSize = [(NSString *)contentLengthObj longLongValue];
             } else if ([contentLengthObj isKindOfClass:[NSNumber class]]) {
                 fileSize = [(NSNumber *)contentLengthObj unsignedIntegerValue];
             }
@@ -842,3 +748,97 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         [downloader.progress addChild:completeProgress withPendingUnitCount:1];
     });
 }
+
+#pragma mark - Mod Installation
+
+- (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    if (!modDetail) {
+        NSLog(@"[ModrinthAPI] Cannot install mod: nil modDetail");
+        return;
+    }
+    
+    NSArray *urls = modDetail[@"versionUrls"];
+    if (!urls || selectedVersion >= urls.count) {
+        NSLog(@"[ModrinthAPI] Invalid version index for mod installation");
+        return;
+    }
+    
+    NSDictionary *userInfo = @{
+        @"detail": modDetail,
+        @"index": @(selectedVersion)
+    };
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" 
+                                                            object:self 
+                                                          userInfo:userInfo];
+    });
+}
+
+#pragma mark - Version Filtering
+
+- (NSArray *)filterVersionsForGameVersion:(NSString *)gameVersion 
+                                   loader:(NSString *)loader 
+                             fromVersions:(NSArray *)versions {
+    NSMutableArray *filtered = [NSMutableArray array];
+    
+    for (NSDictionary *version in versions) {
+        // Check game version compatibility
+        NSArray *gameVersions = version[@"game_versions"];
+        BOOL matchesGameVersion = NO;
+        
+        if (!gameVersion || gameVersion.length == 0) {
+            matchesGameVersion = YES;
+        } else {
+            for (NSString *versionStr in gameVersions) {
+                if (![versionStr isKindOfClass:[NSString class]]) continue;
+                
+                NSString *trimmedGV = [[versionStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                NSString *trimmedFilter = [[gameVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                
+                // More relaxed version matching
+                if ([trimmedGV isEqualToString:trimmedFilter] ||
+                    [trimmedGV hasPrefix:[trimmedFilter stringByAppendingString:@"."]] ||
+                    [trimmedFilter hasPrefix:[trimmedGV stringByAppendingString:@"."]]) {
+                    matchesGameVersion = YES;
+                    break;
+                }
+            }
+        }
+        
+        if (!matchesGameVersion) continue;
+        
+        // Check loader compatibility
+        NSArray *loaders = version[@"loaders"];
+        BOOL matchesLoader = NO;
+        
+        if (!loader || loader.length == 0) {
+            matchesLoader = YES;
+        } else {
+            for (NSString *loaderStr in loaders) {
+                if (![loaderStr isKindOfClass:[NSString class]]) continue;
+                
+                if ([loaderStr caseInsensitiveCompare:loader] == NSOrderedSame) {
+                    matchesLoader = YES;
+                    break;
+                }
+            }
+        }
+        
+        if (matchesLoader) {
+            [filtered addObject:version];
+        }
+    }
+    
+    return filtered;
+}
+
+#pragma mark - Queue Management
+
+- (void)queueOperation:(void (^)(void))block withPriority:(NSOperationQueuePriority)priority {
+    NSBlockOperation *operation = [NSBlockOperation blockOperationWithBlock:block];
+    operation.queuePriority = priority;
+    [self.operationQueue addOperation:operation];
+}
+
+@end
