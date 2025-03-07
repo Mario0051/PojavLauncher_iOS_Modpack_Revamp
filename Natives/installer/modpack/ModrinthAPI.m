@@ -522,61 +522,72 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         // Get a file name for display (just the last component)
         NSString *fileName = [path lastPathComponent];
         
-        // Perform HEAD request to get accurate file size if size is 0
-        dispatch_group_enter(downloadGroup);
-        AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
-        [manager HEAD:url parameters:nil headers:nil success:^(NSURLSessionDataTask * _Nonnull task) {
-            NSHTTPURLResponse *response = (NSHTTPURLResponse *)task.response;
-            NSUInteger fileSize = [response.allHeaderFields[@"Content-Length"] unsignedIntegerValue];
-            
-            // Use HEAD request size if original size was 0
-            if (fileSize == 0) {
-                fileSize = size > 0 ? size : 1; // Fallback to 1 to prevent division by zero
-                NSLog(@"[ModrinthAPI] Warning: Could not determine file size for %@", fileName);
+// Perform HEAD request to get accurate file size if size is 0
+    dispatch_group_enter(downloadGroup);
+    AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
+    [manager HEAD:url parameters:nil headers:nil success:^(NSURLSessionDataTask * _Nonnull task) {
+        NSHTTPURLResponse *response = (NSHTTPURLResponse *)task.response;
+        
+        // Safely handle Content-Length conversion
+        id contentLengthObj = response.allHeaderFields[@"Content-Length"];
+        NSUInteger fileSize = 0;
+        
+        // Multiple safe conversion attempts
+        if ([contentLengthObj isKindOfClass:[NSString class]]) {
+            fileSize = [contentLengthObj respondsToSelector:@selector(unsignedIntegerValue)] 
+                ? [(NSString *)contentLengthObj unsignedIntegerValue] 
+                : 0;
+        } else if ([contentLengthObj isKindOfClass:[NSNumber class]]) {
+            fileSize = [(NSNumber *)contentLengthObj unsignedIntegerValue];
+        }
+        
+        // Use HEAD request size if original size was 0
+        if (fileSize == 0) {
+            fileSize = size > 0 ? size : 1; // Fallback to 1 to prevent division by zero
+            NSLog(@"[ModrinthAPI] Warning: Could not determine file size for %@", fileName);
+        }
+        
+        // Create a download task using the proper method from MinecraftResourceDownloadTask
+        NSURLSessionDownloadTask *downloadTaskRef = [downloader createDownloadTask:url 
+                                                                            size:fileSize 
+                                                                             sha:sha 
+                                                                         altName:fileName 
+                                                                          toPath:path
+                                                                         success:^{
+            // Update progress when download completes
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completedFiles++;
+                modsProgress.completedUnitCount += 1;
+            });
+        }];
+        
+        if (downloadTaskRef) {
+            @synchronized(downloadTasks) {
+                [downloadTasks addObject:downloadTaskRef];
             }
-            
-            // Create a download task using the proper method from MinecraftResourceDownloadTask
-            NSURLSessionDownloadTask *downloadTaskRef = [downloader createDownloadTask:url 
-                                                                                size:fileSize 
-                                                                                 sha:sha 
-                                                                             altName:fileName 
-                                                                              toPath:path
-                                                                             success:^{
-                // Update progress when download completes
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completedFiles++;
-                    modsProgress.completedUnitCount += 1;
-                });
-            }];
-            
-            if (downloadTaskRef) {
-                @synchronized(downloadTasks) {
-                    [downloadTasks addObject:downloadTaskRef];
-                }
-                [downloadTaskRef resume];
-            } else {
-                failedFiles++;
-                
-                // Update progress even for failures
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    modsProgress.completedUnitCount += 1;
-                });
-                
-                NSLog(@"[ModrinthAPI] Failed to create download task for %@", fileName);
-            }
-            
-            dispatch_group_leave(downloadGroup);
-        } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+            [downloadTaskRef resume];
+        } else {
             failedFiles++;
-            NSLog(@"[ModrinthAPI] Failed to get file size for %@: %@", fileName, error);
             
+            // Update progress even for failures
             dispatch_async(dispatch_get_main_queue(), ^{
                 modsProgress.completedUnitCount += 1;
             });
             
-            dispatch_group_leave(downloadGroup);
-        }];
-    }
+            NSLog(@"[ModrinthAPI] Failed to create download task for %@", fileName);
+        }
+        
+        dispatch_group_leave(downloadGroup);
+    } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+        failedFiles++;
+        NSLog(@"[ModrinthAPI] Failed to get file size for %@: %@", fileName, error);
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            modsProgress.completedUnitCount += 1;
+        });
+        
+        dispatch_group_leave(downloadGroup);
+    }];
     
     // Wait for URL resolution and download to complete
     dispatch_group_wait(downloadGroup, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
