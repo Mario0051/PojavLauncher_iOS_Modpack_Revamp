@@ -7,6 +7,7 @@
 #import "LauncherPreferences.h"
 #import "PLProfiles.h"
 #import "UIAlertUtilities.h"
+#import "utils.h"
 #import <objc/runtime.h>
 
 // Constants for better code maintenance
