@@ -326,7 +326,7 @@ static NSUInteger const kMaxVersionsToShow = 100;
 }
 
 - (UIViewController *)presentedViewController {
-    return self.presentedViewController;
+    return [super presentedViewController];
 }
 
 #pragma mark - Public Methods
