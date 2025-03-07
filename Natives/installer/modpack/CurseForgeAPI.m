@@ -1075,41 +1075,63 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
             // Path to save the file
             NSString *modPath = [modsDir stringByAppendingPathComponent:fileName];
             
-            // Create a download task with success callback
-            NSURLSessionDownloadTask *task = [downloadTask createDownloadTask:downloadUrl 
-                                                                      size:0 // Let the system get real size from headers
-                                                                       sha:nil 
-                                                                   altName:fileName 
-                                                                    toPath:modPath
-                                                                   success:^{
-                // Update progress when download completes
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    completedFiles++;
-                    modsProgress.completedUnitCount += 1;
-                });
-            }];
-            
-            if (task) {
-                @synchronized(downloadTasks) {
-                    [downloadTasks addObject:task];
+            // Before creating the download task, get the file size
+            AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
+            [manager HEAD:downloadUrl parameters:nil headers:nil success:^(NSURLSessionDataTask * _Nonnull task) {
+                NSHTTPURLResponse *response = (NSHTTPURLResponse *)task.response;
+                NSUInteger fileSize = [response.allHeaderFields[@"Content-Length"] unsignedIntegerValue];
+                
+                // Provide a fallback size if Content-Length is not available
+                if (fileSize == 0) {
+                    fileSize = 1; // Prevent division by zero
+                    NSLog(@"[CurseForge-Modpack] Warning: Could not determine file size for %@", fileName);
                 }
-                [task resume];
-            } else {
-                failedFiles++;
                 
-                // Update progress even for failures
+                // Create a download task with success callback
+                NSURLSessionDownloadTask *downloadTaskRef = [downloadTask createDownloadTask:downloadUrl 
+                                                                                      size:fileSize 
+                                                                                       sha:nil 
+                                                                                   altName:fileName 
+                                                                                    toPath:modPath
+                                                                                   success:^{
+                    // Update progress when download completes
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        completedFiles++;
+                        modsProgress.completedUnitCount += 1;
+                    });
+                }];
+                
+                if (downloadTaskRef) {
+                    @synchronized(downloadTasks) {
+                        [downloadTasks addObject:downloadTaskRef];
+                    }
+                    [downloadTaskRef resume];
+                } else {
+                    failedFiles++;
+                    
+                    // Update progress even for failures
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        modsProgress.completedUnitCount += 1;
+                    });
+                    
+                    NSLog(@"[CurseForge-Modpack] Failed to create download task for %@", fileName);
+                }
+                
+                dispatch_group_leave(downloadGroup);
+            } failure:^(NSURLSessionDataTask * _Nullable task, NSError * _Nonnull error) {
+                failedFiles++;
+                NSLog(@"[CurseForge-Modpack] Failed to get file size for %@: %@", fileName, error);
+                
                 dispatch_async(dispatch_get_main_queue(), ^{
                     modsProgress.completedUnitCount += 1;
                 });
                 
-                NSLog(@"[CurseForge-Modpack] Failed to create download task for %@", fileName);
-            }
-            
-            dispatch_group_leave(downloadGroup);
+                dispatch_group_leave(downloadGroup);
+            }];
         }];
     }
     
-    // Wait for URL resolution to complete (this happens quickly)
+    // Wait for URL resolution and download to complete
     dispatch_group_wait(downloadGroup, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
     
     // Create a new dispatch group for monitoring downloads
@@ -1168,7 +1190,6 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         completion((NSUInteger)completedFiles, (NSUInteger)totalFiles, (NSUInteger)failedFiles);
     }
 }
-
 
 #pragma mark - Manifest Verification
 
