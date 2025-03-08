@@ -53,6 +53,14 @@ typedef NS_ENUM(NSInteger, DownloadSource) {
                                          success:(void (^)())success;
 
 /**
+ * Formats a display name for a file with source information
+ * @param fileName The original file name
+ * @param source The download source
+ * @return A formatted display name
+ */
+- (NSString *)formatDisplayNameForFile:(NSString *)fileName fromSource:(DownloadSource)source;
+
+/**
  * Finishes the download process with an error message
  * @param error The error message to display
  */
