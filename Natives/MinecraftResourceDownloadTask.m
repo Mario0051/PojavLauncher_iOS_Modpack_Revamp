@@ -13,6 +13,7 @@
 @property (nonatomic, strong) NSMutableArray *downloadedFiles;
 @property (nonatomic, strong) dispatch_queue_t downloadQueue;
 @property (nonatomic, strong) dispatch_semaphore_t downloadSemaphore;
+- (void)checkForCompletionAndFinalize;
 @end
 
 @implementation MinecraftResourceDownloadTask
