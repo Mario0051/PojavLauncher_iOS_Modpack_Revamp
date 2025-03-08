@@ -1,4 +1,3 @@
-#import "MinecraftResourceDownloadTask.h"
 #import "CurseForgeAPI.h"
 #import "ModpackAPI.h"
 #import "PLProfiles.h"
