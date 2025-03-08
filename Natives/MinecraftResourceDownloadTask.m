@@ -326,6 +326,9 @@
     // Prepare for download
     [self prepareForDownload];
     
+    // Store version info in metadata
+    self.metadata[@"versionId"] = versionId;
+    
     // Set progress description
     self.textProgress.localizedDescription = [NSString stringWithFormat:@"Downloading Minecraft %@", versionId];
     
@@ -380,7 +383,11 @@
                                                             size:[clientSize unsignedIntegerValue] 
                                                             sha:clientSHA1 
                                                         altName:displayName 
-                                                        toPath:clientJarPath];
+                                                        toPath:clientJarPath 
+                                                       success:^{
+        // Once client is downloaded, check if we should mark as completed
+        [self checkForCompletionAndFinalize];                                                
+    }];
     
     if (!clientTask) {
         [self finishDownloadWithErrorString:@"Failed to create client download task"];
@@ -406,8 +413,40 @@
     if (assetIndex && [assetIndex isKindOfClass:[NSDictionary class]]) {
         [self processAssetIndex:assetIndex forVersion:versionId];
     }
+    
+    // Set up a timer to periodically check for completion
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self checkForCompletionAndFinalize];
+    });
 }
 
+- (void)checkForCompletionAndFinalize {
+    // Only proceed if we haven't already marked as complete
+    if ([self.metadata[@"allTasksComplete"] boolValue]) {
+        return;
+    }
+    
+    // Check if all tasks are in completed state
+    BOOL allComplete = YES;
+    @synchronized(self.downloadTasks) {
+        for (NSURLSessionDownloadTask *task in [self.downloadTasks allValues]) {
+            if (task.state != NSURLSessionTaskStateCompleted) {
+                allComplete = NO;
+                break;
+            }
+        }
+    }
+    
+    if (allComplete && self.progress.fractionCompleted >= 0.95) {
+        NSLog(@"[ResourceDownload] All download tasks completed, marking as finished");
+        [self markAsCompleted];
+    } else {
+        // Schedule another check
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self checkForCompletionAndFinalize];
+        });
+    }
+}
 - (void)processLibraryDownload:(NSDictionary *)library forVersion:(NSString *)versionId {
     // Library download processing logic would go here
     // This is a simplified stub implementation
