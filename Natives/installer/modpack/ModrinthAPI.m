@@ -743,6 +743,33 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         return;
     }
     
+    // Create a timer for smoother progress updates on the main thread
+    dispatch_source_t progressTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(progressTimer, DISPATCH_TIME_NOW, 0.5 * NSEC_PER_SEC, 0.1 * NSEC_PER_SEC);
+    
+    __block double lastReportedProgress = 0;
+    __block NSString *currentFile = @"";
+    
+    dispatch_source_set_event_handler(progressTimer, ^{
+        double currentProgress = (double)processedFiles / totalFiles;
+        
+        // Only update if progress has changed significantly
+        if (currentProgress - lastReportedProgress >= 0.01 || currentProgress == 1.0) {
+            lastReportedProgress = currentProgress;
+            if (progressCallback) {
+                progressCallback(currentProgress);
+            }
+        }
+        
+        // If extraction is complete, stop the timer
+        if (processedFiles >= totalFiles) {
+            dispatch_source_cancel(progressTimer);
+        }
+    });
+    
+    // Start the timer
+    dispatch_resume(progressTimer);
+    
     // Now extract the files with progress updates
     [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
         // Skip files that are not in the overrides directory
@@ -750,14 +777,14 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             return;
         }
         
+        // Track current file for progress reporting
+        currentFile = fileInfo.filename;
+        
         // Get relative path (remove "overrides/" prefix)
         NSString *relativePath = [fileInfo.filename substringFromIndex:10]; // "overrides/".length == 10
         if (relativePath.length == 0) {
             // Skip the root overrides directory itself
             processedFiles++;
-            if (progressCallback) {
-                progressCallback((double)processedFiles / totalFiles);
-            }
             return;
         }
         
@@ -781,9 +808,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         // Skip directories (we've already created them)
         if (fileInfo.isDirectory) {
             processedFiles++;
-            if (progressCallback) {
-                progressCallback((double)processedFiles / totalFiles);
-            }
             return;
         }
         
@@ -807,16 +831,19 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         
         // Update progress
         processedFiles++;
-        if (progressCallback && (processedFiles % 5 == 0 || processedFiles == totalFiles)) {
-            progressCallback((double)processedFiles / totalFiles);
-        }
     } error:error];
+    
+    // Cancel timer if there was an error
+    if (*error) {
+        dispatch_source_cancel(progressTimer);
+    }
     
     // Ensure final progress update
     if (*error == nil && progressCallback) {
         progressCallback(1.0);
     }
 }
+
 // Helper method to download mod files with better concurrency control
 - (void)downloadModFiles:(NSArray *)files toDestPath:(NSString *)destPath withDownloader:(MinecraftResourceDownloadTask *)downloader andCompletion:(void (^)(void))completion {
     // Get reference to the mods progress object
@@ -846,8 +873,28 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     // Use a semaphore to limit concurrent downloads
     dispatch_semaphore_t downloadSemaphore = dispatch_semaphore_create(4); // Limit to 4 concurrent downloads
     
+    // Create a progress update timer for UI
+    dispatch_source_t progressTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(progressTimer, DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC, 0.1 * NSEC_PER_SEC);
+    dispatch_source_set_event_handler(progressTimer, ^{
+        modsProgress.kind = NSProgressKindFile;
+        modsProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
+        modsProgress.localizedDescription = [NSString stringWithFormat:@"Downloaded %lu/%lu mods", 
+                                             (unsigned long)completedFiles, 
+                                             (unsigned long)files.count];
+        
+        if (completedFiles + failedFiles >= files.count) {
+            dispatch_source_cancel(progressTimer);
+        }
+    });
+    dispatch_resume(progressTimer);
+    
+    // Start a counter to track file index for better display
+    __block int fileIndex = 0;
+    
     // Process each file
     for (NSDictionary *indexFile in files) {
+        fileIndex++;
         if (![indexFile isKindOfClass:[NSDictionary class]]) {
             continue;
         }
@@ -872,6 +919,22 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             continue;
         }
         
+        // Get mod name for better display
+        NSString *modName = indexFile[@"name"];
+        if (!modName || ![modName isKindOfClass:[NSString class]] || modName.length == 0) {
+            // Try to extract a name from path or URL
+            NSString *path = indexFile[@"path"];
+            if ([path isKindOfClass:[NSString class]] && path.length > 0) {
+                modName = [path lastPathComponent];
+            } else {
+                modName = [[NSURL URLWithString:url] lastPathComponent] ?: @"Unknown mod";
+            }
+        }
+        
+        // Create a better display name with index for progress tracking
+        NSString *displayName = [NSString stringWithFormat:@"Mod %d/%lu: %@", 
+                                fileIndex, (unsigned long)files.count, modName];
+        
         // Determine file path based on metadata
         NSString *path;
         if ([indexFile[@"path"] isKindOfClass:[NSString class]] && [indexFile[@"path"] length] > 0) {
@@ -880,7 +943,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             // Default to mods directory with filename from URL
             NSString *fileName = [[NSURL URLWithString:url] lastPathComponent];
             if (!fileName || fileName.length == 0) {
-                fileName = [NSString stringWithFormat:@"mod_%@.jar", indexFile[@"name"] ?: [[NSUUID UUID] UUIDString]];
+                fileName = [NSString stringWithFormat:@"mod_%@.jar", modName ?: [[NSUUID UUID] UUIDString]];
             }
             path = [modsDir stringByAppendingPathComponent:fileName];
         }
@@ -909,9 +972,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         NSNumber *fileSizeNumber = indexFile[@"fileSize"];
         NSUInteger size = [fileSizeNumber isKindOfClass:[NSNumber class]] ? [fileSizeNumber unsignedLongLongValue] : 0;
         
-        // Get a file name for display (just the last component)
-        NSString *fileName = [path lastPathComponent];
-        
         // Enter download group and wait for semaphore slot
         dispatch_group_enter(downloadGroup);
         
@@ -919,11 +979,11 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         dispatch_async(downloadQueue, ^{
             dispatch_semaphore_wait(downloadSemaphore, DISPATCH_TIME_FOREVER);
             
-            // Create download task
+            // Create download task with improved display name
             NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
                                                                        size:size 
                                                                         sha:sha 
-                                                                    altName:fileName 
+                                                                    altName:displayName
                                                                      toPath:path 
                                                                     success:^{
                 // Update progress
@@ -933,7 +993,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                     NSLog(@"[ModrinthAPI] Download completed (%lu/%lu): %@", 
                           (unsigned long)completedFiles, 
                           (unsigned long)files.count, 
-                          fileName);
+                          modName);
                 });
                 
                 // Release semaphore slot
@@ -966,6 +1026,20 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         NSLog(@"[ModrinthAPI] All downloads completed: %lu successful, %lu failed", 
               (unsigned long)completedFiles, 
               (unsigned long)failedFiles);
+        
+        // Create a log entry of the installation
+        NSString *logPath = [destPath stringByAppendingPathComponent:@"modrinth_download.log"];
+        NSString *logContent = [NSString stringWithFormat:@"Modrinth mod download completed\n"
+                              "Total files: %lu\n"
+                              "Successful: %lu\n"
+                              "Failed: %lu\n"
+                              "Date: %@",
+                              (unsigned long)files.count,
+                              (unsigned long)completedFiles,
+                              (unsigned long)failedFiles,
+                              [NSDate date]];
+        
+        [logContent writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
         
         // Call completion handler
         if (completion) {
