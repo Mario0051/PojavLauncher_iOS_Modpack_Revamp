@@ -442,9 +442,9 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
     
     // Don't create a new download task - directly notify the appropriate API
     if (source == ModpackSourceModrinth) {
-        [self.modrinth installModpackFromDetail:details atIndex:index];
+        [self.modrinthAPI installModpackFromDetail:details atIndex:index];
     } else {
-        [self.curseForge installModpackFromDetail:details atIndex:index completion:^(NSError *error) {
+        [self.curseForgeAPI installModpackFromDetail:details atIndex:index completion:^(NSError *error) {
             if (error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [UIAlertUtilities presentAlertWithTitle:@"Installation Error" 
