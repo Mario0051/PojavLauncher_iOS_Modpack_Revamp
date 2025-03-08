@@ -62,7 +62,7 @@
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil];
 }
 
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)(void))success {
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
     // Validate inputs
     if (!url || url.length == 0) {
         NSLog(@"[ResourceDownload] Invalid URL provided");
@@ -118,9 +118,9 @@
                 // Request will be retried automatically if needed by system
                 NSLog(@"[ResourceDownload] Network error, task may be retried by system");
             } else {
-                // Mark progress as failed
+                // Mark progress as failed - use cancel method instead of setting property
                 fileProgress.completedUnitCount = 0;
-                fileProgress.cancelled = YES;
+                [fileProgress cancel];
                 
                 if (strongSelf.handleError) {
                     dispatch_async(dispatch_get_main_queue(), ^{
@@ -138,7 +138,7 @@
             NSLog(@"[ResourceDownload] HTTP error %ld for %@", (long)httpResponse.statusCode, url);
             
             fileProgress.completedUnitCount = 0;
-            fileProgress.cancelled = YES;
+            [fileProgress cancel];
             
             if (strongSelf.handleError) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -176,7 +176,7 @@
             NSLog(@"[ResourceDownload] Failed to move file: %@", moveError);
             
             fileProgress.completedUnitCount = 0;
-            fileProgress.cancelled = YES;
+            [fileProgress cancel];
             
             if (strongSelf.handleError) {
                 dispatch_async(dispatch_get_main_queue(), ^{
@@ -196,7 +196,7 @@
                 [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
                 
                 fileProgress.completedUnitCount = 0;
-                fileProgress.cancelled = YES;
+                [fileProgress cancel];
                 
                 if (strongSelf.handleError) {
                     dispatch_async(dispatch_get_main_queue(), ^{
@@ -261,26 +261,7 @@
     return task;
 }
 
-- (NSString *)formatDisplayNameForFile:(NSString *)fileName fromSource:(DownloadSource)source {
-    NSString *prefix = @"";
-    
-    switch (source) {
-        case DownloadSourceMinecraft:
-            prefix = @"[Minecraft] ";
-            break;
-        case DownloadSourceCurseForge:
-            prefix = @"[CurseForge] ";
-            break;
-        case DownloadSourceModrinth:
-            prefix = @"[Modrinth] ";
-            break;
-        default:
-            break;
-    }
-    
-    return [prefix stringByAppendingString:fileName];
-}
-
+// Fix for finishDownloadWithErrorString to use cancel method
 - (void)finishDownloadWithErrorString:(NSString *)error {
     NSLog(@"[ResourceDownload] Error: %@", error);
     
@@ -295,8 +276,8 @@
         [self.downloadTasks removeAllObjects];
     }
     
-    // Cancel overall progress
-    self.progress.cancelled = YES;
+    // Cancel overall progress - use cancel method instead of setting property
+    [self.progress cancel];
     
     // Call error handler
     if (self.handleError) {
