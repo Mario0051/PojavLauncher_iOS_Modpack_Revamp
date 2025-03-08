@@ -75,6 +75,38 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
     [self.observedTasks removeAllObjects];
 }
 
+// New method to provide better file name formatting
+- (NSString *)formatDisplayNameForFile:(NSString *)fileName fromSource:(DownloadSource)source {
+    // Skip if already formatted
+    if ([fileName hasPrefix:@"Downloading"] || 
+        [fileName hasPrefix:@"Extracting"] || 
+        [fileName hasPrefix:@"Setting"]) {
+        return fileName;
+    }
+    
+    NSString *sourcePrefix = @"";
+    switch (source) {
+        case DownloadSourceModrinth:
+            sourcePrefix = @"[Modrinth] ";
+            break;
+        case DownloadSourceCurseForge:
+            sourcePrefix = @"[CurseForge] ";
+            break;
+        default:
+            break;
+    }
+    
+    // Format based on file type
+    NSString *fileExt = [fileName pathExtension].lowercaseString;
+    if ([fileExt isEqualToString:@"jar"]) {
+        return [NSString stringWithFormat:@"%@Mod: %@", sourcePrefix, fileName];
+    } else if ([fileExt isEqualToString:@"json"]) {
+        return [NSString stringWithFormat:@"%@Config: %@", sourcePrefix, fileName];
+    } else {
+        return [NSString stringWithFormat:@"%@%@", sourcePrefix, fileName];
+    }
+}
+
 // Add file to the queue with improved error handling and progress tracking
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil];
@@ -99,7 +131,8 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
         return nil;
     }
 
-    NSString *name = altName ?: path.lastPathComponent;
+    NSString *displayName = altName ?: path.lastPathComponent;
+    displayName = [self formatDisplayNameForFile:displayName fromSource:self.currentDownloadSource];
     
     // Improved URL validation
     NSURL *requestURL = [NSURL URLWithString:url];
@@ -116,7 +149,7 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
     // Create the download task with improved error handling
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-        NSLog(@"[MCDL] Downloading %@", name);
+        NSLog(@"[MCDL] Downloading %@", displayName);
         
         // Get progress for the task
         progress = [weakSelf.manager downloadProgressForTask:task];
@@ -128,7 +161,7 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
                                      kDefaultPlaceholderSize;
             
             [weakSelf addDownloadTaskToProgress:task size:responseSize];
-            [weakSelf.fileList addObject:name];
+            [weakSelf.fileList addObject:displayName];
         }
         
         // Ensure directory exists before trying to write file
@@ -150,7 +183,7 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
     } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
         if (weakSelf.progress.cancelled) {
             // Ignore any further errors if cancelled
-            NSLog(@"[MCDL] Download cancelled for %@", name);
+            NSLog(@"[MCDL] Download cancelled for %@", displayName);
             return;
         } else if (error != nil) {
             // Check if we should retry (up to 3 times)
@@ -158,7 +191,7 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
                                    error.code == NSURLErrorNetworkConnectionLost ||
                                    error.code == NSURLErrorNotConnectedToInternet)) {
                 retryCount++;
-                NSLog(@"[MCDL] Retrying download for %@ (attempt %ld): %@", name, (long)retryCount, error);
+                NSLog(@"[MCDL] Retrying download for %@ (attempt %ld): %@", displayName, (long)retryCount, error);
                 
                 // Wait before retrying (exponential backoff)
                 NSTimeInterval delay = pow(2.0, retryCount - 1) * 0.5;
@@ -171,7 +204,7 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
                         [weakSelf removeTaskObserver:task];
                         
                         if (error) {
-                            [weakSelf finishDownloadWithError:error file:name];
+                            [weakSelf finishDownloadWithError:error file:displayName];
                         } else if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
                             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
                         } else {
@@ -189,7 +222,7 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
                 return;
             }
             
-            [weakSelf finishDownloadWithError:error file:name];
+            [weakSelf finishDownloadWithError:error file:displayName];
         } else if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
         } else {
@@ -209,7 +242,7 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
     // After task is created, add it to progress tracking
     if (size && task) {
         [self addDownloadTaskToProgress:task size:size];
-        [self.fileList addObject:name];
+        [self.fileList addObject:displayName];
     }
 
     // Track additional download metadata
@@ -218,9 +251,10 @@ static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress e
         taskInfo[@"url"] = url;
         taskInfo[@"size"] = @(size);
         taskInfo[@"sha"] = sha ?: @"";
-        taskInfo[@"altName"] = altName ?: path.lastPathComponent;
+        taskInfo[@"altName"] = displayName;
         taskInfo[@"path"] = path;
         taskInfo[@"source"] = @(self.currentDownloadSource);
+        taskInfo[@"originalName"] = altName ?: path.lastPathComponent;
         
         @synchronized(self.downloadMetadata) {
             [self.downloadMetadata setObject:taskInfo forKey:task];
