@@ -1,722 +1,644 @@
-#import "authenticator/BaseAuthenticator.h"
-#import "installer/modpack/ModpackAPI.h"
-#import "AFNetworking.h"
-#import "LauncherNavigationController.h"
-#import "LauncherPreferences.h"
-#import "MinecraftResourceDownloadTask.h"
-#import "MinecraftResourceUtils.h"
-#import "ios_uikit_bridge.h"
-#import "PLProfiles.h"
-#import "utils.h"
+#import <dlfcn.h>
+#import <objc/runtime.h>
+#import "DownloadProgressViewController.h"
+#import "WFWorkflowProgressView.h"
 
-#include <CommonCrypto/CommonDigest.h>
+// Define static contexts for KVO
+static void *CellProgressObserverContext = &CellProgressObserverContext;
+static void *TotalProgressObserverContext = &TotalProgressObserverContext;
 
-// Define constants for better code maintenance
-static NSTimeInterval const kDownloadTimeout = 60.0; // 60 seconds timeout
-static NSUInteger const kDefaultPlaceholderSize = 100 * 1024; // 100KB default size
-static NSTimeInterval const kProgressUpdateInterval = 0.25; // Update progress every 250ms
+// Task types for better UI presentation
+typedef NS_ENUM(NSInteger, DownloadTaskType) {
+    DownloadTaskTypeFile = 0,
+    DownloadTaskTypeExtraction = 1,
+    DownloadTaskTypeSetup = 2,
+    DownloadTaskTypeComplete = 3
+};
 
-@interface MinecraftResourceDownloadTask ()
-@property (nonatomic, strong) AFURLSessionManager* manager;
-@property (nonatomic, assign) DownloadSource currentDownloadSource;
-@property (nonatomic, strong) NSMutableDictionary *downloadMetadata;
-@property (nonatomic, strong) dispatch_queue_t progressQueue;
-@property (nonatomic, strong) NSOperationQueue *backgroundQueue;
-@property (nonatomic, strong) NSMutableSet *observedTasks;
+@interface DownloadProgressViewController ()
+@property NSInteger fileListCount;
+@property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UIProgressView *overallProgressView;
+@property (nonatomic, assign) BOOL isModpackInstall;
+@property (nonatomic, strong) NSMutableDictionary *cellProgressMap;
+@property (nonatomic, strong) NSTimer *refreshTimer;
 @end
 
-@implementation MinecraftResourceDownloadTask
+@implementation DownloadProgressViewController
 
-- (instancetype)init {
+- (instancetype)initWithTask:(MinecraftResourceDownloadTask *)task {
     self = [super init];
     if (self) {
-        // Improve session configuration with better timeout and connectivity settings
-        NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-        configuration.timeoutIntervalForRequest = 300; // 5 minutes
-        configuration.timeoutIntervalForResource = 3600; // 1 hour for large downloads
-        configuration.waitsForConnectivity = YES;
-        configuration.HTTPMaximumConnectionsPerHost = 8; // Increase parallel connections
-        configuration.networkServiceType = NSURLNetworkServiceTypeBackground;
-        
-        self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
-        self.fileList = [NSMutableArray new];
-        self.progressList = [NSMutableArray new];
-        self.downloadMetadata = [NSMutableDictionary new];
-        self.currentDownloadSource = DownloadSourceMinecraft;
-        
-        // Create dedicated queues for progress tracking and background operations
-        self.progressQueue = dispatch_queue_create("com.minecraft.progress", DISPATCH_QUEUE_SERIAL);
-        self.backgroundQueue = [[NSOperationQueue alloc] init];
-        self.backgroundQueue.maxConcurrentOperationCount = 4;
-        
-        self.observedTasks = [NSMutableSet new];
+        self.task = task;
+        self.cellProgressMap = [NSMutableDictionary dictionary];
     }
     return self;
 }
 
-- (void)prepareForDownload {
-    // Create a fake progress which is used to update completedUnitCount properly
-    self.textProgress = [NSProgress new];
-    self.textProgress.kind = NSProgressKindFile;
-    self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
-    self.textProgress.totalUnitCount = 0; // Start at 0 instead of -1
-    self.textProgress.localizedDescription = @"Preparing download...";
-
-    self.progress = [NSProgress new];
-    // Don't push 1 byte anymore - start at 0 and adjust properly
-    self.progress.totalUnitCount = 0;
-    [self.fileList removeAllObjects];
-    [self.progressList removeAllObjects];
+- (void)loadView {
+    [super loadView];
     
-    // Reset download metadata
-    [self.downloadMetadata removeAllObjects];
+    // Configure navigation bar
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose 
+                                                                                          target:self 
+                                                                                          action:@selector(actionClose)];
     
-    // Reset observed tasks set
-    [self.observedTasks removeAllObjects];
+    self.navigationItem.title = @"Download Progress";
+    
+    // Configure table view
+    self.tableView.allowsSelection = NO;
+    self.tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
+    
+    // Create a custom header view for progress tracking
+    UIView *headerContainer = [[UIView alloc] init];
+    headerContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    
+    // Status label
+    _statusLabel = [[UILabel alloc] init];
+    _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _statusLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    _statusLabel.textColor = [UIColor labelColor];
+    _statusLabel.text = @"Preparing download...";
+    [headerContainer addSubview:_statusLabel];
+    
+    // Progress view
+    _overallProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    _overallProgressView.translatesAutoresizingMaskIntoConstraints = NO;
+    _overallProgressView.progress = 0.0;
+    _overallProgressView.progressTintColor = [UIColor systemBlueColor];
+    _overallProgressView.trackTintColor = [UIColor systemFillColor];
+    _overallProgressView.layer.cornerRadius = 1.0;
+    _overallProgressView.clipsToBounds = YES;
+    [headerContainer addSubview:_overallProgressView];
+    
+    // Percentage label
+    UILabel *percentLabel = [[UILabel alloc] init];
+    percentLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    percentLabel.font = [UIFont systemFontOfSize:12];
+    percentLabel.textColor = [UIColor secondaryLabelColor];
+    percentLabel.textAlignment = NSTextAlignmentRight;
+    percentLabel.text = @"0%";
+    objc_setAssociatedObject(_overallProgressView, @"percentLabel", percentLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [headerContainer addSubview:percentLabel];
+    
+    // Separator line
+    UIView *separatorLine = [[UIView alloc] init];
+    separatorLine.translatesAutoresizingMaskIntoConstraints = NO;
+    separatorLine.backgroundColor = [UIColor separatorColor];
+    [headerContainer addSubview:separatorLine];
+    
+    // Constraints
+    [NSLayoutConstraint activateConstraints:@[
+        // Status Label
+        [_statusLabel.topAnchor constraintEqualToAnchor:headerContainer.topAnchor constant:10],
+        [_statusLabel.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor constant:16],
+        [_statusLabel.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
+        
+        // Progress View
+        [_overallProgressView.topAnchor constraintEqualToAnchor:_statusLabel.bottomAnchor constant:8],
+        [_overallProgressView.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor constant:16],
+        [_overallProgressView.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
+        [_overallProgressView.heightAnchor constraintEqualToConstant:4],
+        
+        // Percentage Label
+        [percentLabel.topAnchor constraintEqualToAnchor:_overallProgressView.bottomAnchor constant:4],
+        [percentLabel.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor constant:16],
+        [percentLabel.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
+        
+        // Separator Line
+        [separatorLine.heightAnchor constraintEqualToConstant:0.5],
+        [separatorLine.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor],
+        [separatorLine.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor],
+        [separatorLine.bottomAnchor constraintEqualToAnchor:headerContainer.bottomAnchor],
+        
+        // Ensure the header has a specific height
+        [headerContainer.heightAnchor constraintEqualToConstant:100]
+    ]];
+    
+    // Create a container view to wrap the header with proper sizing
+    UIView *headerWrapperView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 100)];
+    [headerWrapperView addSubview:headerContainer];
+    
+    // Constraints for header container
+    [NSLayoutConstraint activateConstraints:@[
+        [headerContainer.topAnchor constraintEqualToAnchor:headerWrapperView.topAnchor],
+        [headerContainer.leadingAnchor constraintEqualToAnchor:headerWrapperView.leadingAnchor],
+        [headerContainer.trailingAnchor constraintEqualToAnchor:headerWrapperView.trailingAnchor],
+        [headerContainer.bottomAnchor constraintEqualToAnchor:headerWrapperView.bottomAnchor]
+    ]];
+    
+    // Set the table header view
+    self.tableView.tableHeaderView = headerWrapperView;
+    
+    // Detect if this is a modpack install based on task properties
+    self.isModpackInstall = NO;
+    for (NSString *fileName in self.task.fileList) {
+        if ([fileName hasPrefix:@"Installing"] || 
+            [fileName hasPrefix:@"Extracting"] || 
+            [fileName hasPrefix:@"Setting"]) {
+            self.isModpackInstall = YES;
+            break;
+        }
+    }
 }
 
-// New method to provide better file name formatting
-- (NSString *)formatDisplayNameForFile:(NSString *)fileName fromSource:(DownloadSource)source {
-    // Skip if already formatted
-    if ([fileName hasPrefix:@"Downloading"] || 
-        [fileName hasPrefix:@"Extracting"] || 
-        [fileName hasPrefix:@"Setting"]) {
-        return fileName;
-    }
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
     
-    NSString *sourcePrefix = @"";
-    switch (source) {
-        case DownloadSourceModrinth:
-            sourcePrefix = @"[Modrinth] ";
-            break;
-        case DownloadSourceCurseForge:
-            sourcePrefix = @"[CurseForge] ";
-            break;
-        default:
-            break;
-    }
+    // Start observing overall progress
+    [self.task.textProgress addObserver:self
+            forKeyPath:@"fractionCompleted"
+            options:NSKeyValueObservingOptionInitial
+            context:TotalProgressObserverContext];
     
-    // Format based on file type
-    NSString *fileExt = [fileName pathExtension].lowercaseString;
-    if ([fileExt isEqualToString:@"jar"]) {
-        return [NSString stringWithFormat:@"%@Mod: %@", sourcePrefix, fileName];
-    } else if ([fileExt isEqualToString:@"json"]) {
-        return [NSString stringWithFormat:@"%@Config: %@", sourcePrefix, fileName];
+    // Setup a refresh timer to periodically update the UI
+    // This helps with smoother updates when individual operations are taking a long time
+    self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 
+                                                        target:self 
+                                                      selector:@selector(refreshProgressUI) 
+                                                      userInfo:nil 
+                                                       repeats:YES];
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+    [super viewDidDisappear:animated];
+    
+    // Stop observing progress
+    [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+    
+    // Invalidate refresh timer
+    [self.refreshTimer invalidate];
+    self.refreshTimer = nil;
+    
+    // Remove all observers from cell progress
+    [self removeAllProgressObservers];
+}
+
+- (void)refreshProgressUI {
+    // Update the UI to show the latest progress
+    [self.tableView reloadData];
+    
+    // Check for any new items that were added
+    if (self.fileListCount != self.task.fileList.count) {
+        self.fileListCount = self.task.fileList.count;
+        
+        // Make sure the new rows are visible
+        if (self.task.fileList.count > 0) {
+            NSIndexPath *lastRowPath = [NSIndexPath indexPathForRow:self.task.fileList.count - 1 inSection:0];
+            [self.tableView scrollToRowAtIndexPath:lastRowPath 
+                                 atScrollPosition:UITableViewScrollPositionBottom 
+                                         animated:YES];
+        }
+    }
+}
+
+- (void)actionClose {
+    // Ask for confirmation if download is in progress
+    if (self.task.progress.fractionCompleted < 1.0 && !self.task.progress.cancelled) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Cancel Download"
+                                                                       message:@"Are you sure you want to cancel the current download?"
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"Yes" style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+            [self.task.progress cancel];
+            [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+        }]];
+        
+        [alert addAction:[UIAlertAction actionWithTitle:@"No" style:UIAlertActionStyleCancel handler:nil]];
+        
+        [self presentViewController:alert animated:YES completion:nil];
     } else {
-        return [NSString stringWithFormat:@"%@%@", sourcePrefix, fileName];
+        [self.navigationController dismissViewControllerAnimated:YES completion:nil];
     }
 }
 
-// Add file to the queue with improved error handling and progress tracking
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
-    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil];
+- (void)removeAllProgressObservers {
+    // Clean up KVO observers to prevent leaks
+    for (id key in self.cellProgressMap) {
+        NSProgress *progress = [self.cellProgressMap objectForKey:key];
+        [self removeProgressObserver:progress];
+    }
+    [self.cellProgressMap removeAllObjects];
 }
 
-// Add file to the queue with success callback - significantly improved implementation
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
-    // Safety check for nil URL
-    if (!url || url.length == 0) {
-        NSLog(@"[MCDL] Error: Attempted to create download task with empty URL for %@", altName ?: path.lastPathComponent);
-        return nil;
-    }
+- (void)removeProgressObserver:(NSProgress *)progress {
+    if (!progress) return;
     
-    // Check if file already exists and has valid SHA
-    BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
-        NSLog(@"[MCDL] File already exists with matching SHA: %@", altName ?: path.lastPathComponent);
-        if (success) success();
-        return nil;
-    } else if (![self checkAccessWithDialog:YES]) {
-        NSLog(@"[MCDL] Access check failed for downloading");
-        return nil;
+    @try {
+        [progress removeObserver:self forKeyPath:@"fractionCompleted"];
+    } @catch (NSException *exception) {
+        // Ignore if not observing
+        NSLog(@"[ProgressView] Warning: Failed to remove observer: %@", exception);
     }
+}
 
-    NSString *displayName = altName ?: path.lastPathComponent;
-    displayName = [self formatDisplayNameForFile:displayName fromSource:self.currentDownloadSource];
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+    NSProgress *progress = object;
     
-    // Improved URL validation
-    NSURL *requestURL = [NSURL URLWithString:url];
-    if (!requestURL) {
-        NSLog(@"[MCDL] Error: Invalid URL format: %@", url);
-        return nil;
-    }
-    
-    NSURLRequest *request = [NSURLRequest requestWithURL:requestURL];
-    __block NSProgress *progress;
-    __weak typeof(self) weakSelf = self;
-    __block NSInteger retryCount = 0;
-    
-    // Create the download task with improved error handling
-    __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
-    destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-        NSLog(@"[MCDL] Downloading %@", displayName);
+    if (context == CellProgressObserverContext) {
+        UITableViewCell *cell = objc_getAssociatedObject(progress, @"cell");
+        if (!cell) return;
         
-        // Get progress for the task
-        progress = [weakSelf.manager downloadProgressForTask:task];
-        
-        // If size wasn't provided, get it from the response
-        if (!size && task) {
-            NSUInteger responseSize = response.expectedContentLength > 0 ? 
-                                     (NSUInteger)response.expectedContentLength : 
-                                     kDefaultPlaceholderSize;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Determine task type
+            DownloadTaskType taskType = DownloadTaskTypeFile;
+            NSString *fileName = cell.textLabel.text;
             
-            [weakSelf addDownloadTaskToProgress:task size:responseSize];
-            [weakSelf.fileList addObject:displayName];
-        }
-        
-        // Ensure directory exists before trying to write file
-        NSString *dirPath = path.stringByDeletingLastPathComponent;
-        NSError *dirError = nil;
-        if (![NSFileManager.defaultManager fileExistsAtPath:dirPath]) {
-            [NSFileManager.defaultManager createDirectoryAtPath:dirPath 
-                                   withIntermediateDirectories:YES 
-                                                    attributes:nil 
-                                                         error:&dirError];
-            if (dirError) {
-                NSLog(@"[MCDL] Error creating directory for %@: %@", path, dirError);
-            }
-        }
-        
-        // Remove existing file to prevent issues
-        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-        return [NSURL fileURLWithPath:path];
-    } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
-        if (weakSelf.progress.cancelled) {
-            // Ignore any further errors if cancelled
-            NSLog(@"[MCDL] Download cancelled for %@", displayName);
-            return;
-        } else if (error != nil) {
-            // Check if we should retry (up to 3 times)
-            if (retryCount < 3 && (error.code == NSURLErrorTimedOut || 
-                                   error.code == NSURLErrorNetworkConnectionLost ||
-                                   error.code == NSURLErrorNotConnectedToInternet)) {
-                retryCount++;
-                NSLog(@"[MCDL] Retrying download for %@ (attempt %ld): %@", displayName, (long)retryCount, error);
-                
-                // Wait before retrying (exponential backoff)
-                NSTimeInterval delay = pow(2.0, retryCount - 1) * 0.5;
-                
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), 
-                               dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                    NSURLSessionDownloadTask *retryTask = [weakSelf.manager downloadTaskWithRequest:request progress:nil destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-                        return [NSURL fileURLWithPath:path];
-                    } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
-                        [weakSelf removeTaskObserver:task];
-                        
-                        if (error) {
-                            [weakSelf finishDownloadWithError:error file:displayName];
-                        } else if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
-                            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
-                        } else {
-                            dispatch_async(weakSelf.progressQueue, ^{
-                                // Mark progress as complete
-                                if (progress) {
-                                    progress.totalUnitCount = progress.completedUnitCount;
-                                }
-                                if (success) success();
-                            });
-                        }
-                    }];
-                    [retryTask resume];
-                });
-                return;
+            if ([fileName hasPrefix:@"Extracting"]) {
+                taskType = DownloadTaskTypeExtraction;
+            } else if ([fileName hasPrefix:@"Setting"]) {
+                taskType = DownloadTaskTypeSetup;
+            } else if ([fileName isEqualToString:@"Complete"]) {
+                taskType = DownloadTaskTypeComplete;
             }
             
-            [weakSelf finishDownloadWithError:error file:displayName];
-        } else if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
-            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
-        } else {
-            // Success - mark progress as complete
-            dispatch_async(weakSelf.progressQueue, ^{
-                if (progress) {
-                    progress.totalUnitCount = progress.completedUnitCount;
+            // Format size as MB/MB for file downloads with improved formatting
+            NSString *sizeText;
+            if (taskType == DownloadTaskTypeFile && progress.totalUnitCount > 0) {
+                double completedMB = progress.completedUnitCount / 1024.0 / 1024.0;
+                double totalMB = progress.totalUnitCount / 1024.0 / 1024.0;
+                
+                // Format with appropriate precision based on size
+                if (totalMB < 1.0) {
+                    // Use KB for small files
+                    double completedKB = progress.completedUnitCount / 1024.0;
+                    double totalKB = progress.totalUnitCount / 1024.0;
+                    sizeText = [NSString stringWithFormat:@"%.0f KB / %.0f KB", completedKB, totalKB];
+                } else if (totalMB < 10.0) {
+                    // More precision for smaller files
+                    sizeText = [NSString stringWithFormat:@"%.2f MB / %.2f MB", completedMB, totalMB];
+                } else if (totalMB < 100.0) {
+                    sizeText = [NSString stringWithFormat:@"%.1f MB / %.1f MB", completedMB, totalMB];
+                } else {
+                    sizeText = [NSString stringWithFormat:@"%.0f MB / %.0f MB", completedMB, totalMB];
                 }
-                if (success) success();
-            });
-        }
-        
-        // Remove task observer on completion or error
-        [weakSelf removeTaskObserver:task];
-    }];
-
-    // After task is created, add it to progress tracking
-    if (size && task) {
-        [self addDownloadTaskToProgress:task size:size];
-        [self.fileList addObject:displayName];
-    }
-
-    // Track additional download metadata
-    if (task) {
-        NSMutableDictionary *taskInfo = [NSMutableDictionary dictionary];
-        taskInfo[@"url"] = url;
-        taskInfo[@"size"] = @(size);
-        taskInfo[@"sha"] = sha ?: @"";
-        taskInfo[@"altName"] = displayName;
-        taskInfo[@"path"] = path;
-        taskInfo[@"source"] = @(self.currentDownloadSource);
-        taskInfo[@"originalName"] = altName ?: path.lastPathComponent;
-        
-        @synchronized(self.downloadMetadata) {
-            [self.downloadMetadata setObject:taskInfo forKey:task];
-        }
-    }
-
-    return task;
-}
-
-// Improved progress tracking for download tasks
-- (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSInteger)size {
-    // Work on the progress queue to avoid threading issues
-    dispatch_async(self.progressQueue, ^{
-        NSProgress *progress = [self.manager downloadProgressForTask:task];
-        
-        progress.kind = NSProgressKindFile;
-        progress.fileOperationKind = NSProgressFileOperationKindDownloading;
-        
-        // Use a more reasonable initial size estimate if actual size is unavailable
-        NSUInteger initialSize = size > 0 ? size : kDefaultPlaceholderSize;
-        progress.totalUnitCount = initialSize;
-        
-        [self.progressList addObject:progress];
-        [self.progress addChild:progress withPendingUnitCount:initialSize];
-        self.progress.totalUnitCount += initialSize;
-        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-        
-        // Add observer to update size when Content-Length becomes available
-        @synchronized(self.observedTasks) {
-            if (![self.observedTasks containsObject:task]) {
-                [task addObserver:self forKeyPath:@"countOfBytesExpectedToReceive" options:NSKeyValueObservingOptionNew context:NULL];
-                [task addObserver:self forKeyPath:@"response" options:NSKeyValueObservingOptionNew context:NULL];
-                [self.observedTasks addObject:task];
+                
+                // Add speed information if available
+                if (progress.throughput != nil) {
+                    NSNumber *throughputValue = progress.throughput;
+                    double kbps = [throughputValue doubleValue] / 1024.0;
+                    if (kbps > 1024) {
+                        double mbps = kbps / 1024.0;
+                        sizeText = [sizeText stringByAppendingFormat:@" (%.1f MB/s)", mbps];
+                    } else {
+                        sizeText = [sizeText stringByAppendingFormat:@" (%.0f KB/s)", kbps];
+                    }
+                }
+                
+                // Add estimated time if available
+                if (progress.estimatedTimeRemaining != nil) {
+                    NSTimeInterval timeRemaining = [progress.estimatedTimeRemaining doubleValue];
+                    if (timeRemaining > 0 && timeRemaining < 3600) {  // Reasonable time estimate (less than an hour)
+                        int minutes = (int)timeRemaining / 60;
+                        int seconds = (int)timeRemaining % 60;
+                        sizeText = [sizeText stringByAppendingFormat:@" - %d:%02d remaining", minutes, seconds];
+                    }
+                }
+            } else if (taskType == DownloadTaskTypeExtraction) {
+                // Show extraction progress percentage with more detail
+                int percentage = (int)(progress.fractionCompleted * 100);
+                sizeText = [NSString stringWithFormat:@"Extracting files... %d%%", percentage];
+            } else if (taskType == DownloadTaskTypeSetup) {
+                // Show setup progress percentage with more detail
+                int percentage = (int)(progress.fractionCompleted * 100);
+                sizeText = [NSString stringWithFormat:@"Setting up profile... %d%%", percentage];
+            } else if (taskType == DownloadTaskTypeComplete) {
+                sizeText = @"Complete!";
+            } else {
+                sizeText = progress.totalUnitCount > 0 ? 
+                          @"Starting download..." : 
+                          [NSString stringWithFormat:@"Preparing... %d%%", (int)(progress.fractionCompleted * 100)];
             }
-        }
-    });
-}
-
-// Improved progress size update with proper synchronization and error handling
-- (void)updateProgressSize:(NSProgress *)progress forTask:(NSURLSessionDownloadTask *)task withSize:(NSUInteger)newSize {
-    if (!progress || newSize == 0) {
-        return;
-    }
-    
-    // Ensure we're on the progress queue
-    dispatch_async(self.progressQueue, ^{
-        // Avoid unnecessary updates if size hasn't changed significantly
-        if (progress.totalUnitCount == newSize) {
-            return;
-        }
-        
-        // Calculate the size difference
-        NSInteger sizeDifference = (NSInteger)newSize - (NSInteger)progress.totalUnitCount;
-        
-        // Log the adjustment we're making
-        NSLog(@"[MCDL] Updating size for download: %@ from %lld to %lu bytes", 
-              [task.originalRequest.URL lastPathComponent], 
-              progress.totalUnitCount, 
-              (unsigned long)newSize);
-        
-        // Update progress size
-        progress.totalUnitCount = newSize;
-        
-        // Update parent progress
-        if (self.progress && sizeDifference != 0) {
-            // Adjust the parent's total by the difference
-            self.progress.totalUnitCount += sizeDifference;
-            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-        }
-    });
-}
-
-// Better KVO handling with proper error management
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
-    if ([object isKindOfClass:[NSURLSessionDownloadTask class]]) {
-        NSURLSessionDownloadTask *task = (NSURLSessionDownloadTask *)object;
-        NSProgress *progress = [self.manager downloadProgressForTask:task];
-        
-        if (!progress) {
-            return;
-        }
-        
-        // Handle size updates from different sources
-        if ([keyPath isEqualToString:@"countOfBytesExpectedToReceive"] && task.countOfBytesExpectedToReceive > 0) {
-            [self updateProgressSize:progress forTask:task withSize:task.countOfBytesExpectedToReceive];
-        }
-        else if ([keyPath isEqualToString:@"response"] && [task.response isKindOfClass:[NSHTTPURLResponse class]]) {
-            NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)task.response;
-            NSString *contentLength = [httpResponse.allHeaderFields objectForKey:@"Content-Length"];
-            if (contentLength) {
-                NSUInteger responseSize = [contentLength longLongValue];
-                if (responseSize > 0) {
-                    [self updateProgressSize:progress forTask:task withSize:responseSize];
+            
+            // Update detail text
+            cell.detailTextLabel.text = sizeText;
+            
+            // For the accessory view, check if download is complete
+            if (progress.finished || progress.fractionCompleted >= 1.0 || taskType == DownloadTaskTypeComplete) {
+                // Show checkmark as accessory
+                UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+                UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                checkmarkView.image = checkmarkImage;
+                checkmarkView.tintColor = [UIColor systemGreenColor];
+                cell.accessoryView = checkmarkView;
+                
+                if (taskType == DownloadTaskTypeFile) {
+                    cell.detailTextLabel.text = @"Download complete";
+                }
+            } else if (taskType == DownloadTaskTypeExtraction || taskType == DownloadTaskTypeSetup) {
+                // Show activity indicator for extraction and setup
+                if (![cell.accessoryView isKindOfClass:[UIActivityIndicatorView class]]) {
+                    UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+                    [activityIndicator startAnimating];
+                    cell.accessoryView = activityIndicator;
+                }
+            } else {
+                // Ensure progress label is updated for downloads
+                UILabel *progressLabel = (UILabel *)cell.accessoryView;
+                if (![progressLabel isKindOfClass:[UILabel class]]) {
+                    progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+                    progressLabel.textAlignment = NSTextAlignmentRight;
+                    progressLabel.font = [UIFont systemFontOfSize:14];
+                    cell.accessoryView = progressLabel;
+                }
+                int percentage = (int)(progress.fractionCompleted * 100);
+                progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+            }
+        });
+    } else if (context == TotalProgressObserverContext) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Update title with current task description
+            self.title = progress.localizedDescription ?: @"Download Progress";
+            
+            // Update status label with more descriptive text based on the progress
+            if (self.isModpackInstall) {
+                if (progress.fractionCompleted < 0.2) {
+                    self.statusLabel.text = @"Preparing modpack installation...";
+                } else if (progress.fractionCompleted < 0.5) {
+                    self.statusLabel.text = @"Downloading modpack files...";
+                } else if (progress.fractionCompleted < 0.8) {
+                    self.statusLabel.text = @"Extracting modpack contents...";
+                } else if (progress.fractionCompleted < 0.95) {
+                    self.statusLabel.text = @"Setting up modpack profile...";
+                } else {
+                    self.statusLabel.text = @"Completing installation...";
+                }
+            } else {
+                // Regular Minecraft download with better descriptions
+                if (progress.fractionCompleted < 0.3) {
+                    self.statusLabel.text = @"Downloading game files...";
+                } else if (progress.fractionCompleted < 0.6) {
+                    self.statusLabel.text = @"Downloading libraries...";
+                } else if (progress.fractionCompleted < 0.9) {
+                    self.statusLabel.text = @"Downloading assets...";
+                } else {
+                    self.statusLabel.text = @"Finalizing installation...";
                 }
             }
-        }
+            
+            // Update overall progress bar
+            self.overallProgressView.progress = progress.fractionCompleted;
+            
+            // Update percentage label with more information
+            UILabel *percentLabel = objc_getAssociatedObject(self.overallProgressView, @"percentLabel");
+            int percentage = (int)(progress.fractionCompleted * 100);
+            
+            // Add estimated time if available
+            NSString *percentText = [NSString stringWithFormat:@"%d%%", percentage];
+            if (progress.estimatedTimeRemaining != nil) {
+                NSTimeInterval timeRemaining = [progress.estimatedTimeRemaining doubleValue];
+                if (timeRemaining > 0 && timeRemaining < 3600) {  // Reasonable time estimate
+                    int minutes = (int)timeRemaining / 60;
+                    int seconds = (int)timeRemaining % 60;
+                    percentText = [percentText stringByAppendingFormat:@" (%d:%02d remaining)", minutes, seconds];
+                }
+            }
+            
+            percentLabel.text = percentText;
+            
+            // Check if file list count changed
+            if (self.fileListCount != self.task.fileList.count) {
+                [self.tableView reloadData];
+                
+                // Auto-scroll to bottom to show newest item
+                if (self.task.fileList.count > 0) {
+                    NSIndexPath *lastRowPath = [NSIndexPath indexPathForRow:self.task.fileList.count - 1 inSection:0];
+                    [self.tableView scrollToRowAtIndexPath:lastRowPath 
+                                         atScrollPosition:UITableViewScrollPositionBottom 
+                                                 animated:YES];
+                }
+            }
+            self.fileListCount = self.task.fileList.count;
+            
+            // Check for completion
+            if (progress.fractionCompleted >= 1.0) {
+                // Add a completion message if needed
+                if (![self.task.fileList containsObject:@"Complete"]) {
+                    [self.task.fileList addObject:@"Complete"];
+                    [self.tableView reloadData];
+                    
+                    // Scroll to show the completion message
+                    NSIndexPath *lastRowPath = [NSIndexPath indexPathForRow:self.task.fileList.count - 1 inSection:0];
+                    [self.tableView scrollToRowAtIndexPath:lastRowPath 
+                                         atScrollPosition:UITableViewScrollPositionBottom 
+                                                 animated:YES];
+                }
+            }
+        });
     } else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     }
 }
 
-// Cleanup to avoid KVO crashes
-- (void)removeTaskObserver:(NSURLSessionDownloadTask *)task {
-    @synchronized(self.observedTasks) {
-        if ([self.observedTasks containsObject:task]) {
-            @try {
-                [task removeObserver:self forKeyPath:@"countOfBytesExpectedToReceive"];
-                [task removeObserver:self forKeyPath:@"response"];
-                [self.observedTasks removeObject:task];
-            } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Warning: Failed to remove observer: %@", exception);
-            }
-        }
-    }
+#pragma mark - Table View Data Source
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.task.fileList.count;
 }
 
-// Improved version metadata download with better error handling
-- (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
-    // Download base json
-    NSString *versionStr = version[@"id"];
-    if ([versionStr isEqualToString:@"latest-release"]) {
-        versionStr = getPrefObject(@"internal.latest_version.release");
-    } else if ([versionStr isEqualToString:@"latest-snapshot"]) {
-        versionStr = getPrefObject(@"internal.latest_version.snapshot");
-    }
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cellId = @"cell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellId];
 
-    NSString *path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), versionStr];
-    // Find it again to resolve latest-*
-    version = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
-
-    void(^completionBlock)(void) = ^{
-        self.metadata = parseJSONFromFile(path);
-        if (self.metadata[@"NSErrorObject"]) {
-            [self finishDownloadWithErrorString:[self.metadata[@"NSErrorObject"] localizedDescription]];
-            return;
-        }
-        if (self.metadata[@"inheritsFrom"]) {
-            NSMutableDictionary *inheritsFromDict = parseJSONFromFile([NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), self.metadata[@"inheritsFrom"]]);
-            if (inheritsFromDict) {
-                [MinecraftResourceUtils processVersion:self.metadata inheritsFrom:inheritsFromDict];
-                self.metadata = inheritsFromDict;
-            }
-        }
-        [MinecraftResourceUtils tweakVersionJson:self.metadata];
-        success();
-    };
-
-    if (!version) {
-        // This is likely local version, check if json exists and has inheritsFrom
-        NSMutableDictionary *json = parseJSONFromFile(path);
-        if (json[@"NSErrorObject"]) {
-            [self finishDownloadWithErrorString:[json[@"NSErrorObject"] localizedDescription]];
-            return;
-        } else if (json[@"inheritsFrom"]) {
-            version = (id)[MinecraftResourceUtils findVersion:json[@"inheritsFrom"] inList:remoteVersionList];
-            path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), json[@"inheritsFrom"]];
-        } else {
-            completionBlock();
-            return;
-        }
-    }
-
-    versionStr = version[@"id"];
-    NSString *url = version[@"url"];
-    NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
-    NSUInteger size = [version[@"size"] unsignedLongLongValue];
-
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:path success:completionBlock];
-    [task resume];
-}
-
-// Improved asset metadata download
-- (void)downloadAssetMetadataWithSuccess:(void (^)())success {
-    NSDictionary *assetIndex = self.metadata[@"assetIndex"];
-    if (!assetIndex) {
-        success();
-        return;
-    }
-    NSString *name = [NSString stringWithFormat:@"assets/indexes/%@.json", assetIndex[@"id"]];
-    NSString *path = [@(getenv("POJAV_GAME_DIR")) stringByAppendingPathComponent:name];
-    NSString *url = assetIndex[@"url"];
-    NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
-    NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
-    
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:^{
-        self.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
-        success();
-    }];
-    [task resume];
-}
-
-- (NSArray *)downloadClientLibraries {
-    NSMutableArray *tasks = [NSMutableArray new];
-    for (NSDictionary *library in self.metadata[@"libraries"]) {
-        NSString *name = library[@"name"];
-
-        NSMutableDictionary *artifact = library[@"downloads"][@"artifact"];
-        if (artifact == nil && [name containsString:@":"]) {
-            NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
-            artifact = [[NSMutableDictionary alloc] init];
-            NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
-            NSArray *libParts = [name componentsSeparatedByString:@":"];
-            artifact[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], libParts[1], libParts[2]];
-            artifact[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifact[@"path"]];
-            artifact[@"sha1"] = library[@"checksums"][0];
-        }
-
-        NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifact[@"path"]];
-        NSString *sha = artifact[@"sha1"];
-        NSUInteger size = [artifact[@"size"] unsignedLongLongValue];
-        NSString *url = artifact[@"url"];
-        if ([library[@"skip"] boolValue]) {
-            NSLog(@"[MDCL] Skipped library %@", name);
-            continue;
-        }
-
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil];
-        if (task) {
-            [tasks addObject:task];
-        } else if (self.progress.cancelled) {
-            return nil;
-        }
-    }
-    return tasks;
-}
-
-- (NSArray *)downloadClientAssets {
-    NSMutableArray *tasks = [NSMutableArray new];
-    NSDictionary *assets = self.metadata[@"assetIndexObj"];
-    if (!assets) {
-        return @[];
-    }
-    for (NSString *name in assets[@"objects"]) {
-        NSDictionary *object = assets[@"objects"][name];
-        NSString *hash = object[@"hash"];
-        NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
-        NSUInteger size = [object[@"size"] unsignedLongLongValue];
-
-        NSString *path;
-        if ([assets[@"map_to_resources"] boolValue]) {
-            path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
-        } else {
-            path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
-        }
-
-        /* Special case for 1.19+
-         * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
-         * However, if an IOException occurs, it won't try to set.
-         * We skip downloading the icon file to workaround this. */
-        if ([name hasSuffix:@"/minecraft.icns"]) {
-            [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-            continue;
-        }
-
-        NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil];
-        if (task) {
-            [tasks addObject:task];
-        } else if (self.progress.cancelled) {
-            return nil;
-        }
-    }
-    return tasks;
-}
-
-- (void)downloadVersion:(NSDictionary *)version {
-    // Set download source to Minecraft
-    self.currentDownloadSource = DownloadSourceMinecraft;
-    
-    [self prepareForDownload];
-    [self downloadVersionMetadata:version success:^{
-        [self downloadAssetMetadataWithSuccess:^{
-            NSArray *libTasks = [self downloadClientLibraries];
-            NSArray *assetTasks = [self downloadClientAssets];
-            
-            // Drop the 1 byte we set initially if we had set it, but now we start at 0 so nothing to drop
-            
-            if (self.progress.totalUnitCount == 0) {
-                // We have nothing to download, invoke completion observer
-                self.progress.totalUnitCount = 1;
-                self.progress.completedUnitCount = 1;
-                self.textProgress.totalUnitCount = 1;
-                self.textProgress.completedUnitCount = 1;
-                return;
-            }
-            [libTasks makeObjectsPerformSelector:@selector(resume)];
-            [assetTasks makeObjectsPerformSelector:@selector(resume)];
-            [self.metadata removeObjectForKey:@"assetIndexObj"];
-        }];
-    }];
-}
-
-- (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
-    // Determine the source based on the API type
-    if ([api isKindOfClass:NSClassFromString(@"CurseForgeAPI")]) {
-        self.currentDownloadSource = DownloadSourceCurseForge;
-    } else if ([api isKindOfClass:NSClassFromString(@"ModrinthAPI")]) {
-        self.currentDownloadSource = DownloadSourceModrinth;
-    } else {
-        self.currentDownloadSource = DownloadSourceMinecraft;
-    }
-    
-    [self prepareForDownload];
-
-    NSString *url = modDetail[@"versionUrls"][selectedVersion];
-    NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
-    NSString *sha = modDetail[@"versionHashes"][selectedVersion];
-    NSString *name = [[modDetail[@"title"] lowercaseString] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-    name = [name stringByReplacingOccurrencesOfString:@" " withString:@"_"];
-    NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", name];
-
-    // Generate a safe profile name
-    NSString *safeProfileName = name;
-    // Get the unique game directory path for this profile
-    NSString *gameDir = [PLProfiles uniqueGameDirForProfileName:safeProfileName];
-    // Get the full installation path
-    NSString *path = [PLProfiles fullPathForProfileWithName:safeProfileName gameDir:gameDir];
-    // Ensure the directory exists
-    [PLProfiles ensureProfileDirectoryExists:safeProfileName gameDir:gameDir];
-
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:packagePath success:^{
-        [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:path];
-    }];
-    [task resume];
-}
-
-// Better error handling and cleanup
-- (void)finishDownloadWithErrorString:(NSString *)error {
-    [self.progress cancel];
-    
-    // Stop all tasks
-    [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
-    
-    // Always show error dialog on main thread
-    dispatch_async(dispatch_get_main_queue(), ^{
-        showDialog(localize(@"Error", nil), error);
+    if (cell == nil) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cellId];
+        cell.textLabel.font = [UIFont systemFontOfSize:14];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
+        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
         
-        if (self.handleError) {
-            self.handleError();
-        }
-    });
-}
-
-- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
-    NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
-    NSLog(@"[MCDL] Error: %@ %@", errorStr, NSThread.callStackSymbols);
-    [self finishDownloadWithErrorString:errorStr];
-}
-
-// Check if the account has permission to download
-- (BOOL)checkAccessWithDialog:(BOOL)show {
-    // for now
-    BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
-    if (!accessible) {
-        [self.progress cancel];
-        if (show) {
-            [self finishDownloadWithErrorString:@"Minecraft can't be legally installed when logged in with a local account. Please switch to an online account to continue."];
-        }
-    }
-    return accessible;
-}
-
-// Check SHA of the file
-- (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
-    if (sha.length == 0) {
-        // When sha = skip, only check for file existence
-        BOOL existence = [NSFileManager.defaultManager fileExistsAtPath:path];
-        if (existence) {
-            NSLog(@"[MCDL] Warning: couldn't find SHA for %@, have to assume it's good.", path);
-        }
-        return existence;
+        // Create progress label
+        UILabel *progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+        progressLabel.textAlignment = NSTextAlignmentRight;
+        progressLabel.font = [UIFont systemFontOfSize:14];
+        progressLabel.text = @"0%";
+        cell.accessoryView = progressLabel;
     }
 
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    if (data == nil) {
-        NSLog(@"[MCDL] SHA1 checker: file doesn't exist: %@", altName ? altName : path.lastPathComponent);
-        return NO;
+    // Get the file name and determine the type
+    NSString *fileName = self.task.fileList[indexPath.row];
+    DownloadTaskType taskType = DownloadTaskTypeFile;
+    
+    if ([fileName hasPrefix:@"Extracting"]) {
+        taskType = DownloadTaskTypeExtraction;
+    } else if ([fileName hasPrefix:@"Setting"]) {
+        taskType = DownloadTaskTypeSetup;
+    } else if ([fileName isEqualToString:@"Complete"]) {
+        taskType = DownloadTaskTypeComplete;
     }
-
-    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
-    CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
-    NSMutableString *localSHA = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
-    for(int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
-        [localSHA appendFormat:@"%02x", digest[i]];
-    }
-
-    BOOL check = [sha isEqualToString:localSHA];
-    if (!check || (getPrefBool(@"general.debug_logging") && logSuccess)) {
-        NSLog(@"[MCDL] SHA1 %@ for %@%@",
-          (check ? @"passed" : @"failed"), 
-          (altName ? altName : path.lastPathComponent),
-          (check ? @"" : [NSString stringWithFormat:@" (expected: %@, got: %@)", sha, localSHA]));
-    }
-    return check;
-}
-
-- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
-    if (getPrefBool(@"general.check_sha")) {
-        return [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:logSuccess];
+    
+    // Improve filename formatting for better readability if needed
+    NSString *displayName = fileName;
+    if ([fileName hasPrefix:@"[Modrinth]"] || [fileName hasPrefix:@"[CurseForge]"]) {
+        // Format source-specific names differently
+        cell.textLabel.textColor = [UIColor systemBlueColor];
     } else {
-        return [NSFileManager.defaultManager fileExistsAtPath:path];
+        cell.textLabel.textColor = [UIColor labelColor];
     }
-}
-
-- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
-    return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
-}
-
-// Tracking and utility methods
-- (NSDictionary *)getDownloadTaskInfo:(NSURLSessionDownloadTask *)task {
-    return self.downloadMetadata[task];
-}
-
-- (NSArray<NSDictionary *> *)getAllDownloadedFiles {
-    NSMutableArray *downloadedFiles = [NSMutableArray array];
     
-    @synchronized(self.downloadMetadata) {
-        for (NSURLSessionDownloadTask *task in self.downloadMetadata.allKeys) {
-            NSDictionary *taskInfo = self.downloadMetadata[task];
-            if (taskInfo) {
-                [downloadedFiles addObject:taskInfo];
+    // Set cell text
+    cell.textLabel.text = displayName;
+    
+    // Get the NSProgress object for this cell
+    NSProgress *progress = nil;
+    
+    // Look for existing progress first to avoid re-observation
+    NSString *identifier = [NSString stringWithFormat:@"cell_%ld", (long)indexPath.row];
+    progress = [self.cellProgressMap objectForKey:identifier];
+    
+    // If no existing progress, check if available from task
+    if (!progress && indexPath.row < self.task.progressList.count) {
+        progress = self.task.progressList[indexPath.row];
+        
+        if (progress) {
+            // Store in our map to track observation
+            [self.cellProgressMap setObject:progress forKey:identifier];
+            
+            // Set up relationship between cell and progress
+            objc_setAssociatedObject(cell, @"progress", progress, OBJC_ASSOCIATION_ASSIGN);
+            objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            
+            // Start observing
+            [progress addObserver:self
+                       forKeyPath:@"fractionCompleted"
+                          options:NSKeyValueObservingOptionInitial
+                          context:CellProgressObserverContext];
+        }
+    } else if (progress) {
+        // Maintain the association with the current cell
+        objc_setAssociatedObject(cell, @"progress", progress, OBJC_ASSOCIATION_ASSIGN);
+        objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    
+    // Configure cell based on task type and progress state with improved styling
+    if (taskType == DownloadTaskTypeComplete) {
+        // Show completion status
+        cell.detailTextLabel.text = @"Installation complete";
+        UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+        UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+        checkmarkView.image = checkmarkImage;
+        checkmarkView.tintColor = [UIColor systemGreenColor];
+        cell.accessoryView = checkmarkView;
+    } else if (taskType == DownloadTaskTypeExtraction) {
+        // Show activity indicator for extraction with more detailed information
+        if (progress) {
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"Extracting files... %d%%", (int)(progress.fractionCompleted * 100)];
+            
+            if (progress.fractionCompleted >= 1.0) {
+                UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+                UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                checkmarkView.image = checkmarkImage;
+                checkmarkView.tintColor = [UIColor systemGreenColor];
+                cell.accessoryView = checkmarkView;
+            } else {
+                UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+                [activityIndicator startAnimating];
+                cell.accessoryView = activityIndicator;
             }
+        } else {
+            cell.detailTextLabel.text = @"Preparing extraction...";
+            UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+            [activityIndicator startAnimating];
+            cell.accessoryView = activityIndicator;
+        }
+    } else if (taskType == DownloadTaskTypeSetup) {
+        // Show activity indicator for setup with more detailed information
+        if (progress) {
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"Setting up profile... %d%%", (int)(progress.fractionCompleted * 100)];
+            
+            if (progress.fractionCompleted >= 1.0) {
+                UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+                UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                checkmarkView.image = checkmarkImage;
+                checkmarkView.tintColor = [UIColor systemGreenColor];
+                cell.accessoryView = checkmarkView;
+            } else {
+                UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+                [activityIndicator startAnimating];
+                cell.accessoryView = activityIndicator;
+            }
+        } else {
+            cell.detailTextLabel.text = @"Preparing setup...";
+            UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+            [activityIndicator startAnimating];
+            cell.accessoryView = activityIndicator;
+        }
+    } else {
+        // Regular file download with improved information
+        if (progress) {
+            // Update label with progress percentage
+            UILabel *progressLabel = (UILabel *)cell.accessoryView;
+            if (![progressLabel isKindOfClass:[UILabel class]]) {
+                progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+                progressLabel.textAlignment = NSTextAlignmentRight;
+                progressLabel.font = [UIFont systemFontOfSize:14];
+                cell.accessoryView = progressLabel;
+            }
+            
+            if (progress.finished || progress.fractionCompleted >= 1.0) {
+                // Show checkmark for completed downloads
+                UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+                UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                checkmarkView.image = checkmarkImage;
+                checkmarkView.tintColor = [UIColor systemGreenColor];
+                cell.accessoryView = checkmarkView;
+                cell.detailTextLabel.text = @"Download complete";
+            } else {
+                // Update percentage display
+                int percentage = (int)(progress.fractionCompleted * 100);
+                progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+                
+                // Show size information if available with more readable formatting
+                if (progress.totalUnitCount > 0) {
+                    double completedMB = progress.completedUnitCount / 1024.0 / 1024.0;
+                    double totalMB = progress.totalUnitCount / 1024.0 / 1024.0;
+                    
+                    // Format with appropriate precision based on size
+                    NSString *sizeText;
+                    if (totalMB < 1.0) {
+                        // Use KB for small files
+                        double completedKB = progress.completedUnitCount / 1024.0;
+                        double totalKB = progress.totalUnitCount / 1024.0;
+                        sizeText = [NSString stringWithFormat:@"%.0f KB / %.0f KB", completedKB, totalKB];
+                    } else if (totalMB < 10.0) {
+                        // More precision for smaller files
+                        sizeText = [NSString stringWithFormat:@"%.2f MB / %.2f MB", completedMB, totalMB];
+                    } else if (totalMB < 100.0) {
+                        sizeText = [NSString stringWithFormat:@"%.1f MB / %.1f MB", completedMB, totalMB];
+                    } else {
+                        sizeText = [NSString stringWithFormat:@"%.0f MB / %.0f MB", completedMB, totalMB];
+                    }
+                    
+                    // Add estimated time if available
+                    if (progress.estimatedTimeRemaining != nil) {
+                        NSTimeInterval timeRemaining = [progress.estimatedTimeRemaining doubleValue];
+                        if (timeRemaining > 0 && timeRemaining < 3600) {  // Reasonable time estimate (less than an hour)
+                            int minutes = (int)timeRemaining / 60;
+                            int seconds = (int)timeRemaining % 60;
+                            sizeText = [sizeText stringByAppendingFormat:@" - %d:%02d remaining", minutes, seconds];
+                        }
+                    }
+                    
+                    cell.detailTextLabel.text = sizeText;
+                } else {
+                    // For indeterminate progress
+                    cell.detailTextLabel.text = @"Downloading...";
+                }
+            }
+        } else {
+            // No progress yet
+            cell.detailTextLabel.text = @"Waiting to start...";
+            UILabel *progressLabel = (UILabel *)cell.accessoryView;
+            if (![progressLabel isKindOfClass:[UILabel class]]) {
+                progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+                progressLabel.textAlignment = NSTextAlignmentRight;
+                progressLabel.font = [UIFont systemFontOfSize:14];
+                cell.accessoryView = progressLabel;
+            }
+            progressLabel.text = @"0%";
         }
     }
-    
-    return [downloadedFiles copy];
-}
 
-- (void)logDownloadSource:(DownloadSource)source {
-    NSString *sourceString;
-    switch (source) {
-        case DownloadSourceMinecraft:
-            sourceString = @"Minecraft";
-            break;
-        case DownloadSourceCurseForge:
-            sourceString = @"CurseForge";
-            break;
-        case DownloadSourceModrinth:
-            sourceString = @"Modrinth";
-            break;
-        default:
-            sourceString = @"Unknown";
-            break;
-    }
-    
-    NSLog(@"[DownloadTask] Current Download Source: %@", sourceString);
-}
-
-// Cleanup on dealloc to prevent KVO crashes
-- (void)dealloc {
-    // Remove any remaining observers to prevent crashes
-    @synchronized(self.observedTasks) {
-        for (NSURLSessionDownloadTask *task in self.observedTasks) {
-            @try {
-                [task removeObserver:self forKeyPath:@"countOfBytesExpectedToReceive"];
-                [task removeObserver:self forKeyPath:@"response"];
-            } @catch (NSException *exception) {
-                // Ignore if observer wasn't registered
-            }
-        }
-        [self.observedTasks removeAllObjects];
-    }
+    return cell;
 }
 
 @end
