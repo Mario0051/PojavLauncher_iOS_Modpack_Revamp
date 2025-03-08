@@ -126,6 +126,7 @@ add_executable(PojavLauncher
   external/ballpa1n/HostManager.c
   external/ballpa1n/wrapped/HostManagerBridge.m
 
+  MinecraftResourceDownloadTask.m
   installer/FabricInstallViewController.m
   installer/ForgeInstallViewController.m
   installer/ModpackInstallViewController.m
@@ -159,7 +160,6 @@ add_executable(PojavLauncher
   LauncherProfileEditorViewController.m
   LauncherProfilesViewController.m
   LauncherSplitViewController.m
-  MinecraftResourceDownloadTask.m
   MinecraftResourceUtils.m
   PickTextField.m
   PLLogOutputView.m
