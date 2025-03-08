@@ -332,28 +332,6 @@
     // Set progress description
     self.textProgress.localizedDescription = [NSString stringWithFormat:@"Downloading Minecraft %@", versionId];
     
-    // Check for required JSON and download URL
-    NSDictionary *downloads = version[@"downloads"];
-    if (!downloads || ![downloads isKindOfClass:[NSDictionary class]]) {
-        [self finishDownloadWithErrorString:@"Invalid version downloads data"];
-        return;
-    }
-    
-    NSDictionary *clientInfo = downloads[@"client"];
-    if (!clientInfo || ![clientInfo isKindOfClass:[NSDictionary class]]) {
-        [self finishDownloadWithErrorString:@"Invalid client download info"];
-        return;
-    }
-    
-    NSString *clientURL = clientInfo[@"url"];
-    NSString *clientSHA1 = clientInfo[@"sha1"];
-    NSNumber *clientSize = clientInfo[@"size"];
-    
-    if (!clientURL || ![clientURL isKindOfClass:[NSString class]]) {
-        [self finishDownloadWithErrorString:@"Missing client download URL"];
-        return;
-    }
-    
     // Set up download destinations
     NSString *versionsDir = [NSString stringWithFormat:@"%s/versions/%@", getenv("POJAV_GAME_DIR"), versionId];
     NSString *clientJarPath = [NSString stringWithFormat:@"%@/%@.jar", versionsDir, versionId];
@@ -376,26 +354,67 @@
         [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to save version JSON: %@", jsonError.localizedDescription]];
         return;
     }
+
+    // Check if this is a modded version that inherits from vanilla
+    NSString *inheritsFrom = version[@"inheritsFrom"];
+    BOOL isModdedVersion = (inheritsFrom != nil);
     
-    // Download client JAR
-    NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client", versionId];
-    NSURLSessionDownloadTask *clientTask = [self createDownloadTask:clientURL 
-                                                            size:[clientSize unsignedIntegerValue] 
-                                                            sha:clientSHA1 
-                                                        altName:displayName 
-                                                        toPath:clientJarPath 
-                                                       success:^{
-        // Once client is downloaded, check if we should mark as completed
-        [self checkForCompletionAndFinalize];                                                
-    }];
-    
-    if (!clientTask) {
-        [self finishDownloadWithErrorString:@"Failed to create client download task"];
-        return;
+    // Modded versions may not have direct download URLs
+    if (isModdedVersion) {
+        NSLog(@"[ResourceDownload] Detected modded version inheriting from %@", inheritsFrom);
+        
+        // For modded versions, we may just need to download libraries and assets
+        // The client JAR will be inherited from the base version
+        
+        // Check if base version's jar needs to be downloaded
+        BOOL baseJarExists = [[NSFileManager defaultManager] fileExistsAtPath:
+                             [NSString stringWithFormat:@"%s/versions/%@/%@.jar", 
+                              getenv("POJAV_GAME_DIR"), inheritsFrom, inheritsFrom]];
+        
+        if (!baseJarExists) {
+            NSLog(@"[ResourceDownload] Base version JAR not found, downloading it");
+            // Find the base version in the remote list
+            NSDictionary *baseVersion = [MinecraftResourceUtils findVersion:inheritsFrom inList:remoteVersionList];
+            if (baseVersion) {
+                // Download the base version first (recursively)
+                [self downloadVersion:baseVersion];
+            } else {
+                NSLog(@"[ResourceDownload] Warning: Base version info not found, client may not launch properly");
+            }
+        }
+    } else {
+        // Standard vanilla version
+        NSDictionary *downloads = version[@"downloads"];
+        if (!downloads || ![downloads isKindOfClass:[NSDictionary class]]) {
+            // For versions without downloads section (older or custom), skip client download
+            NSLog(@"[ResourceDownload] No downloads section found, skipping client JAR download");
+        } else {
+            NSDictionary *clientInfo = downloads[@"client"];
+            if (clientInfo && [clientInfo isKindOfClass:[NSDictionary class]]) {
+                NSString *clientURL = clientInfo[@"url"];
+                NSString *clientSHA1 = clientInfo[@"sha1"];
+                NSNumber *clientSize = clientInfo[@"size"];
+                
+                if (clientURL && [clientURL isKindOfClass:[NSString class]]) {
+                    // Download client JAR
+                    NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client", versionId];
+                    NSURLSessionDownloadTask *clientTask = [self createDownloadTask:clientURL 
+                                                                            size:[clientSize unsignedIntegerValue] 
+                                                                            sha:clientSHA1 
+                                                                        altName:displayName 
+                                                                        toPath:clientJarPath 
+                                                                       success:^{
+                        // Once client is downloaded, check if we should mark as completed
+                        [self checkForCompletionAndFinalize];                                                
+                    }];
+                    
+                    if (clientTask) {
+                        [clientTask resume];
+                    }
+                }
+            }
+        }
     }
-    
-    // Start the download
-    [clientTask resume];
     
     // Process libraries if needed
     NSArray *libraries = version[@"libraries"];
@@ -418,6 +437,39 @@
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self checkForCompletionAndFinalize];
     });
+}
+
+- (void)checkForCompletionAndFinalize {
+    // Only proceed if we haven't already marked as complete
+    if ([self.metadata[@"allTasksComplete"] boolValue]) {
+        return;
+    }
+    
+    // Check if all tasks are in completed state
+    BOOL allComplete = YES;
+    @synchronized(self.downloadTasks) {
+        for (NSURLSessionDownloadTask *task in [self.downloadTasks allValues]) {
+            if (task.state != NSURLSessionTaskStateCompleted) {
+                allComplete = NO;
+                break;
+            }
+        }
+    }
+    
+    if (allComplete && self.progress.fractionCompleted >= 0.95) {
+        NSLog(@"[ResourceDownload] All download tasks completed, marking as finished");
+        [self markAsCompleted];
+    } else if (self.downloadTasks.count == 0) {
+        // If there were no download tasks created at all (e.g., for mod versions
+        // that only need libraries), mark as complete after a short delay
+        NSLog(@"[ResourceDownload] No download tasks created, marking as finished");
+        [self markAsCompleted];
+    } else {
+        // Schedule another check
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self checkForCompletionAndFinalize];
+        });
+    }
 }
 
 - (void)checkForCompletionAndFinalize {
