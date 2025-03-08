@@ -110,4 +110,10 @@ typedef NS_ENUM(NSInteger, DownloadSource) {
  */
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName;
 
+/**
+ * Marks the download task as fully completed
+ * This is important for modpack installations to ensure proper completion
+ */
+- (void)markAsCompleted;
+
 @end
