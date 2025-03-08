@@ -1,5 +1,6 @@
 #import "MinecraftResourceDownloadTask.h"
 #import "installer/modpack/ModpackAPI.h"
+#import "MinecraftResourceUtils.h"
 #import <CommonCrypto/CommonDigest.h>
 #import "utils.h"
 
@@ -78,6 +79,24 @@
     [self.downloadedFiles removeAllObjects];
     
     NSLog(@"[ResourceDownload] Prepared for download");
+}
+
+- (NSString *)formatDisplayNameForFile:(NSString *)fileName fromSource:(DownloadSource)source {
+    NSString *prefix = @"";
+    
+    switch (source) {
+        case DownloadSourceMinecraft:
+            prefix = @"[Minecraft] ";
+            break;
+        case DownloadSourceCurseForge:
+            prefix = @"[CurseForge] ";
+            break;
+        case DownloadSourceModrinth:
+            prefix = @"[Modrinth] ";
+            break;
+    }
+    
+    return [prefix stringByAppendingString:fileName];
 }
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
@@ -472,33 +491,6 @@
     }
 }
 
-- (void)checkForCompletionAndFinalize {
-    // Only proceed if we haven't already marked as complete
-    if ([self.metadata[@"allTasksComplete"] boolValue]) {
-        return;
-    }
-    
-    // Check if all tasks are in completed state
-    BOOL allComplete = YES;
-    @synchronized(self.downloadTasks) {
-        for (NSURLSessionDownloadTask *task in [self.downloadTasks allValues]) {
-            if (task.state != NSURLSessionTaskStateCompleted) {
-                allComplete = NO;
-                break;
-            }
-        }
-    }
-    
-    if (allComplete && self.progress.fractionCompleted >= 0.95) {
-        NSLog(@"[ResourceDownload] All download tasks completed, marking as finished");
-        [self markAsCompleted];
-    } else {
-        // Schedule another check
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self checkForCompletionAndFinalize];
-        });
-    }
-}
 - (void)processLibraryDownload:(NSDictionary *)library forVersion:(NSString *)versionId {
     // Library download processing logic would go here
     // This is a simplified stub implementation
