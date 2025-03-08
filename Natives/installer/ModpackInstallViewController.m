@@ -435,25 +435,16 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
 
 #pragma mark - Installation
 
-- (void)installModpackWithDetails:(NSDictionary *)modpack atIndex:(NSUInteger)index source:(NSInteger)source {
-    NSLog(@"[ModpackInstall] Starting installation for modpack %@ (version index: %lu)", modpack[@"title"], (unsigned long)index);
+- (void)installModpackWithDetails:(NSDictionary *)details 
+                          atIndex:(NSUInteger)index 
+                           source:(NSInteger)source {
+    NSLog(@"[ModpackInstall] Starting installation for modpack %@ (version index: %lu)", details[@"title"], (unsigned long)index);
     
-    // Create a download task
-    MinecraftResourceDownloadTask *downloadTask = [[MinecraftResourceDownloadTask alloc] init];
-    
-    // Present download progress view controller
-    DownloadProgressViewController *progressVC = [[DownloadProgressViewController alloc] initWithTask:downloadTask];
-    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:progressVC];
-    [self presentViewController:navController animated:YES completion:nil];
-    
-    // Prepare the download task
-    [downloadTask prepareForDownload];
-    
-    // Start the actual installation
+    // Don't create a new download task - directly notify the appropriate API
     if (source == ModpackSourceModrinth) {
-        [self.modrinthAPI installModpackFromDetail:modpack atIndex:index];
+        [self.modrinth installModpackFromDetail:details atIndex:index];
     } else {
-        [self.curseForgeAPI installModpackFromDetail:modpack atIndex:index completion:^(NSError *error) {
+        [self.curseForge installModpackFromDetail:details atIndex:index completion:^(NSError *error) {
             if (error) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [UIAlertUtilities presentAlertWithTitle:@"Installation Error" 
@@ -462,6 +453,11 @@ typedef NS_ENUM(NSInteger, ModpackSource) {
                 });
             }
         }];
+    }
+    
+    // Dismiss the version selector if it's being presented
+    if ([self presentedViewController]) {
+        [self dismissViewControllerAnimated:YES completion:nil];
     }
 }
 
