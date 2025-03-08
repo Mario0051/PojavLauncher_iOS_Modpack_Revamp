@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import "ModpackAPI.h"
+@class MinecraftResourceDownloadTask;
 
 NS_ASSUME_NONNULL_BEGIN
 
