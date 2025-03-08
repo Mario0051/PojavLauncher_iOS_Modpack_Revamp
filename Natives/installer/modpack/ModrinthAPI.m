@@ -1162,18 +1162,11 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             NSProgress *setupProgress = downloader.progressList.lastObject;
             setupProgress.completedUnitCount = 2; // Both steps complete
             
-            // Add completion progress
-            [downloader.fileList addObject:@"Complete"];
+            // Add completion progress - this is critical for launch detection
+            [downloader markAsCompleted];
             
-            // Create completion progress
-            NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
-            completeProgress.completedUnitCount = 1; // Already complete
-            completeProgress.kind = NSProgressKindFile;
-            [downloader.progressList addObject:completeProgress];
-            [downloader.progress addChild:completeProgress withPendingUnitCount:1];
-            
-            // Make sure all progress indicators show as complete
-            downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+            // Make sure metadata is properly set for launch
+            downloader.metadata[@"allTasksComplete"] = @YES;
         });
     });
 }
