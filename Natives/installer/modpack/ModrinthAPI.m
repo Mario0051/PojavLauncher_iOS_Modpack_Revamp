@@ -631,12 +631,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         return;
     }
     
-    NSArray *urls = modDetail[@"versionUrls"];
-    if (!urls || selectedVersion >= urls.count) {
-        NSLog(@"[ModrinthAPI] Invalid version index for mod installation");
-        return;
-    }
-    
     NSDictionary *userInfo = @{
         @"detail": modDetail,
         @"index": @(selectedVersion)
@@ -717,7 +711,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
 
 #pragma mark - Extraction and Download Methods
 
-// Helper method to extract overrides with progress reporting
+// Improved extract overrides method with better progress reporting
 - (void)extractOverrides:(UZKArchive *)archive toPath:(NSString *)destPath withProgress:(void (^)(double progress))progressCallback error:(NSError **)error {
     // First count the number of files in the overrides directory
     __block NSUInteger totalFiles = 0;
@@ -844,7 +838,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     }
 }
 
-// Helper method to download mod files with better concurrency control
+// Improved version of downloadModFiles method for better reporting
 - (void)downloadModFiles:(NSArray *)files toDestPath:(NSString *)destPath withDownloader:(MinecraftResourceDownloadTask *)downloader andCompletion:(void (^)(void))completion {
     // Get reference to the mods progress object
     __block NSProgress *modsProgress = downloader.progressList.lastObject;
@@ -1048,7 +1042,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     });
 }
 
-// Helper method to finalize modpack installation
 - (void)finalizeModpackInstallation:(NSDictionary *)indexDict destPath:(NSString *)destPath downloader:(MinecraftResourceDownloadTask *)downloader {
     // Log information about the modpack
     NSLog(@"[ModrinthAPI] Finalizing modpack installation: %@", indexDict[@"name"]);
