@@ -817,7 +817,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         progressCallback(1.0);
     }
 }
-
 // Helper method to download mod files with better concurrency control
 - (void)downloadModFiles:(NSArray *)files toDestPath:(NSString *)destPath withDownloader:(MinecraftResourceDownloadTask *)downloader andCompletion:(void (^)(void))completion {
     // Get reference to the mods progress object
