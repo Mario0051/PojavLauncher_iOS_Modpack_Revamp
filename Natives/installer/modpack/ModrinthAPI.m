@@ -5,6 +5,7 @@
 #import "AFNetworking.h"
 #import "UIAlertUtilities.h"
 #import "UnzipKit.h"
+#import "utils.h"
 
 // Constants
 static NSString * const kModrinthAPIErrorDomain = @"ModrinthAPIErrorDomain";
@@ -299,13 +300,21 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     
     for (NSDictionary *hit in hits) {
         BOOL isModpack = [hit[@"project_type"] isEqualToString:@"modpack"];
+        
+        // Process icon URL properly
+        NSString *iconUrl = hit[@"icon_url"];
+        // Ensure icon URL is valid and not null
+        if ([iconUrl isEqual:[NSNull null]]) {
+            iconUrl = @"";
+        }
+        
         NSMutableDictionary *entry = [@{
             @"apiSource": @(0), // 0 = Modrinth
             @"isModpack": @(isModpack),
             @"id": hit[@"project_id"] ?: @"",
             @"title": hit[@"title"] ?: @"",
             @"description": hit[@"description"] ?: @"",
-            @"imageUrl": hit[@"icon_url"] ?: @""
+            @"imageUrl": iconUrl ?: @""
         } mutableCopy];
         
         [result addObject:entry];
@@ -460,6 +469,20 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
 }
 
 #pragma mark - Modpack Installation
+
+- (void)installModpackFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    // Skip the prompt and directly initiate installation
+    NSDictionary *userInfo = @{
+        @"detail": modDetail,
+        @"index": @(selectedVersion)
+    };
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack" 
+                                                          object:self 
+                                                        userInfo:userInfo];
+    });
+}
 
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
     // Create a background queue for extraction operations
@@ -712,7 +735,8 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     }
     
     if (totalFiles == 0) {
-        // No overrides to extract
+        // No overrides to extract - might not be a modpack or has a different structure
+        NSLog(@"[ModrinthAPI] Warning: No override files found. This might not be a standard modpack.");
         if (progressCallback) {
             progressCallback(1.0); // Complete
         }
@@ -783,7 +807,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         
         // Update progress
         processedFiles++;
-        if (progressCallback && (processedFiles % 10 == 0 || processedFiles == totalFiles)) {
+        if (progressCallback && (processedFiles % 5 == 0 || processedFiles == totalFiles)) {
             progressCallback((double)processedFiles / totalFiles);
         }
     } error:error];
@@ -796,13 +820,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
 
 // Helper method to download mod files with better concurrency control
 - (void)downloadModFiles:(NSArray *)files toDestPath:(NSString *)destPath withDownloader:(MinecraftResourceDownloadTask *)downloader andCompletion:(void (^)(void))completion {
-    // Create dispatch group to track all downloads
-    dispatch_group_t downloadGroup = dispatch_group_create();
-    
-    // Track download stats
-    __block NSUInteger completedFiles = 0;
-    __block NSUInteger failedFiles = 0;
-    
     // Get reference to the mods progress object
     __block NSProgress *modsProgress = downloader.progressList.lastObject;
     
@@ -818,6 +835,14 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             NSLog(@"[ModrinthAPI] Failed to create mods directory: %@", dirError);
         }
     }
+    
+    // Create a dispatch queue for download operations
+    dispatch_queue_t downloadQueue = dispatch_queue_create("com.modrinth.mod.downloads", DISPATCH_QUEUE_CONCURRENT);
+    dispatch_group_t downloadGroup = dispatch_group_create();
+    
+    // Track download stats
+    __block NSUInteger completedFiles = 0;
+    __block NSUInteger failedFiles = 0;
     
     // Use a semaphore to limit concurrent downloads
     dispatch_semaphore_t downloadSemaphore = dispatch_semaphore_create(4); // Limit to 4 concurrent downloads
@@ -888,56 +913,57 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         // Get a file name for display (just the last component)
         NSString *fileName = [path lastPathComponent];
         
-        // Wait for semaphore (limit concurrent downloads)
-        dispatch_semaphore_wait(downloadSemaphore, DISPATCH_TIME_FOREVER);
-        
-        // Enter download group
+        // Enter download group and wait for semaphore slot
         dispatch_group_enter(downloadGroup);
         
-        // Create download task
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
-                                                               size:size 
-                                                                sha:sha 
-                                                            altName:fileName 
-                                                             toPath:path 
-                                                            success:^{
-            // Update progress
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completedFiles++;
-                modsProgress.completedUnitCount++;
-                NSLog(@"[ModrinthAPI] Download completed (%lu/%lu): %@", 
-                      (unsigned long)completedFiles, 
-                      (unsigned long)files.count, 
-                      fileName);
-            });
+        // Wait for semaphore slot in the background
+        dispatch_async(downloadQueue, ^{
+            dispatch_semaphore_wait(downloadSemaphore, DISPATCH_TIME_FOREVER);
             
-            // Release semaphore slot
-            dispatch_semaphore_signal(downloadSemaphore);
+            // Create download task
+            NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
+                                                                       size:size 
+                                                                        sha:sha 
+                                                                    altName:fileName 
+                                                                     toPath:path 
+                                                                    success:^{
+                // Update progress
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completedFiles++;
+                    modsProgress.completedUnitCount++;
+                    NSLog(@"[ModrinthAPI] Download completed (%lu/%lu): %@", 
+                          (unsigned long)completedFiles, 
+                          (unsigned long)files.count, 
+                          fileName);
+                });
+                
+                // Release semaphore slot
+                dispatch_semaphore_signal(downloadSemaphore);
+                
+                // Mark this download as complete
+                dispatch_group_leave(downloadGroup);
+            }];
             
-            // Mark this download as complete
-            dispatch_group_leave(downloadGroup);
-        }];
-        
-        if (task) {
-            [task resume];
-        } else {
-            // Task creation failed, update counters and continue
-            dispatch_async(dispatch_get_main_queue(), ^{
-                failedFiles++;
-                modsProgress.completedUnitCount++;
-            });
-            
-            // Release semaphore slot
-            dispatch_semaphore_signal(downloadSemaphore);
-            
-            // Mark this download as complete
-            dispatch_group_leave(downloadGroup);
-        }
+            if (task) {
+                [task resume];
+            } else {
+                // Task creation failed, update counters and continue
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    failedFiles++;
+                    modsProgress.completedUnitCount++;
+                });
+                
+                // Release semaphore slot
+                dispatch_semaphore_signal(downloadSemaphore);
+                
+                // Mark this download as complete
+                dispatch_group_leave(downloadGroup);
+            }
+        });
     }
     
-    // Wait for all downloads to complete (with a reasonable timeout)
-    dispatch_queue_t completionQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-    dispatch_group_notify(downloadGroup, completionQueue, ^{
+    // Wait for all downloads to complete
+    dispatch_group_notify(downloadGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSLog(@"[ModrinthAPI] All downloads completed: %lu successful, %lu failed", 
               (unsigned long)completedFiles, 
               (unsigned long)failedFiles);
@@ -951,6 +977,9 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
 
 // Helper method to finalize modpack installation
 - (void)finalizeModpackInstallation:(NSDictionary *)indexDict destPath:(NSString *)destPath downloader:(MinecraftResourceDownloadTask *)downloader {
+    // Log information about the modpack
+    NSLog(@"[ModrinthAPI] Finalizing modpack installation: %@", indexDict[@"name"]);
+    
     // Prepare profile setup UI
     dispatch_async(dispatch_get_main_queue(), ^{
         // Add profile setup task to display
@@ -1031,11 +1060,15 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             // Create a unique game directory path
             NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", destPath.lastPathComponent];
             
+            // Get the icon URL from the modpack data
+            NSString *iconUrl = indexDict[@"icon"];
+            
+            // Update or create the profile in the launcher's profiles.json
             PLProfiles.current.profiles[safeProfileName] = @{
                 @"gameDir": gameDir,
                 @"name": profileName,
                 @"lastVersionId": depInfo[@"id"] ?: @"latest-release",
-                @"icon": indexDict[@"icon"] ?: @""
+                @"icon": iconUrl ?: @""
             }.mutableCopy;
             
             PLProfiles.current.selectedProfileName = safeProfileName;
@@ -1072,6 +1105,9 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             completeProgress.kind = NSProgressKindFile;
             [downloader.progressList addObject:completeProgress];
             [downloader.progress addChild:completeProgress withPendingUnitCount:1];
+            
+            // Make sure all progress indicators show as complete
+            downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
         });
     });
 }
