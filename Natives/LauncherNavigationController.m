@@ -329,10 +329,17 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         [self.progressVC dismissModalViewControllerAnimated:NO];
 
         self.progressViewMain.observedProgress = nil;
-        if (self.task.metadata) {
+        
+        // Check for explicit completion - only launch when "Complete" is in the file list
+        BOOL allTasksComplete = [self.task.fileList containsObject:@"Complete"];
+        
+        if (self.task.metadata && allTasksComplete) {
             [self invokeAfterJITEnabled:^{
                 UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
             }];
+        } else if (self.task.metadata) {
+            // Not all tasks are complete, continue monitoring
+            return;
         } else {
             self.task = nil;
             [self setInteractionEnabled:YES forDownloading:YES];
