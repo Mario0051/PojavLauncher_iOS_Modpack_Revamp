@@ -41,6 +41,26 @@
     return self;
 }
 
+- (void)markAsCompleted {
+    // Create a flag file to indicate all tasks are truly complete
+    self.metadata[@"allTasksComplete"] = @YES;
+    
+    // Add completion marker for UI
+    if (![self.fileList containsObject:@"Complete"]) {
+        [self.fileList addObject:@"Complete"];
+        
+        // Create completion progress
+        NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+        completeProgress.completedUnitCount = 1;
+        completeProgress.kind = NSProgressKindFile;
+        [self.progressList addObject:completeProgress];
+        [self.progress addChild:completeProgress withPendingUnitCount:1];
+    }
+    
+    // Ensure overall progress shows as complete
+    self.progress.completedUnitCount = self.progress.totalUnitCount;
+}
+
 - (void)prepareForDownload {
     // Initialize master progress trackers
     self.progress = [NSProgress progressWithTotalUnitCount:1];
