@@ -1186,6 +1186,12 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         NSLog(@"[CurseForge-Modpack] Timeout waiting for downloads to complete");
     }
     
+    // Mark task as truly complete
+    [downloadTask markAsCompleted];
+    
+    // Set explicit completion flag in metadata
+    downloadTask.metadata[@"allTasksComplete"] = @YES;
+    
     // Provide completion info
     if (completion) {
         completion((NSUInteger)completedFiles, (NSUInteger)totalFiles, (NSUInteger)failedFiles);
