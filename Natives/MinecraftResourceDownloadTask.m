@@ -1,5 +1,5 @@
 #import "MinecraftResourceDownloadTask.h"
-#import "modpack/ModpackAPI.h"
+#import "installer/modpack/ModpackAPI.h"
 #import <CommonCrypto/CommonDigest.h>
 #import "utils.h"
 
