@@ -692,7 +692,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     [self.operationQueue addOperation:operation];
 }
 
-@end
+#pragma mark - Extraction and Download Methods
 
 // Helper method to extract overrides with progress reporting
 - (void)extractOverrides:(UZKArchive *)archive toPath:(NSString *)destPath withProgress:(void (^)(double progress))progressCallback error:(NSError **)error {
@@ -1074,3 +1074,6 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             [downloader.progress addChild:completeProgress withPendingUnitCount:1];
         });
     });
+}
+
+@end
