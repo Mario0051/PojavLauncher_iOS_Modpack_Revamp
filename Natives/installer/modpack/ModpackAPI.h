@@ -3,7 +3,6 @@
 #import "UnzipKit.h"
 
 @class MinecraftResourceDownloadTask;
-
 NS_ASSUME_NONNULL_BEGIN
 
 /**
