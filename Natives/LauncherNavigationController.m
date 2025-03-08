@@ -330,16 +330,17 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
         self.progressViewMain.observedProgress = nil;
         
-        // Check for explicit completion - only launch when "Complete" is in the file list
-        BOOL allTasksComplete = [self.task.fileList containsObject:@"Complete"];
+        // Check explicit completion flag in metadata
+        BOOL allTasksComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
         
         if (self.task.metadata && allTasksComplete) {
+            NSLog(@"[ResourceDownload] All tasks complete, launching Minecraft");
             [self invokeAfterJITEnabled:^{
                 UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
             }];
         } else if (self.task.metadata) {
-            // Not all tasks are complete, continue monitoring
-            return;
+            // Not all tasks are complete, just waiting
+            NSLog(@"[ResourceDownload] Download finished but waiting for mod installation to complete");
         } else {
             self.task = nil;
             [self setInteractionEnabled:YES forDownloading:YES];
