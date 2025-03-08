@@ -1,4 +1,5 @@
 #import "MinecraftResourceDownloadTask.h"
+#import "LauncherNavigationController.h"
 #import "installer/modpack/ModpackAPI.h"
 #import "MinecraftResourceUtils.h"
 #import <CommonCrypto/CommonDigest.h>
@@ -392,8 +393,8 @@
         
         if (!baseJarExists) {
             NSLog(@"[ResourceDownload] Base version JAR not found, downloading it");
-            // Find the base version in the remote list
-            NSDictionary *baseVersion = [MinecraftResourceUtils findVersion:inheritsFrom inList:remoteVersionList];
+            // Find the base version in the remote list - with proper casting
+            NSDictionary *baseVersion = (NSDictionary *)[MinecraftResourceUtils findVersion:inheritsFrom inList:remoteVersionList];
             if (baseVersion) {
                 // Download the base version first (recursively)
                 [self downloadVersion:baseVersion];
@@ -456,39 +457,6 @@
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self checkForCompletionAndFinalize];
     });
-}
-
-- (void)checkForCompletionAndFinalize {
-    // Only proceed if we haven't already marked as complete
-    if ([self.metadata[@"allTasksComplete"] boolValue]) {
-        return;
-    }
-    
-    // Check if all tasks are in completed state
-    BOOL allComplete = YES;
-    @synchronized(self.downloadTasks) {
-        for (NSURLSessionDownloadTask *task in [self.downloadTasks allValues]) {
-            if (task.state != NSURLSessionTaskStateCompleted) {
-                allComplete = NO;
-                break;
-            }
-        }
-    }
-    
-    if (allComplete && self.progress.fractionCompleted >= 0.95) {
-        NSLog(@"[ResourceDownload] All download tasks completed, marking as finished");
-        [self markAsCompleted];
-    } else if (self.downloadTasks.count == 0) {
-        // If there were no download tasks created at all (e.g., for mod versions
-        // that only need libraries), mark as complete after a short delay
-        NSLog(@"[ResourceDownload] No download tasks created, marking as finished");
-        [self markAsCompleted];
-    } else {
-        // Schedule another check
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self checkForCompletionAndFinalize];
-        });
-    }
 }
 
 - (void)processLibraryDownload:(NSDictionary *)library forVersion:(NSString *)versionId {
