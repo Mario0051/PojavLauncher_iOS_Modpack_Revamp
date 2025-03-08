@@ -59,6 +59,8 @@
     
     // Ensure overall progress shows as complete
     self.progress.completedUnitCount = self.progress.totalUnitCount;
+    
+    NSLog(@"[ResourceDownload] Task marked as fully completed");
 }
 
 - (void)prepareForDownload {
