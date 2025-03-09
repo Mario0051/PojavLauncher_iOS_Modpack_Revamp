@@ -181,6 +181,30 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Check for any new items that were added
     if (self.fileListCount != self.task.fileList.count) {
         self.fileListCount = self.task.fileList.count;
+        [self.tableView reloadData];
+    }
+    
+    // Check for completion
+    BOOL isComplete = NO;
+    
+    // Check if allTasksComplete flag is set
+    if (self.task.metadata[@"allTasksComplete"]) {
+        isComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
+    }
+    
+    // Also check if progress is complete
+    if (self.task.progress.fractionCompleted >= 1.0 || self.task.progress.completed) {
+        isComplete = YES;
+    }
+    
+    // If complete, ensure UI reflects this
+    if (isComplete && ![self.task.fileList containsObject:@"Complete"]) {
+        // Add completion marker if needed
+        [self.task.fileList addObject:@"Complete"];
+        [self.tableView reloadData];
+        
+        // Update status label
+        self.statusLabel.text = @"Installation Complete";
     }
 }
 
