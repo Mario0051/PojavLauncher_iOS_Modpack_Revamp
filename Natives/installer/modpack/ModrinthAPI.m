@@ -856,25 +856,43 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         }
     }
     
-    // Create a dispatch queue for download operations
-    dispatch_queue_t downloadQueue = dispatch_queue_create("com.modrinth.mod.downloads", DISPATCH_QUEUE_CONCURRENT);
-    dispatch_group_t downloadGroup = dispatch_group_create();
-    
     // Track download stats
     __block NSUInteger completedFiles = 0;
     __block NSUInteger failedFiles = 0;
+    __block NSUInteger totalFiles = files.count;
+    
+    // Ensure modsProgress has the right unit count
+    dispatch_async(dispatch_get_main_queue(), ^{
+        modsProgress.totalUnitCount = totalFiles;
+        modsProgress.completedUnitCount = 0;
+    });
+    
+    // If no files to download, call completion immediately
+    if (totalFiles == 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Make sure progress is fully completed
+            modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+            
+            NSLog(@"[ModrinthAPI] No files to download, completing immediately");
+            
+            if (completion) {
+                completion();
+            }
+        });
+        return;
+    }
+    
+    // Use a dispatch group to track completion
+    dispatch_group_t downloadGroup = dispatch_group_create();
     
     // Use a semaphore to limit concurrent downloads
     dispatch_semaphore_t downloadSemaphore = dispatch_semaphore_create(4); // Limit to 4 concurrent downloads
     
+    // Keep track of download tasks
+    __block NSMutableArray *activeTasks = [NSMutableArray array];
+    
     // Start a counter to track file index for better display
     __block int fileIndex = 0;
-    
-    // Ensure modsProgress has the right unit count
-    dispatch_async(dispatch_get_main_queue(), ^{
-        modsProgress.totalUnitCount = files.count;
-        modsProgress.completedUnitCount = 0;
-    });
     
     // Process each file
     for (NSDictionary *indexFile in files) {
@@ -883,6 +901,16 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 failedFiles++;
                 modsProgress.completedUnitCount++;
+                
+                // Check if we're done with all files
+                if ((completedFiles + failedFiles) >= totalFiles) {
+                    // Ensure progress is fully completed
+                    modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+                    
+                    if (completion) {
+                        completion();
+                    }
+                }
             });
             continue;
         }
@@ -893,6 +921,16 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 failedFiles++;
                 modsProgress.completedUnitCount++;
+                
+                // Check if we're done with all files
+                if ((completedFiles + failedFiles) >= totalFiles) {
+                    // Ensure progress is fully completed
+                    modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+                    
+                    if (completion) {
+                        completion();
+                    }
+                }
             });
             continue;
         }
@@ -903,6 +941,16 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 failedFiles++;
                 modsProgress.completedUnitCount++;
+                
+                // Check if we're done with all files
+                if ((completedFiles + failedFiles) >= totalFiles) {
+                    // Ensure progress is fully completed
+                    modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+                    
+                    if (completion) {
+                        completion();
+                    }
+                }
             });
             continue;
         }
@@ -949,6 +997,16 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     failedFiles++;
                     modsProgress.completedUnitCount++;
+                    
+                    // Check if we're done with all files
+                    if ((completedFiles + failedFiles) >= totalFiles) {
+                        // Ensure progress is fully completed
+                        modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+                        
+                        if (completion) {
+                            completion();
+                        }
+                    }
                 });
                 continue;
             }
@@ -964,7 +1022,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         dispatch_group_enter(downloadGroup);
         
         // Wait for semaphore slot in the background
-        dispatch_async(downloadQueue, ^{
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             dispatch_semaphore_wait(downloadSemaphore, DISPATCH_TIME_FOREVER);
             
             // Create download task with improved display name
@@ -981,9 +1039,24 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                     modsProgress.completedUnitCount++;
                     NSLog(@"[ModrinthAPI] Download completed (%lu/%lu): %@", 
                           (unsigned long)completedFiles, 
-                          (unsigned long)files.count, 
+                          (unsigned long)totalFiles, 
                           modName);
+                    
+                    // Check if we're done with all files
+                    if ((completedFiles + failedFiles) >= totalFiles) {
+                        // Ensure progress is fully completed
+                        modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+                        
+                        if (completion) {
+                            completion();
+                        }
+                    }
                 });
+                
+                // Track task completion
+                @synchronized(activeTasks) {
+                    [activeTasks removeObject:task];
+                }
                 
                 // Release semaphore slot
                 dispatch_semaphore_signal(downloadSemaphore);
@@ -993,13 +1066,63 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
             }];
             
             if (task) {
+                @synchronized(activeTasks) {
+                    [activeTasks addObject:task];
+                }
                 [task resume];
+                
+                // Add a fail-safe timeout
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    if (task.state != NSURLSessionTaskStateCompleted) {
+                        NSLog(@"[ModrinthAPI] Download timed out after 5 minutes: %@", displayName);
+                        
+                        // Cancel the task
+                        [task cancel];
+                        
+                        // Update progress
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            failedFiles++;
+                            modsProgress.completedUnitCount++;
+                            
+                            // Check if we're done with all files
+                            if ((completedFiles + failedFiles) >= totalFiles) {
+                                // Ensure progress is fully completed
+                                modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+                                
+                                if (completion) {
+                                    completion();
+                                }
+                            }
+                        });
+                        
+                        // Track task completion
+                        @synchronized(activeTasks) {
+                            [activeTasks removeObject:task];
+                        }
+                        
+                        // Release semaphore slot
+                        dispatch_semaphore_signal(downloadSemaphore);
+                        
+                        // Mark this download as complete
+                        dispatch_group_leave(downloadGroup);
+                    }
+                });
             } else {
                 // Task creation failed, update counters and continue
                 dispatch_async(dispatch_get_main_queue(), ^{
                     failedFiles++;
                     // Make sure to increment progress even on failure
                     modsProgress.completedUnitCount++;
+                    
+                    // Check if we're done with all files
+                    if ((completedFiles + failedFiles) >= totalFiles) {
+                        // Ensure progress is fully completed
+                        modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+                        
+                        if (completion) {
+                            completion();
+                        }
+                    }
                 });
                 
                 // Release semaphore slot
@@ -1011,36 +1134,80 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         });
     }
     
-    // Wait for all downloads to complete
-    dispatch_group_notify(downloadGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        NSLog(@"[ModrinthAPI] All downloads completed: %lu successful, %lu failed", 
-              (unsigned long)completedFiles, 
-              (unsigned long)failedFiles);
-        
-        // Create a log entry of the installation
-        NSString *logPath = [destPath stringByAppendingPathComponent:@"modrinth_download.log"];
-        NSString *logContent = [NSString stringWithFormat:@"Modrinth mod download completed\n"
-                              "Total files: %lu\n"
-                              "Successful: %lu\n"
-                              "Failed: %lu\n"
-                              "Date: %@",
-                              (unsigned long)files.count,
-                              (unsigned long)completedFiles,
-                              (unsigned long)failedFiles,
-                              [NSDate date]];
-        
-        [logContent writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-        
-        // Ensure progress is fully complete
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // Force progress to show 100% complete regardless of any failures
-            modsProgress.completedUnitCount = modsProgress.totalUnitCount;
-        });
-        
-        // Call completion handler
-        if (completion) {
-            completion();
+    // Set up a timeout for the entire download process
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(900 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Check if we're still waiting for downloads after 15 minutes
+        if ((completedFiles + failedFiles) < totalFiles) {
+            NSLog(@"[ModrinthAPI] Overall download process timed out after 15 minutes");
+            
+            // Cancel any remaining tasks
+            @synchronized(activeTasks) {
+                for (NSURLSessionDownloadTask *task in activeTasks) {
+                    [task cancel];
+                }
+                [activeTasks removeAllObjects];
+            }
+            
+            // Update progress for any remaining files
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSUInteger remainingFiles = totalFiles - (completedFiles + failedFiles);
+                failedFiles += remainingFiles;
+                
+                // Force progress to complete
+                modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+                
+                NSLog(@"[ModrinthAPI] Forced completion after timeout: %lu completed, %lu failed", 
+                      (unsigned long)completedFiles, 
+                      (unsigned long)failedFiles);
+                
+                if (completion) {
+                    completion();
+                }
+            });
         }
+    });
+    
+    // Set up a background task to monitor progress and ensure completion
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Wait for the group with a reasonable timeout
+        dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(600 * NSEC_PER_SEC)); // 10 minute timeout
+        long result = dispatch_group_wait(downloadGroup, timeout);
+        
+        if (result != 0) {
+            // Timeout occurred
+            NSLog(@"[ModrinthAPI] Warning: Not all downloads completed within timeout period");
+        }
+        
+        // Ensure completion is called regardless of timeout
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Force progress to complete
+            modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+            
+            NSLog(@"[ModrinthAPI] All downloads completed or timed out: %lu successful, %lu failed", 
+                  (unsigned long)completedFiles, 
+                  (unsigned long)failedFiles);
+            
+            // Create a log entry of the installation
+            NSString *logPath = [destPath stringByAppendingPathComponent:@"modrinth_download.log"];
+            NSString *logContent = [NSString stringWithFormat:@"Modrinth mod download completed\n"
+                                  "Total files: %lu\n"
+                                  "Successful: %lu\n"
+                                  "Failed: %lu\n"
+                                  "Date: %@",
+                                  (unsigned long)totalFiles,
+                                  (unsigned long)completedFiles,
+                                  (unsigned long)failedFiles,
+                                  [NSDate date]];
+            
+            [logContent writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            
+            if (completion) {
+                completion();
+            }
+            
+            // Mark the task as fully completed
+            [downloader markAsCompleted];
+        });
     });
 }
 
