@@ -172,16 +172,23 @@
     
     // Add file to the tracking list with appropriate names
     NSString *displayName = altName ?: [url lastPathComponent];
-    [self.fileList addObject:displayName];
+    if (!displayName) {
+        displayName = @"Unknown file";
+    }
     
     // Create progress for the file
     NSProgress *fileProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1];
     fileProgress.kind = NSProgressKindFile;
     fileProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
-    [self.progressList addObject:fileProgress];
     
-    // Add to the overall progress
-    [self.progress addChild:fileProgress withPendingUnitCount:1];
+    // Synchronize access to shared resources
+    @synchronized(self) {
+        [self.fileList addObject:displayName];
+        [self.progressList addObject:fileProgress];
+        
+        // Add to the overall progress
+        [self.progress addChild:fileProgress withPendingUnitCount:1];
+    }
     
     // Create download task
     NSURL *downloadURL = [NSURL URLWithString:url];
@@ -190,37 +197,12 @@
     __weak typeof(self) weakSelf = self;
     NSURLSessionDownloadTask *task = [self.session downloadTaskWithRequest:request completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
         
         if (error) {
             NSLog(@"[ResourceDownload] Failed to download %@: %@", url, error);
             
-            // If it's a connectivity issue, add some delay and try to resume later
-            if ([error.domain isEqualToString:NSURLErrorDomain] && 
-                (error.code == NSURLErrorTimedOut || 
-                 error.code == NSURLErrorNetworkConnectionLost || 
-                 error.code == NSURLErrorNotConnectedToInternet)) {
-                // Request will be retried automatically if needed by system
-                NSLog(@"[ResourceDownload] Network error, task may be retried by system");
-            } else {
-                // Mark progress as failed - use cancel method instead of setting property
-                fileProgress.completedUnitCount = 0;
-                [fileProgress cancel];
-                
-                if (strongSelf.handleError) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        strongSelf.handleError();
-                    });
-                }
-            }
-            return;
-        }
-        
-        // Check HTTP status code
-        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
-        if ([httpResponse isKindOfClass:[NSHTTPURLResponse class]] && 
-            (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300)) {
-            NSLog(@"[ResourceDownload] HTTP error %ld for %@", (long)httpResponse.statusCode, url);
-            
+            // Mark progress as failed
             fileProgress.completedUnitCount = 0;
             [fileProgress cancel];
             
@@ -230,11 +212,6 @@
                 });
             }
             return;
-        }
-        
-        // Update file size from response if needed
-        if (size == 0 && httpResponse.expectedContentLength > 0) {
-            fileProgress.totalUnitCount = httpResponse.expectedContentLength;
         }
         
         // Move file to destination
@@ -324,7 +301,7 @@
     task.taskDescription = displayName;
     
     // Store task and mapping info
-    @synchronized(self.downloadTasks) {
+    @synchronized(self) {
         self.downloadTasks[displayName] = task;
         self.urlToPathMap[url] = path;
         
