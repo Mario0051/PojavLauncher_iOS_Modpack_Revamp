@@ -1345,13 +1345,28 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
 
             // Mark setup as complete
             NSProgress *setupProgress = downloader.progressList.lastObject;
-            setupProgress.completedUnitCount = 2; // Both steps complete
+            setupProgress.completedUnitCount = setupProgress.totalUnitCount; // Both steps complete
+            
+            // Add completion marker to ensure UI reflects completion
+            [downloader.fileList addObject:@"Complete"];
+            NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+            completeProgress.completedUnitCount = 1;
+            [downloader.progressList addObject:completeProgress];
+            [downloader.progress addChild:completeProgress withPendingUnitCount:1];
+            
+            // Force the main progress to 100%
+            downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+            if (downloader.textProgress) {
+                downloader.textProgress.completedUnitCount = downloader.textProgress.totalUnitCount;
+            }
             
             // Explicitly mark the task as fully completed
             [downloader markAsCompleted];
             
             // Make sure metadata is properly set for launch
             downloader.metadata[@"allTasksComplete"] = @YES;
+            
+            NSLog(@"[ModrinthAPI] Modpack installation fully completed");
         });
     });
 }
