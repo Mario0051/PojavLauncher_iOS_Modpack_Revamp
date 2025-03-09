@@ -712,7 +712,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
 #pragma mark - Extraction and Download Methods
 
 // Improved extract overrides method with better progress reporting
-- (void)extractOverrides:(UZKArchive *)archive toPath:(NSString *)destPath withProgress:(void (^)(double progress))progressCallback error:(NSError **)error {
+- (void)extractOverrides:(UZKArchive *)archive toPath:(NSString *)destPath withProgress:(void (^)(double progress))progressCallback error:(NSError * __strong *)error {
     // First count the number of files in the overrides directory
     __block NSUInteger totalFiles = 0;
     __block NSUInteger processedFiles = 0;
@@ -793,7 +793,8 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                                                                    attributes:nil 
                                                                         error:&dirError];
             if (!created) {
-                *error = dirError;
+                NSError * __strong localError = dirError; // Create a strong reference
+                *error = localError;
                 *stop = YES;
                 return;
             }
@@ -809,7 +810,8 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         NSError *extractError = nil;
         NSData *fileData = [archive extractData:fileInfo error:&extractError];
         if (extractError) {
-            *error = extractError;
+            NSError * __strong localError = extractError; // Create a strong reference
+            *error = localError;
             *stop = YES;
             return;
         }
@@ -818,7 +820,8 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         NSError *writeError = nil;
         BOOL written = [fileData writeToFile:destItemPath options:NSDataWritingAtomic error:&writeError];
         if (!written) {
-            *error = writeError;
+            NSError * __strong localError = writeError; // Create a strong reference
+            *error = localError;
             *stop = YES;
             return;
         }
@@ -1282,60 +1285,61 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         }
         
         // Second step: Create profile
-    dispatch_async(dispatch_get_main_queue(), ^{
-        // Create the profile with the modpack info
-        NSString *profileName = indexDict[@"name"] ?: @"Modrinth Modpack";
-        NSString *safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-        safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
-        safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
-        
-        // Get modified version string
-        NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
-        
-        // Create a unique game directory path
-        NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", destPath.lastPathComponent];
-        
-        // Get the icon URL from the modpack data
-        NSString *iconUrl = indexDict[@"icon"];
-        
-        // Update or create the profile in the launcher's profiles.json
-        PLProfiles.current.profiles[safeProfileName] = @{
-            @"gameDir": gameDir,
-            @"name": profileName,
-            @"lastVersionId": depInfo[@"id"] ?: @"latest-release",
-            @"icon": iconUrl ?: @""
-        }.mutableCopy;
-        
-        PLProfiles.current.selectedProfileName = safeProfileName;
-        [PLProfiles.current save];
-        
-        // Create a log file
-        NSString *logContent = [NSString stringWithFormat:@"Modrinth modpack installation completed\n"
-                              "Profile: %@\n"
-                              "Directory: %@\n"
-                              "Game Version: %@\n"
-                              "Mod Loader: %@\n"
-                              "Date: %@",
-                              profileName, 
-                              destPath, 
-                              depInfo[@"mcVersion"] ?: @"unknown",
-                              depInfo[@"loader"] ?: @"unknown",
-                              [NSDate date]];
-        
-        [logContent writeToFile:[destPath stringByAppendingPathComponent:@"modrinth_install.log"]
-                     atomically:YES
-                       encoding:NSUTF8StringEncoding
-                          error:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Create the profile with the modpack info
+            NSString *profileName = indexDict[@"name"] ?: @"Modrinth Modpack";
+            NSString *safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+            safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+            safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+            
+            // Get modified version string
+            NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
+            
+            // Create a unique game directory path
+            NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", destPath.lastPathComponent];
+            
+            // Get the icon URL from the modpack data
+            NSString *iconUrl = indexDict[@"icon"];
+            
+            // Update or create the profile in the launcher's profiles.json
+            PLProfiles.current.profiles[safeProfileName] = @{
+                @"gameDir": gameDir,
+                @"name": profileName,
+                @"lastVersionId": depInfo[@"id"] ?: @"latest-release",
+                @"icon": iconUrl ?: @""
+            }.mutableCopy;
+            
+            PLProfiles.current.selectedProfileName = safeProfileName;
+            [PLProfiles.current save];
+            
+            // Create a log file
+            NSString *logContent = [NSString stringWithFormat:@"Modrinth modpack installation completed\n"
+                                  "Profile: %@\n"
+                                  "Directory: %@\n"
+                                  "Game Version: %@\n"
+                                  "Mod Loader: %@\n"
+                                  "Date: %@",
+                                  profileName, 
+                                  destPath, 
+                                  depInfo[@"mcVersion"] ?: @"unknown",
+                                  depInfo[@"loader"] ?: @"unknown",
+                                  [NSDate date]];
+            
+            [logContent writeToFile:[destPath stringByAppendingPathComponent:@"modrinth_install.log"]
+                         atomically:YES
+                           encoding:NSUTF8StringEncoding
+                              error:nil];
 
-        // Mark setup as complete
-        NSProgress *setupProgress = downloader.progressList.lastObject;
-        setupProgress.completedUnitCount = 2; // Both steps complete
-        
-        // Explicitly mark the task as fully completed
-        [downloader markAsCompleted];
-        
-        // Make sure metadata is properly set for launch
-        downloader.metadata[@"allTasksComplete"] = @YES;
+            // Mark setup as complete
+            NSProgress *setupProgress = downloader.progressList.lastObject;
+            setupProgress.completedUnitCount = 2; // Both steps complete
+            
+            // Explicitly mark the task as fully completed
+            [downloader markAsCompleted];
+            
+            // Make sure metadata is properly set for launch
+            downloader.metadata[@"allTasksComplete"] = @YES;
+        });
     });
 }
 
