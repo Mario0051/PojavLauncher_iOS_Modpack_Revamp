@@ -1271,8 +1271,9 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                   (unsigned long)failedFiles);
             
             // Create a log entry of the installation
-            NSString *logPath = [destPath stringByAppendingPathComponent:@"modrinth_download.log"];
-            NSString *logContent = [NSString stringWithFormat:@"Modrinth mod download completed\n"
+            NSString *logPath = [modsDir stringByDeletingLastPathComponent]; // Use parent directory of modsDir
+            logPath = [logPath stringByAppendingPathComponent:@"curseforge_download.log"];
+            NSString *logContent = [NSString stringWithFormat:@"CurseForge mod download completed\n"
                                   "Total files: %lu\n"
                                   "Successful: %lu\n"
                                   "Failed: %lu\n"
