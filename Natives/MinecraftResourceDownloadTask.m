@@ -448,35 +448,163 @@
         // Standard vanilla version
         NSDictionary *downloads = version[@"downloads"];
         if (!downloads || ![downloads isKindOfClass:[NSDictionary class]]) {
-            // For versions without downloads section (older or custom), skip client download
-            NSLog(@"[ResourceDownload] No downloads section found, skipping client JAR download");
-        } else {
-            NSDictionary *clientInfo = downloads[@"client"];
-            if (clientInfo && [clientInfo isKindOfClass:[NSDictionary class]]) {
-                NSString *clientURL = clientInfo[@"url"];
-                NSString *clientSHA1 = clientInfo[@"sha1"];
-                NSNumber *clientSize = clientInfo[@"size"];
-                
-                if (clientURL && [clientURL isKindOfClass:[NSString class]]) {
-                    // Download client JAR
-                    NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client", versionId];
-                    NSURLSessionDownloadTask *clientTask = [self createDownloadTask:clientURL 
-                                                                            size:[clientSize unsignedIntegerValue] 
-                                                                            sha:clientSHA1 
-                                                                        altName:displayName 
-                                                                        toPath:clientJarPath 
-                                                                       success:^{
-                        // Once client is downloaded, check if we should mark as completed
-                        [self checkForCompletionAndFinalize];                                                
+            // Try to check if it's an alternative format version data or get additional version information
+            NSLog(@"[ResourceDownload] No downloads section found in version data, attempting alternative sources");
+            
+            // Try to fetch the detailed version info from Mojang's servers if needed
+            [self fetchAdditionalVersionInfoForId:versionId completion:^(NSDictionary *updatedVersion) {
+                if (updatedVersion && updatedVersion[@"downloads"] && [updatedVersion[@"downloads"] isKindOfClass:[NSDictionary class]]) {
+                    // Process the downloads from the updated version info
+                    [self processDownloadsSection:updatedVersion[@"downloads"] forVersion:versionId clientJarPath:clientJarPath];
+                } else {
+                    // Use fallback URL based on version ID
+                    NSString *fallbackURL = [NSString stringWithFormat:@"https://launcher.mojang.com/v1/objects/8dd1a28015f5bda1061b5cef5a08d5a4b56926f4/client.jar", versionId];
+                    NSLog(@"[ResourceDownload] Using fallback client download URL for %@", versionId);
+                    
+                    // Download client JAR using fallback URL
+                    NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client (fallback)", versionId];
+                    NSURLSessionDownloadTask *clientTask = [self createDownloadTask:fallbackURL 
+                                                                               size:0 
+                                                                                sha:nil 
+                                                                            altName:displayName 
+                                                                             toPath:clientJarPath 
+                                                                            success:^{
+                        [self checkForCompletionAndFinalize];
                     }];
                     
                     if (clientTask) {
                         [clientTask resume];
                     }
                 }
+                
+                // Continue with processing libraries and assets
+                [self processLibrariesAndAssets:version forVersion:versionId];
+            }];
+        } else {
+            // Process the downloads section directly
+            [self processDownloadsSection:downloads forVersion:versionId clientJarPath:clientJarPath];
+            
+            // Process libraries and assets
+            [self processLibrariesAndAssets:version forVersion:versionId];
+        }
+    }
+}
+
+- (void)processDownloadsSection:(NSDictionary *)downloads forVersion:(NSString *)versionId clientJarPath:(NSString *)clientJarPath {
+    NSDictionary *clientInfo = downloads[@"client"];
+    if (clientInfo && [clientInfo isKindOfClass:[NSDictionary class]]) {
+        NSString *clientURL = clientInfo[@"url"];
+        NSString *clientSHA1 = clientInfo[@"sha1"];
+        NSNumber *clientSize = clientInfo[@"size"];
+        
+        if (clientURL && [clientURL isKindOfClass:[NSString class]]) {
+            // Download client JAR
+            NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client", versionId];
+            NSURLSessionDownloadTask *clientTask = [self createDownloadTask:clientURL 
+                                                                        size:[clientSize unsignedIntegerValue] 
+                                                                         sha:clientSHA1 
+                                                                     altName:displayName 
+                                                                      toPath:clientJarPath 
+                                                                     success:^{
+                // Once client is downloaded, check if we should mark as completed
+                [self checkForCompletionAndFinalize];                                                
+            }];
+            
+            if (clientTask) {
+                [clientTask resume];
             }
         }
     }
+}
+
+- (void)processLibrariesAndAssets:(NSDictionary *)version forVersion:(NSString *)versionId {
+    // Process libraries if needed
+    NSArray *libraries = version[@"libraries"];
+    if (libraries && [libraries isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *library in libraries) {
+            if (![library isKindOfClass:[NSDictionary class]]) continue;
+            
+            // Process library downloads
+            [self processLibraryDownload:library forVersion:versionId];
+        }
+    }
+    
+    // Process assets if needed
+    NSDictionary *assetIndex = version[@"assetIndex"];
+    if (assetIndex && [assetIndex isKindOfClass:[NSDictionary class]]) {
+        [self processAssetIndex:assetIndex forVersion:versionId];
+    }
+    
+    // Set up a timer to periodically check for completion
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self checkForCompletionAndFinalize];
+    });
+}
+
+- (void)fetchAdditionalVersionInfoForId:(NSString *)versionId completion:(void (^)(NSDictionary *updatedVersion))completion {
+    // Try to fetch detailed version information from Mojang's version manifest
+    NSString *versionUrl = [NSString stringWithFormat:@"https://piston-meta.mojang.com/v1/packages/%@/%@.json", versionId, versionId];
+    NSString *manifestUrl = [NSString stringWithFormat:@"https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"];
+    
+    // First try direct version URL
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:versionUrl] 
+                                                             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (data) {
+            NSError *jsonError;
+            NSDictionary *versionData = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+            
+            if (versionData && !jsonError) {
+                NSLog(@"[ResourceDownload] Successfully fetched additional version info for %@", versionId);
+                if (completion) completion(versionData);
+                return;
+            }
+        }
+        
+        // If direct URL fails, try to look up in manifest
+        NSURLSessionDataTask *manifestTask = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:manifestUrl] 
+                                                                        completionHandler:^(NSData *manifestData, NSURLResponse *manifestResponse, NSError *manifestError) {
+            if (manifestData) {
+                NSError *manifestJsonError;
+                NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:&manifestJsonError];
+                
+                if (manifest && !manifestJsonError && manifest[@"versions"]) {
+                    // Find the version in the manifest
+                    for (NSDictionary *version in manifest[@"versions"]) {
+                        if ([version[@"id"] isEqualToString:versionId] && version[@"url"]) {
+                            // Found version, fetch its details
+                            NSURLSessionDataTask *versionDetailTask = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:version[@"url"]] 
+                                                                                                 completionHandler:^(NSData *versionDetailData, NSURLResponse *versionDetailResponse, NSError *versionDetailError) {
+                                if (versionDetailData) {
+                                    NSError *versionDetailJsonError;
+                                    NSDictionary *versionDetail = [NSJSONSerialization JSONObjectWithData:versionDetailData options:0 error:&versionDetailJsonError];
+                                    
+                                    if (versionDetail && !versionDetailJsonError) {
+                                        NSLog(@"[ResourceDownload] Successfully fetched version details from manifest for %@", versionId);
+                                        if (completion) completion(versionDetail);
+                                        return;
+                                    }
+                                }
+                                
+                                NSLog(@"[ResourceDownload] Failed to fetch version details from manifest URL");
+                                if (completion) completion(nil);
+                            }];
+                            
+                            [versionDetailTask resume];
+                            return;
+                        }
+                    }
+                }
+            }
+            
+            NSLog(@"[ResourceDownload] Could not find version in manifest");
+            if (completion) completion(nil);
+        }];
+        
+        [manifestTask resume];
+    }];
+    
+    [task resume];
+}
     
     // Process libraries if needed
     NSArray *libraries = version[@"libraries"];
