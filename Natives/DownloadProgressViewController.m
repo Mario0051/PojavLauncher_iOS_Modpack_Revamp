@@ -478,8 +478,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     
+    // Handle special case: metadata indicates all tasks complete
+    BOOL isAllComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
+    
     // Configure cell based on task type and progress state
-    if (taskType == DownloadTaskTypeComplete) {
+    if (taskType == DownloadTaskTypeComplete || isAllComplete) {
         // Show completion status
         cell.detailTextLabel.text = @"Installation complete";
         UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
@@ -490,17 +493,20 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     } else if (taskType == DownloadTaskTypeExtraction || taskType == DownloadTaskTypeSetup) {
         // Show activity indicator for extraction and setup
         if (progress) {
-            cell.detailTextLabel.text = (taskType == DownloadTaskTypeExtraction) ? 
-                                      [NSString stringWithFormat:@"Extracting files... %d%%", (int)(progress.fractionCompleted * 100)] : 
-                                      [NSString stringWithFormat:@"Setting up profile... %d%%", (int)(progress.fractionCompleted * 100)];
-            
-            if (progress.fractionCompleted >= 1.0) {
+            // If all tasks are complete, show checkmark regardless of progress value
+            if (isAllComplete || progress.fractionCompleted >= 1.0) {
+                cell.detailTextLabel.text = (taskType == DownloadTaskTypeExtraction) ? 
+                                          @"Extraction complete" : @"Setup complete";
                 UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
                 UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
                 checkmarkView.image = checkmarkImage;
                 checkmarkView.tintColor = [UIColor systemGreenColor];
                 cell.accessoryView = checkmarkView;
             } else {
+                cell.detailTextLabel.text = (taskType == DownloadTaskTypeExtraction) ? 
+                                          [NSString stringWithFormat:@"Extracting files... %d%%", (int)(progress.fractionCompleted * 100)] : 
+                                          [NSString stringWithFormat:@"Setting up profile... %d%%", (int)(progress.fractionCompleted * 100)];
+                
                 UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
                 [activityIndicator startAnimating];
                 cell.accessoryView = activityIndicator;
@@ -524,7 +530,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 cell.accessoryView = progressLabel;
             }
             
-            if (progress.finished || progress.fractionCompleted >= 1.0) {
+            if (progress.finished || progress.fractionCompleted >= 1.0 || isAllComplete) {
                 // Show checkmark for completed downloads
                 UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
                 UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
