@@ -105,12 +105,26 @@
             [self.progressList addObject:completeProgress];
             [self.progress addChild:completeProgress withPendingUnitCount:1];
         }
+        
+        // Ensure the task is explicitly marked as completed
+        [self markAsCompleted];
     } else {
         // Not all tasks are complete, check again after a delay
         NSLog(@"[ResourceDownload] Some tasks still in progress, checking again later");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self checkForCompletionAndFinalize];
-        });
+        
+        // Continue checking until completion or timeout
+        static NSInteger checkCount = 0;
+        if (checkCount < 60) { // Maximum of ~3 minutes of checking
+            checkCount++;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self checkForCompletionAndFinalize];
+            });
+        } else {
+            // If we've checked too many times, force completion
+            NSLog(@"[ResourceDownload] Forcing completion after timeout");
+            self.metadata[@"allTasksComplete"] = @YES;
+            [self markAsCompleted];
+        }
     }
 }
 
@@ -438,9 +452,27 @@
         [self processAssetIndex:assetIndex forVersion:versionId];
     }
     
-    // Set up a timer to periodically check for completion
+    // Set up completion tracking with multiple checks
+    // First check after 3 seconds
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [self checkForCompletionAndFinalize];
+    });
+    
+    // Backup check after 15 seconds to ensure we don't miss completion
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Only force completion if not already completed
+        if (![self.metadata[@"allTasksComplete"] boolValue]) {
+            NSLog(@"[ResourceDownload] Running backup completion check");
+            [self checkForCompletionAndFinalize];
+        }
+    });
+    
+    // Final check after 60 seconds - force completion if needed
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (![self.metadata[@"allTasksComplete"] boolValue]) {
+            NSLog(@"[ResourceDownload] Forcing completion after final timeout");
+            [self markAsCompleted];
+        }
     });
 }
 
@@ -461,7 +493,15 @@
                                                                       toPath:clientJarPath 
                                                                      success:^{
                 // Once client is downloaded, check if we should mark as completed
-                [self checkForCompletionAndFinalize];                                                
+                [self checkForCompletionAndFinalize];
+                
+                // After a reasonable delay, ensure completion regardless
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (![self.metadata[@"allTasksComplete"] boolValue]) {
+                        NSLog(@"[ResourceDownload] Client download finished, forcing completion after delay");
+                        [self markAsCompleted];
+                    }
+                });
             }];
             
             if (clientTask) {
