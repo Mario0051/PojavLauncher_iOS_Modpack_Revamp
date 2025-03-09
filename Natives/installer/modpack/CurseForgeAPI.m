@@ -1250,23 +1250,15 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         }
     });
     
-    // Wait for the group with a reasonable timeout
+    // Set up a background task to monitor progress and ensure completion
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Wait for all downloads to complete (with timeout)
+        // Wait for the group with a reasonable timeout
         dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(600 * NSEC_PER_SEC)); // 10 minute timeout
         long result = dispatch_group_wait(downloadGroup, timeout);
         
         if (result != 0) {
             // Timeout occurred
             NSLog(@"[CurseForge-Modpack] Warning: Not all downloads completed within timeout period");
-            
-            // Cancel any remaining tasks
-            @synchronized(activeTasks) {
-                for (NSURLSessionDownloadTask *task in activeTasks) {
-                    [task cancel];
-                }
-                [activeTasks removeAllObjects];
-            }
         }
         
         // Ensure completion is called regardless of timeout
@@ -1278,12 +1270,26 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                   (unsigned long)completedFiles, 
                   (unsigned long)failedFiles);
             
-            // Mark task as truly complete
-            [downloadTask markAsCompleted];
+            // Create a log entry of the installation
+            NSString *logPath = [destPath stringByAppendingPathComponent:@"modrinth_download.log"];
+            NSString *logContent = [NSString stringWithFormat:@"Modrinth mod download completed\n"
+                                  "Total files: %lu\n"
+                                  "Successful: %lu\n"
+                                  "Failed: %lu\n"
+                                  "Date: %@",
+                                  (unsigned long)totalFiles,
+                                  (unsigned long)completedFiles,
+                                  (unsigned long)failedFiles,
+                                  [NSDate date]];
+            
+            [logContent writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
             
             if (completion) {
                 completion(completedFiles, totalFiles, failedFiles);
             }
+            
+            // Explicitly mark the task as fully completed
+            [downloadTask markAsCompleted];
         });
     });
 }
