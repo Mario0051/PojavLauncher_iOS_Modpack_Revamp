@@ -371,6 +371,122 @@
     }
 }
 
+- (void)fetchAdditionalVersionInfoForId:(NSString *)versionId completion:(void (^)(NSDictionary *updatedVersion))completion {
+    // Try to fetch detailed version information from Mojang's version manifest
+    NSString *versionUrl = [NSString stringWithFormat:@"https://piston-meta.mojang.com/v1/packages/%@/%@.json", versionId, versionId];
+    NSString *manifestUrl = @"https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
+    
+    // First try direct version URL
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:versionUrl] 
+                                                             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (data) {
+            NSError *jsonError;
+            NSDictionary *versionData = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+            
+            if (versionData && !jsonError) {
+                NSLog(@"[ResourceDownload] Successfully fetched additional version info for %@", versionId);
+                if (completion) completion(versionData);
+                return;
+            }
+        }
+        
+        // If direct URL fails, try to look up in manifest
+        NSURLSessionDataTask *manifestTask = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:manifestUrl] 
+                                                                        completionHandler:^(NSData *manifestData, NSURLResponse *manifestResponse, NSError *manifestError) {
+            if (manifestData) {
+                NSError *manifestJsonError;
+                NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:&manifestJsonError];
+                
+                if (manifest && !manifestJsonError && manifest[@"versions"]) {
+                    // Find the version in the manifest
+                    for (NSDictionary *version in manifest[@"versions"]) {
+                        if ([version[@"id"] isEqualToString:versionId] && version[@"url"]) {
+                            // Found version, fetch its details
+                            NSURLSessionDataTask *versionDetailTask = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:version[@"url"]] 
+                                                                                                 completionHandler:^(NSData *versionDetailData, NSURLResponse *versionDetailResponse, NSError *versionDetailError) {
+                                if (versionDetailData) {
+                                    NSError *versionDetailJsonError;
+                                    NSDictionary *versionDetail = [NSJSONSerialization JSONObjectWithData:versionDetailData options:0 error:&versionDetailJsonError];
+                                    
+                                    if (versionDetail && !versionDetailJsonError) {
+                                        NSLog(@"[ResourceDownload] Successfully fetched version details from manifest for %@", versionId);
+                                        if (completion) completion(versionDetail);
+                                        return;
+                                    }
+                                }
+                                
+                                NSLog(@"[ResourceDownload] Failed to fetch version details from manifest URL");
+                                if (completion) completion(nil);
+                            }];
+                            
+                            [versionDetailTask resume];
+                            return;
+                        }
+                    }
+                }
+            }
+            
+            NSLog(@"[ResourceDownload] Could not find version in manifest");
+            if (completion) completion(nil);
+        }];
+        
+        [manifestTask resume];
+    }];
+    
+    [task resume];
+}
+
+- (void)processLibrariesAndAssets:(NSDictionary *)version forVersion:(NSString *)versionId {
+    // Process libraries if needed
+    NSArray *libraries = version[@"libraries"];
+    if (libraries && [libraries isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *library in libraries) {
+            if (![library isKindOfClass:[NSDictionary class]]) continue;
+            
+            // Process library downloads
+            [self processLibraryDownload:library forVersion:versionId];
+        }
+    }
+    
+    // Process assets if needed
+    NSDictionary *assetIndex = version[@"assetIndex"];
+    if (assetIndex && [assetIndex isKindOfClass:[NSDictionary class]]) {
+        [self processAssetIndex:assetIndex forVersion:versionId];
+    }
+    
+    // Set up a timer to periodically check for completion
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self checkForCompletionAndFinalize];
+    });
+}
+
+- (void)processDownloadsSection:(NSDictionary *)downloads forVersion:(NSString *)versionId clientJarPath:(NSString *)clientJarPath {
+    NSDictionary *clientInfo = downloads[@"client"];
+    if (clientInfo && [clientInfo isKindOfClass:[NSDictionary class]]) {
+        NSString *clientURL = clientInfo[@"url"];
+        NSString *clientSHA1 = clientInfo[@"sha1"];
+        NSNumber *clientSize = clientInfo[@"size"];
+        
+        if (clientURL && [clientURL isKindOfClass:[NSString class]]) {
+            // Download client JAR
+            NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client", versionId];
+            NSURLSessionDownloadTask *clientTask = [self createDownloadTask:clientURL 
+                                                                        size:[clientSize unsignedIntegerValue] 
+                                                                         sha:clientSHA1 
+                                                                     altName:displayName 
+                                                                      toPath:clientJarPath 
+                                                                     success:^{
+                // Once client is downloaded, check if we should mark as completed
+                [self checkForCompletionAndFinalize];                                                
+            }];
+            
+            if (clientTask) {
+                [clientTask resume];
+            }
+        }
+    }
+}
+
 - (void)downloadVersion:(NSDictionary *)version {
     if (!version || ![version isKindOfClass:[NSDictionary class]]) {
         [self finishDownloadWithErrorString:@"Invalid version data"];
@@ -444,6 +560,9 @@
                 NSLog(@"[ResourceDownload] Warning: Base version info not found, client may not launch properly");
             }
         }
+        
+        // Process libraries and assets from the modded version
+        [self processLibrariesAndAssets:version forVersion:versionId];
     } else {
         // Standard vanilla version
         NSDictionary *downloads = version[@"downloads"];
@@ -456,6 +575,9 @@
                 if (updatedVersion && updatedVersion[@"downloads"] && [updatedVersion[@"downloads"] isKindOfClass:[NSDictionary class]]) {
                     // Process the downloads from the updated version info
                     [self processDownloadsSection:updatedVersion[@"downloads"] forVersion:versionId clientJarPath:clientJarPath];
+                    
+                    // Process libraries and assets
+                    [self processLibrariesAndAssets:updatedVersion forVersion:versionId];
                 } else {
                     // Use fallback URL based on version ID
                     NSString *fallbackURL = @"https://launcher.mojang.com/mc/game/version_manifest_v2.json";
@@ -506,6 +628,11 @@
                                                             [clientTask resume];
                                                         }
                                                     });
+                                                    
+                                                    // Also process libraries and assets
+                                                    dispatch_async(dispatch_get_main_queue(), ^{
+                                                        [self processLibrariesAndAssets:versionDetails forVersion:versionId];
+                                                    });
                                                     return;
                                                 }
                                             }
@@ -529,6 +656,9 @@
                                             if (clientTask) {
                                                 [clientTask resume];
                                             }
+                                            
+                                            // Try to process libraries and assets anyway
+                                            [self processLibrariesAndAssets:version forVersion:versionId];
                                         });
                                     }];
                                     
@@ -552,475 +682,334 @@
                                     [self checkForCompletionAndFinalize];
                                 }];
                                 
-                                if (clientTask) {
-                                    [clientTask resume];
-                                }
-                            });
-                        }
-                    }];
-                    
-                    [manifestTask resume];
-                }
-                
-                // Continue with processing libraries and assets
-                [self processLibrariesAndAssets:version forVersion:versionId];
-            }];
-        } else {
-            // Process the downloads section directly
-            [self processDownloadsSection:downloads forVersion:versionId clientJarPath:clientJarPath];
-            
-            // Process libraries and assets
-            [self processLibrariesAndAssets:version forVersion:versionId];
-        }
-    }
-}
-
-- (void)processDownloadsSection:(NSDictionary *)downloads forVersion:(NSString *)versionId clientJarPath:(NSString *)clientJarPath {
-    NSDictionary *clientInfo = downloads[@"client"];
-    if (clientInfo && [clientInfo isKindOfClass:[NSDictionary class]]) {
-        NSString *clientURL = clientInfo[@"url"];
-        NSString *clientSHA1 = clientInfo[@"sha1"];
-        NSNumber *clientSize = clientInfo[@"size"];
-        
-        if (clientURL && [clientURL isKindOfClass:[NSString class]]) {
-            // Download client JAR
-            NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client", versionId];
-            NSURLSessionDownloadTask *clientTask = [self createDownloadTask:clientURL 
-                                                                        size:[clientSize unsignedIntegerValue] 
-                                                                         sha:clientSHA1 
-                                                                     altName:displayName 
-                                                                      toPath:clientJarPath 
-                                                                     success:^{
-                // Once client is downloaded, check if we should mark as completed
-                [self checkForCompletionAndFinalize];                                                
-            }];
-            
-            if (clientTask) {
-                [clientTask resume];
-            }
-        }
-    }
-}
-
-- (void)processLibrariesAndAssets:(NSDictionary *)version forVersion:(NSString *)versionId {
-    // Process libraries if needed
-    NSArray *libraries = version[@"libraries"];
-    if (libraries && [libraries isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *library in libraries) {
-            if (![library isKindOfClass:[NSDictionary class]]) continue;
-            
-            // Process library downloads
-            [self processLibraryDownload:library forVersion:versionId];
-        }
-    }
-    
-    // Process assets if needed
-    NSDictionary *assetIndex = version[@"assetIndex"];
-    if (assetIndex && [assetIndex isKindOfClass:[NSDictionary class]]) {
-        [self processAssetIndex:assetIndex forVersion:versionId];
-    }
-    
-    // Set up a timer to periodically check for completion
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self checkForCompletionAndFinalize];
-    });
-}
-
-- (void)fetchAdditionalVersionInfoForId:(NSString *)versionId completion:(void (^)(NSDictionary *updatedVersion))completion {
-    // Try to fetch detailed version information from Mojang's version manifest
-    NSString *versionUrl = [NSString stringWithFormat:@"https://piston-meta.mojang.com/v1/packages/%@/%@.json", versionId, versionId];
-    NSString *manifestUrl = @"https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
-    
-    // First try direct version URL
-    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:versionUrl] 
-                                                             completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        if (data) {
-            NSError *jsonError;
-            NSDictionary *versionData = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
-            
-            if (versionData && !jsonError) {
-                NSLog(@"[ResourceDownload] Successfully fetched additional version info for %@", versionId);
-                if (completion) completion(versionData);
-                return;
-            }
-        }
-        
-        // If direct URL fails, try to look up in manifest
-        NSURLSessionDataTask *manifestTask = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:manifestUrl] 
-                                                                        completionHandler:^(NSData *manifestData, NSURLResponse *manifestResponse, NSError *manifestError) {
-            if (manifestData) {
-                NSError *manifestJsonError;
-                NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:manifestData options:0 error:&manifestJsonError];
-                
-                if (manifest && !manifestJsonError && manifest[@"versions"]) {
-                    // Find the version in the manifest
-                    for (NSDictionary *version in manifest[@"versions"]) {
-                        if ([version[@"id"] isEqualToString:versionId] && version[@"url"]) {
-                            // Found version, fetch its details
-                            NSURLSessionDataTask *versionDetailTask = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:version[@"url"]] 
-                                                                                                 completionHandler:^(NSData *versionDetailData, NSURLResponse *versionDetailResponse, NSError *versionDetailError) {
-                                if (versionDetailData) {
-                                    NSError *versionDetailJsonError;
-                                    NSDictionary *versionDetail = [NSJSONSerialization JSONObjectWithData:versionDetailData options:0 error:&versionDetailJsonError];
-                                    
-                                    if (versionDetail && !versionDetailJsonError) {
-                                        NSLog(@"[ResourceDownload] Successfully fetched version details from manifest for %@", versionId);
-                                        if (completion) completion(versionDetail);
-                                        return;
-                                    }
-                                }
-                                
-                                NSLog(@"[ResourceDownload] Failed to fetch version details from manifest URL");
-                                if (completion) completion(nil);
-                            }];
-                            
-                            [versionDetailTask resume];
-                            return;
-                        }
-                    }
-                }
-            }
-            
-            NSLog(@"[ResourceDownload] Could not find version in manifest");
-            if (completion) completion(nil);
-        }];
-        
-        [manifestTask resume];
-    }];
-    
-    [task resume];
-}
-
-    
-    // Process libraries if needed
-    NSArray *libraries = version[@"libraries"];
-    if (libraries && [libraries isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *library in libraries) {
-            if (![library isKindOfClass:[NSDictionary class]]) continue;
-            
-            // Process library downloads
-            [self processLibraryDownload:library forVersion:versionId];
-        }
-    }
-    
-    // Process assets if needed
-    NSDictionary *assetIndex = version[@"assetIndex"];
-    if (assetIndex && [assetIndex isKindOfClass:[NSDictionary class]]) {
-        [self processAssetIndex:assetIndex forVersion:versionId];
-    }
-    
-    // Set up a timer to periodically check for completion
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self checkForCompletionAndFinalize];
-    });
+                                if (clientTask) {[clientTask resume];
+                               }
+                               
+                               // Try to process libraries and assets anyway
+                               [self processLibrariesAndAssets:version forVersion:versionId];
+                           });
+                       }
+                   }];
+                   
+                   [manifestTask resume];
+               }
+           }];
+       } else {
+           // Process the downloads section directly
+           [self processDownloadsSection:downloads forVersion:versionId clientJarPath:clientJarPath];
+           
+           // Process libraries and assets
+           [self processLibrariesAndAssets:version forVersion:versionId];
+       }
+   }
 }
 
 - (void)processLibraryDownload:(NSDictionary *)library forVersion:(NSString *)versionId {
-    // Library download processing logic would go here
-    // This is a simplified stub implementation
-    NSDictionary *downloads = library[@"downloads"];
-    if (!downloads || ![downloads isKindOfClass:[NSDictionary class]]) {
-        return;
-    }
-    
-    NSDictionary *artifact = downloads[@"artifact"];
-    if (!artifact || ![artifact isKindOfClass:[NSDictionary class]]) {
-        return;
-    }
-    
-    NSString *libraryURL = artifact[@"url"];
-    NSString *libraryPath = artifact[@"path"];
-    NSString *librarySHA1 = artifact[@"sha1"];
-    NSNumber *librarySize = artifact[@"size"];
-    
-    if (!libraryURL || !libraryPath) {
-        return;
-    }
-    
-    NSString *libraryDestPath = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), libraryPath];
-    NSString *displayName = [NSString stringWithFormat:@"Library: %@", libraryPath.lastPathComponent];
-    
-    NSURLSessionDownloadTask *libraryTask = [self createDownloadTask:libraryURL 
-                                                               size:[librarySize unsignedIntegerValue] 
-                                                                sha:librarySHA1 
-                                                            altName:displayName 
-                                                             toPath:libraryDestPath];
-    
-    if (libraryTask) {
-        [libraryTask resume];
-    }
+   // Library download processing logic would go here
+   // This is a simplified stub implementation
+   NSDictionary *downloads = library[@"downloads"];
+   if (!downloads || ![downloads isKindOfClass:[NSDictionary class]]) {
+       return;
+   }
+   
+   NSDictionary *artifact = downloads[@"artifact"];
+   if (!artifact || ![artifact isKindOfClass:[NSDictionary class]]) {
+       return;
+   }
+   
+   NSString *libraryURL = artifact[@"url"];
+   NSString *libraryPath = artifact[@"path"];
+   NSString *librarySHA1 = artifact[@"sha1"];
+   NSNumber *librarySize = artifact[@"size"];
+   
+   if (!libraryURL || !libraryPath) {
+       return;
+   }
+   
+   NSString *libraryDestPath = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), libraryPath];
+   NSString *displayName = [NSString stringWithFormat:@"Library: %@", libraryPath.lastPathComponent];
+   
+   NSURLSessionDownloadTask *libraryTask = [self createDownloadTask:libraryURL 
+                                                              size:[librarySize unsignedIntegerValue] 
+                                                               sha:librarySHA1 
+                                                           altName:displayName 
+                                                            toPath:libraryDestPath];
+   
+   if (libraryTask) {
+       [libraryTask resume];
+   }
 }
 
 - (void)processAssetIndex:(NSDictionary *)assetIndex forVersion:(NSString *)versionId {
-    // Asset index processing logic would go here
-    // This is a simplified stub implementation
-    NSString *assetIndexURL = assetIndex[@"url"];
-    NSString *assetIndexId = assetIndex[@"id"];
-    NSString *assetIndexSHA1 = assetIndex[@"sha1"];
-    NSNumber *assetIndexSize = assetIndex[@"size"];
-    
-    if (!assetIndexURL || !assetIndexId) {
-        return;
-    }
-    
-    NSString *assetIndexPath = [NSString stringWithFormat:@"%s/assets/indexes/%@.json", getenv("POJAV_GAME_DIR"), assetIndexId];
-    NSString *displayName = [NSString stringWithFormat:@"Asset Index: %@", assetIndexId];
-    
-    NSURLSessionDownloadTask *assetIndexTask = [self createDownloadTask:assetIndexURL 
-                                                                   size:[assetIndexSize unsignedIntegerValue] 
-                                                                    sha:assetIndexSHA1 
-                                                                altName:displayName 
-                                                                 toPath:assetIndexPath 
-                                                                success:^{
-        // After asset index is downloaded, process assets
-        [self processAssetsFromIndex:assetIndexPath];
-    }];
-    
-    if (assetIndexTask) {
-        [assetIndexTask resume];
-    }
+   // Asset index processing logic would go here
+   // This is a simplified stub implementation
+   NSString *assetIndexURL = assetIndex[@"url"];
+   NSString *assetIndexId = assetIndex[@"id"];
+   NSString *assetIndexSHA1 = assetIndex[@"sha1"];
+   NSNumber *assetIndexSize = assetIndex[@"size"];
+   
+   if (!assetIndexURL || !assetIndexId) {
+       return;
+   }
+   
+   NSString *assetIndexPath = [NSString stringWithFormat:@"%s/assets/indexes/%@.json", getenv("POJAV_GAME_DIR"), assetIndexId];
+   NSString *displayName = [NSString stringWithFormat:@"Asset Index: %@", assetIndexId];
+   
+   NSURLSessionDownloadTask *assetIndexTask = [self createDownloadTask:assetIndexURL 
+                                                                  size:[assetIndexSize unsignedIntegerValue] 
+                                                                   sha:assetIndexSHA1 
+                                                               altName:displayName 
+                                                                toPath:assetIndexPath 
+                                                               success:^{
+       // After asset index is downloaded, process assets
+       [self processAssetsFromIndex:assetIndexPath];
+   }];
+   
+   if (assetIndexTask) {
+       [assetIndexTask resume];
+   }
 }
 
 - (void)processAssetsFromIndex:(NSString *)assetIndexPath {
-    // Asset downloading logic would go here
-    // This is a simplified stub implementation
-    NSData *indexData = [NSData dataWithContentsOfFile:assetIndexPath];
-    if (!indexData) {
-        return;
-    }
-    
-    NSError *jsonError = nil;
-    NSDictionary *indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:0 error:&jsonError];
-    if (jsonError || !indexDict) {
-        return;
-    }
-    
-    NSDictionary *objects = indexDict[@"objects"];
-    if (!objects || ![objects isKindOfClass:[NSDictionary class]]) {
-        return;
-    }
-    
-    for (NSString *assetName in objects) {
-        NSDictionary *assetInfo = objects[assetName];
-        if (![assetInfo isKindOfClass:[NSDictionary class]]) continue;
-        
-        NSString *hash = assetInfo[@"hash"];
-        NSNumber *size = assetInfo[@"size"];
-        
-        if (!hash || !size) continue;
-        
-        NSString *hashPrefix = [hash substringToIndex:2];
-        NSString *assetURL = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@/%@", hashPrefix, hash];
-        NSString *assetPath = [NSString stringWithFormat:@"%s/assets/objects/%@/%@", getenv("POJAV_GAME_DIR"), hashPrefix, hash];
-        
-        NSURLSessionDownloadTask *assetTask = [self createDownloadTask:assetURL 
-                                                                   size:[size unsignedIntegerValue] 
-                                                                    sha:hash 
-                                                                altName:[NSString stringWithFormat:@"Asset: %@", assetName] 
-                                                                 toPath:assetPath];
-        
-        if (assetTask) {
-            [assetTask resume];
-        }
-    }
+   // Asset downloading logic would go here
+   // This is a simplified stub implementation
+   NSData *indexData = [NSData dataWithContentsOfFile:assetIndexPath];
+   if (!indexData) {
+       return;
+   }
+   
+   NSError *jsonError = nil;
+   NSDictionary *indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:0 error:&jsonError];
+   if (jsonError || !indexDict) {
+       return;
+   }
+   
+   NSDictionary *objects = indexDict[@"objects"];
+   if (!objects || ![objects isKindOfClass:[NSDictionary class]]) {
+       return;
+   }
+   
+   for (NSString *assetName in objects) {
+       NSDictionary *assetInfo = objects[assetName];
+       if (![assetInfo isKindOfClass:[NSDictionary class]]) continue;
+       
+       NSString *hash = assetInfo[@"hash"];
+       NSNumber *size = assetInfo[@"size"];
+       
+       if (!hash || !size) continue;
+       
+       NSString *hashPrefix = [hash substringToIndex:2];
+       NSString *assetURL = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@/%@", hashPrefix, hash];
+       NSString *assetPath = [NSString stringWithFormat:@"%s/assets/objects/%@/%@", getenv("POJAV_GAME_DIR"), hashPrefix, hash];
+       
+       NSURLSessionDownloadTask *assetTask = [self createDownloadTask:assetURL 
+                                                                  size:[size unsignedIntegerValue] 
+                                                                   sha:hash 
+                                                               altName:[NSString stringWithFormat:@"Asset: %@", assetName] 
+                                                                toPath:assetPath];
+       
+       if (assetTask) {
+           [assetTask resume];
+       }
+   }
 }
 
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
-    if (!api || !modDetail) {
-        [self finishDownloadWithErrorString:@"Invalid modpack API or details"];
-        return;
-    }
-    
-    NSString *modpackName = modDetail[@"title"] ?: @"Unknown Modpack";
-    NSLog(@"[ResourceDownload] Starting modpack download: %@", modpackName);
-    
-    // Prepare for download
-    [self prepareForDownload];
-    
-    // Set progress description
-    self.textProgress.localizedDescription = [NSString stringWithFormat:@"Downloading %@", modpackName];
-    
-    // Extract necessary information
-    NSArray *versionUrls = modDetail[@"versionUrls"];
-    if (!versionUrls || ![versionUrls isKindOfClass:[NSArray class]] || selectedVersion >= versionUrls.count) {
-        [self finishDownloadWithErrorString:@"Invalid modpack version information"];
-        return;
-    }
-    
-    NSString *downloadUrl = versionUrls[selectedVersion];
-    if (!downloadUrl || ![downloadUrl isKindOfClass:[NSString class]] || downloadUrl.length == 0) {
-        [self finishDownloadWithErrorString:@"Invalid modpack download URL"];
-        return;
-    }
-    
-    // Create a temporary directory for modpack download
-    NSString *tempDir = NSTemporaryDirectory();
-    NSString *safeName = [[modpackName stringByReplacingOccurrencesOfString:@" " withString:@"_"] 
-                         stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
-    safeName = [safeName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
-    safeName = [safeName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
-    
-    NSString *packagePath = [tempDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.zip", safeName]];
-    NSString *extractPath = [NSString stringWithFormat:@"%s/profiles/%@", getenv("POJAV_GAME_DIR"), safeName];
-    
-    // Ensure the destination directory exists
-    NSError *dirError = nil;
-    [[NSFileManager defaultManager] createDirectoryAtPath:extractPath 
-                              withIntermediateDirectories:YES 
-                                               attributes:nil 
-                                                    error:&dirError];
-    if (dirError) {
-        [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create destination directory: %@", dirError.localizedDescription]];
-        return;
-    }
-    
-    // Download the modpack package
-    NSString *displayName = [NSString stringWithFormat:@"Downloading %@", modpackName];
-    NSArray *versionSizes = modDetail[@"versionSizes"];
-    NSUInteger size = 0;
-    
-    if (versionSizes && [versionSizes isKindOfClass:[NSArray class]] && selectedVersion < versionSizes.count) {
-        id sizeObj = versionSizes[selectedVersion];
-        if ([sizeObj isKindOfClass:[NSNumber class]]) {
-            size = [sizeObj unsignedIntegerValue];
-        }
-    }
-    
-    __weak typeof(self) weakSelf = self;
-    NSURLSessionDownloadTask *packageTask = [self createDownloadTask:downloadUrl 
-                                                                 size:size 
-                                                                  sha:nil 
-                                                              altName:displayName 
-                                                               toPath:packagePath 
-                                                              success:^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-                                                                  
-        // Once the package is downloaded, let the API handle the extraction and processing
-        [api downloader:strongSelf submitDownloadTasksFromPackage:packagePath toPath:extractPath];
-    }];
-    
-    if (!packageTask) {
-        [self finishDownloadWithErrorString:@"Failed to create modpack download task"];
-        return;
-    }
-    
-    // Start the download
-    [packageTask resume];
+   if (!api || !modDetail) {
+       [self finishDownloadWithErrorString:@"Invalid modpack API or details"];
+       return;
+   }
+   
+   NSString *modpackName = modDetail[@"title"] ?: @"Unknown Modpack";
+   NSLog(@"[ResourceDownload] Starting modpack download: %@", modpackName);
+   
+   // Prepare for download
+   [self prepareForDownload];
+   
+   // Set progress description
+   self.textProgress.localizedDescription = [NSString stringWithFormat:@"Downloading %@", modpackName];
+   
+   // Extract necessary information
+   NSArray *versionUrls = modDetail[@"versionUrls"];
+   if (!versionUrls || ![versionUrls isKindOfClass:[NSArray class]] || selectedVersion >= versionUrls.count) {
+       [self finishDownloadWithErrorString:@"Invalid modpack version information"];
+       return;
+   }
+   
+   NSString *downloadUrl = versionUrls[selectedVersion];
+   if (!downloadUrl || ![downloadUrl isKindOfClass:[NSString class]] || downloadUrl.length == 0) {
+       [self finishDownloadWithErrorString:@"Invalid modpack download URL"];
+       return;
+   }
+   
+   // Create a temporary directory for modpack download
+   NSString *tempDir = NSTemporaryDirectory();
+   NSString *safeName = [[modpackName stringByReplacingOccurrencesOfString:@" " withString:@"_"] 
+                        stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+   safeName = [safeName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+   safeName = [safeName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+   
+   NSString *packagePath = [tempDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.zip", safeName]];
+   NSString *extractPath = [NSString stringWithFormat:@"%s/profiles/%@", getenv("POJAV_GAME_DIR"), safeName];
+   
+   // Ensure the destination directory exists
+   NSError *dirError = nil;
+   [[NSFileManager defaultManager] createDirectoryAtPath:extractPath 
+                             withIntermediateDirectories:YES 
+                                              attributes:nil 
+                                                   error:&dirError];
+   if (dirError) {
+       [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create destination directory: %@", dirError.localizedDescription]];
+       return;
+   }
+   
+   // Download the modpack package
+   NSString *displayName = [NSString stringWithFormat:@"Downloading %@", modpackName];
+   NSArray *versionSizes = modDetail[@"versionSizes"];
+   NSUInteger size = 0;
+   
+   if (versionSizes && [versionSizes isKindOfClass:[NSArray class]] && selectedVersion < versionSizes.count) {
+       id sizeObj = versionSizes[selectedVersion];
+       if ([sizeObj isKindOfClass:[NSNumber class]]) {
+           size = [sizeObj unsignedIntegerValue];
+       }
+   }
+   
+   __weak typeof(self) weakSelf = self;
+   NSURLSessionDownloadTask *packageTask = [self createDownloadTask:downloadUrl 
+                                                                size:size 
+                                                                 sha:nil 
+                                                             altName:displayName 
+                                                              toPath:packagePath 
+                                                             success:^{
+       __strong typeof(weakSelf) strongSelf = weakSelf;
+                                                                 
+       // Once the package is downloaded, let the API handle the extraction and processing
+       [api downloader:strongSelf submitDownloadTasksFromPackage:packagePath toPath:extractPath];
+   }];
+   
+   if (!packageTask) {
+       [self finishDownloadWithErrorString:@"Failed to create modpack download task"];
+       return;
+   }
+   
+   // Start the download
+   [packageTask resume];
 }
 
 - (NSDictionary *)getDownloadTaskInfo:(NSURLSessionDownloadTask *)task {
-    if (!task) {
-        return @{};
-    }
-    
-    @synchronized(self.taskInfoMap) {
-        NSDictionary *taskInfo = self.taskInfoMap[task.taskDescription];
-        if (taskInfo) {
-            NSMutableDictionary *info = [NSMutableDictionary dictionaryWithDictionary:taskInfo];
-            
-            // Remove task reference to avoid retain cycles
-            [info removeObjectForKey:@"task"];
-            
-            // Add progress information
-            NSProgress *progress = taskInfo[@"progress"];
-            if (progress) {
-                info[@"progress"] = @(progress.fractionCompleted);
-                info[@"completed"] = @(progress.completedUnitCount);
-                info[@"total"] = @(progress.totalUnitCount);
-                info[@"finished"] = @(progress.finished);
-            }
-            
-            return info;
-        }
-    }
-    
-    // Fallback: return basic info based on task
-    return @{
-        @"url": task.originalRequest.URL.absoluteString ?: @"",
-        @"progress": @(task.progress.fractionCompleted),
-        @"name": task.taskDescription ?: @"Unknown"
-    };
+   if (!task) {
+       return @{};
+   }
+   
+   @synchronized(self.taskInfoMap) {
+       NSDictionary *taskInfo = self.taskInfoMap[task.taskDescription];
+       if (taskInfo) {
+           NSMutableDictionary *info = [NSMutableDictionary dictionaryWithDictionary:taskInfo];
+           
+           // Remove task reference to avoid retain cycles
+           [info removeObjectForKey:@"task"];
+           
+           // Add progress information
+           NSProgress *progress = taskInfo[@"progress"];
+           if (progress) {
+               info[@"progress"] = @(progress.fractionCompleted);
+               info[@"completed"] = @(progress.completedUnitCount);
+               info[@"total"] = @(progress.totalUnitCount);
+               info[@"finished"] = @(progress.finished);
+           }
+           
+           return info;
+       }
+   }
+   
+   // Fallback: return basic info based on task
+   return @{
+       @"url": task.originalRequest.URL.absoluteString ?: @"",
+       @"progress": @(task.progress.fractionCompleted),
+       @"name": task.taskDescription ?: @"Unknown"
+   };
 }
 
 - (NSArray<NSDictionary *> *)getAllDownloadedFiles {
-    @synchronized(self.downloadedFiles) {
-        return [self.downloadedFiles copy];
-    }
+   @synchronized(self.downloadedFiles) {
+       return [self.downloadedFiles copy];
+   }
 }
 
 - (void)logDownloadSource:(DownloadSource)source {
-    NSString *sourceName = @"Unknown";
-    
-    switch (source) {
-        case DownloadSourceMinecraft:
-            sourceName = @"Minecraft";
-            break;
-        case DownloadSourceCurseForge:
-            sourceName = @"CurseForge";
-            break;
-        case DownloadSourceModrinth:
-            sourceName = @"Modrinth";
-            break;
-    }
-    
-    NSLog(@"[ResourceDownload] Source: %@", sourceName);
+   NSString *sourceName = @"Unknown";
+   
+   switch (source) {
+       case DownloadSourceMinecraft:
+           sourceName = @"Minecraft";
+           break;
+       case DownloadSourceCurseForge:
+           sourceName = @"CurseForge";
+           break;
+       case DownloadSourceModrinth:
+           sourceName = @"Modrinth";
+           break;
+   }
+   
+   NSLog(@"[ResourceDownload] Source: %@", sourceName);
 }
 
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
-    if (!sha || sha.length == 0 || !path || path.length == 0) {
-        NSLog(@"[ResourceDownload] Invalid SHA or path provided");
-        return NO;
-    }
-    
-    // Check if file exists
-    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
-        NSLog(@"[ResourceDownload] File not found for SHA check: %@", path);
-        return NO;
-    }
-    
-    NSFileHandle *fileHandle = [NSFileHandle fileHandleForReadingAtPath:path];
-    if (!fileHandle) {
-        NSLog(@"[ResourceDownload] Failed to open file for SHA check: %@", path);
-        return NO;
-    }
-    
-    CC_SHA1_CTX ctx;
-    CC_SHA1_Init(&ctx);
-    
-    NSData *fileData;
-    @try {
-        const NSUInteger bufferSize = 4096;
-        [fileHandle seekToFileOffset:0];
-        
-        while ((fileData = [fileHandle readDataOfLength:bufferSize]) && [fileData length] > 0) {
-            CC_SHA1_Update(&ctx, [fileData bytes], (CC_LONG)[fileData length]);
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"[ResourceDownload] Exception during SHA calculation: %@", exception);
-        [fileHandle closeFile];
-        return NO;
-    }
-    
-    [fileHandle closeFile];
-    
-    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
-    CC_SHA1_Final(digest, &ctx);
-    
-    NSMutableString *calculatedSHA = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
-    for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
-        [calculatedSHA appendFormat:@"%02x", digest[i]];
-    }
-    
-    BOOL isMatch = [calculatedSHA.lowercaseString isEqualToString:sha.lowercaseString];
-    
-    if (!isMatch) {
-        NSLog(@"[ResourceDownload] SHA mismatch for %@", altName ?: path.lastPathComponent);
-        NSLog(@"[ResourceDownload] Expected: %@, Calculated: %@", sha, calculatedSHA);
-    } else {
-        NSLog(@"[ResourceDownload] SHA verified for %@", altName ?: path.lastPathComponent);
-    }
-    
-    return isMatch;
+   if (!sha || sha.length == 0 || !path || path.length == 0) {
+       NSLog(@"[ResourceDownload] Invalid SHA or path provided");
+       return NO;
+   }
+   
+   // Check if file exists
+   if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+       NSLog(@"[ResourceDownload] File not found for SHA check: %@", path);
+       return NO;
+   }
+   
+   NSFileHandle *fileHandle = [NSFileHandle fileHandleForReadingAtPath:path];
+   if (!fileHandle) {
+       NSLog(@"[ResourceDownload] Failed to open file for SHA check: %@", path);
+       return NO;
+   }
+   
+   CC_SHA1_CTX ctx;
+   CC_SHA1_Init(&ctx);
+   
+   NSData *fileData;
+   @try {
+       const NSUInteger bufferSize = 4096;
+       [fileHandle seekToFileOffset:0];
+       
+       while ((fileData = [fileHandle readDataOfLength:bufferSize]) && [fileData length] > 0) {
+           CC_SHA1_Update(&ctx, [fileData bytes], (CC_LONG)[fileData length]);
+       }
+   } @catch (NSException *exception) {
+       NSLog(@"[ResourceDownload] Exception during SHA calculation: %@", exception);
+       [fileHandle closeFile];
+       return NO;
+   }
+   
+   [fileHandle closeFile];
+   
+   unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+   CC_SHA1_Final(digest, &ctx);
+   
+   NSMutableString *calculatedSHA = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
+   for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
+       [calculatedSHA appendFormat:@"%02x", digest[i]];
+   }
+   
+   BOOL isMatch = [calculatedSHA.lowercaseString isEqualToString:sha.lowercaseString];
+   
+   if (!isMatch) {
+       NSLog(@"[ResourceDownload] SHA mismatch for %@", altName ?: path.lastPathComponent);
+       NSLog(@"[ResourceDownload] Expected: %@, Calculated: %@", sha, calculatedSHA);
+   } else {
+       NSLog(@"[ResourceDownload] SHA verified for %@", altName ?: path.lastPathComponent);
+   }
+   
+   return isMatch;
 }
 
 @end
