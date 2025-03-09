@@ -380,13 +380,31 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         // Check explicit completion flag in metadata
         BOOL allTasksComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
         
-        // Additional validation to ensure we have all required metadata before launching
-        if (self.task.metadata && allTasksComplete) {
+        // Prevent double-launch attempts by checking if we're already in the process of launching
+        static BOOL isLaunchingMinecraft = NO;
+        
+        if (self.task.metadata && allTasksComplete && !isLaunchingMinecraft) {
             // Make sure we have a valid versionId before launching
             if (self.task.metadata[@"versionId"] != nil) {
                 NSLog(@"[ResourceDownload] All tasks complete, launching Minecraft");
+                
+                // Set flag to prevent multiple launches
+                isLaunchingMinecraft = YES;
+                
+                // Remove our KVO observer to prevent further callbacks
+                [progress removeObserver:self forKeyPath:@"fractionCompleted" context:ProgressObserverContext];
+                
+                // Clear task reference to prevent further processing
+                MinecraftResourceDownloadTask *completedTask = self.task;
+                self.task = nil;
+                
                 [self invokeAfterJITEnabled:^{
-                    UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
+                    UIKit_launchMinecraftSurfaceVC(self.view.window, completedTask.metadata);
+                    
+                    // Reset the flag after a delay to allow for cleanup
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        isLaunchingMinecraft = NO;
+                    });
                 }];
             } else {
                 NSLog(@"[ResourceDownload] Cannot launch - missing required version information");
@@ -394,22 +412,41 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 [self setInteractionEnabled:YES forDownloading:YES];
                 [self reloadProfileList];
             }
-        } else if (self.task.metadata) {
+        } else if (self.task.metadata && !isLaunchingMinecraft) {
             // Not all tasks are complete, just waiting
             NSLog(@"[ResourceDownload] Download finished but waiting for mod installation to complete");
-        } else {
+        } else if (!isLaunchingMinecraft) {
             self.task = nil;
             [self setInteractionEnabled:YES forDownloading:YES];
             [self reloadProfileList];
+        } else {
+            // A launch is already in progress, log this to help with debugging
+            NSLog(@"[ResourceDownload] Ignored additional launch attempt - launch already in progress");
         }
     });
 }
-
 - (void)receiveNotification:(NSNotification *)notification {
     if (![notification.name isEqualToString:@"InstallModpack"]) {
         return;
     }
+    
+    // Prevent multiple simultaneous installations
+    static BOOL isInstallingModpack = NO;
+    if (isInstallingModpack) {
+        NSLog(@"[Launcher] Modpack installation already in progress, ignoring request");
+        return;
+    }
+    
+    isInstallingModpack = YES;
+    
     [self setInteractionEnabled:NO forDownloading:YES];
+    
+    // If a task is already running, cancel it cleanly first
+    if (self.task) {
+        [self.task cancelAllTasks];
+        self.task = nil;
+    }
+    
     self.task = [MinecraftResourceDownloadTask new];
     NSDictionary *userInfo = notification.userInfo;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -419,6 +456,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 [weakSelf setInteractionEnabled:YES forDownloading:YES];
                 weakSelf.task = nil;
                 weakSelf.progressVC = nil;
+                isInstallingModpack = NO;
             });
         };
         [self.task downloadModpackFromAPI:notification.object detail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
@@ -428,6 +466,11 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 forKeyPath:@"fractionCompleted"
                 options:NSKeyValueObservingOptionInitial
                 context:ProgressObserverContext];
+            
+            // Reset flag after a delay
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                isInstallingModpack = NO;
+            });
         });
     });
 }
