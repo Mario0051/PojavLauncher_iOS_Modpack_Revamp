@@ -108,9 +108,9 @@
 }
 
 - (void)prepareForDownload {
-    // Initialize master progress trackers
-    self.progress = [NSProgress progressWithTotalUnitCount:1];
-    self.textProgress = [NSProgress progressWithTotalUnitCount:1];
+    // Initialize master progress trackers with better initial values
+    self.progress = [NSProgress progressWithTotalUnitCount:100]; // Use percentage style for overall progress
+    self.textProgress = [NSProgress progressWithTotalUnitCount:1]; // Will be updated with actual file count
     self.textProgress.localizedDescription = @"Preparing download...";
     
     // Clear previous download state
