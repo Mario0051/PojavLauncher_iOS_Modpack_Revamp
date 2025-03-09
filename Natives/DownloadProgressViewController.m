@@ -181,14 +181,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Check for any new items that were added
     if (self.fileListCount != self.task.fileList.count) {
         self.fileListCount = self.task.fileList.count;
-        
-        // Make sure the new rows are visible
-        if (self.task.fileList.count > 0) {
-            NSIndexPath *lastRowPath = [NSIndexPath indexPathForRow:self.task.fileList.count - 1 inSection:0];
-            [self.tableView scrollToRowAtIndexPath:lastRowPath 
-                                 atScrollPosition:UITableViewScrollPositionBottom 
-                                         animated:YES];
-        }
     }
 }
 
@@ -365,16 +357,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             // Check if file list count changed
             if (self.fileListCount != self.task.fileList.count) {
                 [self.tableView reloadData];
-                
-                // Auto-scroll to bottom to show newest item
-                if (self.task.fileList.count > 0) {
-                    NSIndexPath *lastRowPath = [NSIndexPath indexPathForRow:self.task.fileList.count - 1 inSection:0];
-                    [self.tableView scrollToRowAtIndexPath:lastRowPath 
-                                         atScrollPosition:UITableViewScrollPositionBottom 
-                                                 animated:YES];
-                }
+                self.fileListCount = self.task.fileList.count;
             }
-            self.fileListCount = self.task.fileList.count;
             
             // Check for completion
             if (progress.fractionCompleted >= 1.0) {
@@ -382,12 +366,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 if (![self.task.fileList containsObject:@"Complete"]) {
                     [self.task.fileList addObject:@"Complete"];
                     [self.tableView reloadData];
-                    
-                    // Scroll to show the completion message
-                    NSIndexPath *lastRowPath = [NSIndexPath indexPathForRow:self.task.fileList.count - 1 inSection:0];
-                    [self.tableView scrollToRowAtIndexPath:lastRowPath 
-                                         atScrollPosition:UITableViewScrollPositionBottom 
-                                                 animated:YES];
                 }
             }
         });
