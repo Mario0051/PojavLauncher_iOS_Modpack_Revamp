@@ -867,29 +867,23 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     // Use a semaphore to limit concurrent downloads
     dispatch_semaphore_t downloadSemaphore = dispatch_semaphore_create(4); // Limit to 4 concurrent downloads
     
-    // Create a progress update timer for UI
-    dispatch_source_t progressTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
-    dispatch_source_set_timer(progressTimer, DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC, 0.1 * NSEC_PER_SEC);
-    dispatch_source_set_event_handler(progressTimer, ^{
-        modsProgress.kind = NSProgressKindFile;
-        modsProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
-        modsProgress.localizedDescription = [NSString stringWithFormat:@"Downloaded %lu/%lu mods", 
-                                             (unsigned long)completedFiles, 
-                                             (unsigned long)files.count];
-        
-        if (completedFiles + failedFiles >= files.count) {
-            dispatch_source_cancel(progressTimer);
-        }
-    });
-    dispatch_resume(progressTimer);
-    
     // Start a counter to track file index for better display
     __block int fileIndex = 0;
+    
+    // Ensure modsProgress has the right unit count
+    dispatch_async(dispatch_get_main_queue(), ^{
+        modsProgress.totalUnitCount = files.count;
+        modsProgress.completedUnitCount = 0;
+    });
     
     // Process each file
     for (NSDictionary *indexFile in files) {
         fileIndex++;
         if (![indexFile isKindOfClass:[NSDictionary class]]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                failedFiles++;
+                modsProgress.completedUnitCount++;
+            });
             continue;
         }
         
@@ -983,6 +977,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                 // Update progress
                 dispatch_async(dispatch_get_main_queue(), ^{
                     completedFiles++;
+                    // This is the key line - ensure we increment the mods progress counter
                     modsProgress.completedUnitCount++;
                     NSLog(@"[ModrinthAPI] Download completed (%lu/%lu): %@", 
                           (unsigned long)completedFiles, 
@@ -1003,6 +998,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                 // Task creation failed, update counters and continue
                 dispatch_async(dispatch_get_main_queue(), ^{
                     failedFiles++;
+                    // Make sure to increment progress even on failure
                     modsProgress.completedUnitCount++;
                 });
                 
@@ -1034,6 +1030,12 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                               [NSDate date]];
         
         [logContent writeToFile:logPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        
+        // Ensure progress is fully complete
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Force progress to show 100% complete regardless of any failures
+            modsProgress.completedUnitCount = modsProgress.totalUnitCount;
+        });
         
         // Call completion handler
         if (completion) {
