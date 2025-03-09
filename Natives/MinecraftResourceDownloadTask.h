@@ -116,4 +116,9 @@ typedef NS_ENUM(NSInteger, DownloadSource) {
  */
 - (void)markAsCompleted;
 
+/**
+ * Cancels all active download tasks
+ */
+- (void)cancelAllTasks;
+
 @end
