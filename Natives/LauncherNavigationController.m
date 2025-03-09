@@ -380,11 +380,20 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         // Check explicit completion flag in metadata
         BOOL allTasksComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
         
+        // Additional validation to ensure we have all required metadata before launching
         if (self.task.metadata && allTasksComplete) {
-            NSLog(@"[ResourceDownload] All tasks complete, launching Minecraft");
-            [self invokeAfterJITEnabled:^{
-                UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
-            }];
+            // Make sure we have a valid versionId before launching
+            if (self.task.metadata[@"versionId"] != nil) {
+                NSLog(@"[ResourceDownload] All tasks complete, launching Minecraft");
+                [self invokeAfterJITEnabled:^{
+                    UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
+                }];
+            } else {
+                NSLog(@"[ResourceDownload] Cannot launch - missing required version information");
+                self.task = nil;
+                [self setInteractionEnabled:YES forDownloading:YES];
+                [self reloadProfileList];
+            }
         } else if (self.task.metadata) {
             // Not all tasks are complete, just waiting
             NSLog(@"[ResourceDownload] Download finished but waiting for mod installation to complete");
