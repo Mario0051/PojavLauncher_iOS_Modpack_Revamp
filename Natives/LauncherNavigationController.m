@@ -315,8 +315,11 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     NSUInteger totalFiles = self.task.fileList.count;
     NSUInteger completedFiles = 0;
     
+    // Make a copy of the progress list to avoid mutation during enumeration
+    NSArray *progressListCopy = [self.task.progressList copy];
+    
     // Count completed files based on file progress
-    for (NSProgress *fileProgress in self.task.progressList) {
+    for (NSProgress *fileProgress in progressListCopy) {
         if (fileProgress.fractionCompleted >= 1.0 || fileProgress.finished) {
             completedFiles++;
         }
@@ -372,9 +375,6 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
         if (!progress.finished) return;
         
-        // REMOVED: Do not dismiss the progress view controller automatically
-        // [self.progressVC dismissModalViewControllerAnimated:NO];
-
         self.progressViewMain.observedProgress = nil;
         
         // Check explicit completion flag in metadata
