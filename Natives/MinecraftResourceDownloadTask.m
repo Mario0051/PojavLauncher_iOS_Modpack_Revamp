@@ -44,6 +44,24 @@
     return self;
 }
 
+- (void)cancelAllTasks {
+    // Cancel all pending tasks
+    @synchronized(self.downloadTasks) {
+        for (NSURLSessionDownloadTask *task in [self.downloadTasks allValues]) {
+            [task cancel];
+        }
+        [self.downloadTasks removeAllObjects];
+    }
+    
+    // Cancel overall progress
+    [self.progress cancel];
+    
+    // Update progress text
+    self.textProgress.localizedDescription = @"Download cancelled";
+    
+    NSLog(@"[ResourceDownload] All tasks cancelled");
+}
+
 - (void)markAsCompleted {
     // Create a flag file to indicate all tasks are truly complete
     self.metadata[@"allTasksComplete"] = @YES;
