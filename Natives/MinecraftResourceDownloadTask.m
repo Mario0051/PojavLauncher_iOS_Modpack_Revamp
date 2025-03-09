@@ -458,23 +458,108 @@
                     [self processDownloadsSection:updatedVersion[@"downloads"] forVersion:versionId clientJarPath:clientJarPath];
                 } else {
                     // Use fallback URL based on version ID
-                    NSString *fallbackURL = [NSString stringWithFormat:@"https://launcher.mojang.com/v1/objects/8dd1a28015f5bda1061b5cef5a08d5a4b56926f4/client.jar", versionId];
-                    NSLog(@"[ResourceDownload] Using fallback client download URL for %@", versionId);
+                    NSString *fallbackURL = @"https://launcher.mojang.com/mc/game/version_manifest_v2.json";
+                    NSLog(@"[ResourceDownload] Attempting to get URL from manifest for %@", versionId);
                     
-                    // Download client JAR using fallback URL
-                    NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client (fallback)", versionId];
-                    NSURLSessionDownloadTask *clientTask = [self createDownloadTask:fallbackURL 
-                                                                               size:0 
-                                                                                sha:nil 
-                                                                            altName:displayName 
-                                                                             toPath:clientJarPath 
-                                                                            success:^{
-                        [self checkForCompletionAndFinalize];
+                    // Try to find the correct download URL from the manifest
+                    NSURLSessionDataTask *manifestTask = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:fallbackURL] 
+                                                                                    completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+                        if (data) {
+                            NSError *jsonError;
+                            NSDictionary *manifest = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+                            
+                            if (!jsonError && manifest && manifest[@"versions"]) {
+                                // Look for our version
+                                NSString *versionURL = nil;
+                                for (NSDictionary *manifestVersion in manifest[@"versions"]) {
+                                    if ([manifestVersion[@"id"] isEqualToString:versionId]) {
+                                        versionURL = manifestVersion[@"url"];
+                                        break;
+                                    }
+                                }
+                                
+                                if (versionURL) {
+                                    // Now get the version details
+                                    NSURLSessionDataTask *versionTask = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:versionURL] 
+                                                                                                     completionHandler:^(NSData *versionData, NSURLResponse *versionResponse, NSError *versionError) {
+                                        if (versionData) {
+                                            NSError *versionJsonError;
+                                            NSDictionary *versionDetails = [NSJSONSerialization JSONObjectWithData:versionData options:0 error:&versionJsonError];
+                                            
+                                            if (!versionJsonError && versionDetails && versionDetails[@"downloads"] && versionDetails[@"downloads"][@"client"]) {
+                                                NSDictionary *client = versionDetails[@"downloads"][@"client"];
+                                                NSString *clientURL = client[@"url"];
+                                                
+                                                if (clientURL) {
+                                                    dispatch_async(dispatch_get_main_queue(), ^{
+                                                        NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client", versionId];
+                                                        NSURLSessionDownloadTask *clientTask = [self createDownloadTask:clientURL 
+                                                                                                                   size:[client[@"size"] unsignedIntegerValue] 
+                                                                                                                    sha:client[@"sha1"] 
+                                                                                                                altName:displayName 
+                                                                                                                 toPath:clientJarPath 
+                                                                                                                success:^{
+                                                            [self checkForCompletionAndFinalize];
+                                                        }];
+                                                        
+                                                        if (clientTask) {
+                                                            [clientTask resume];
+                                                        }
+                                                    });
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                        
+                                        // If everything failed, use a hardcoded fallback
+                                        dispatch_async(dispatch_get_main_queue(), ^{
+                                            NSString *hardcodedURL = @"https://launcher.mojang.com/v1/objects/8dd1a28015f5bda1061b5cef5a08d5a4b56926f4/client.jar";
+                                            NSLog(@"[ResourceDownload] Using hardcoded client download URL as last resort");
+                                            
+                                            NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client (fallback)", versionId];
+                                            NSURLSessionDownloadTask *clientTask = [self createDownloadTask:hardcodedURL 
+                                                                                                       size:0 
+                                                                                                        sha:nil 
+                                                                                                    altName:displayName 
+                                                                                                     toPath:clientJarPath 
+                                                                                                    success:^{
+                                                [self checkForCompletionAndFinalize];
+                                            }];
+                                            
+                                            if (clientTask) {
+                                                [clientTask resume];
+                                            }
+                                        });
+                                    }];
+                                    
+                                    [versionTask resume];
+                                    return;
+                                }
+                            }
+                            
+                            // If we can't find the version or parse the manifest, use hardcoded fallback
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                NSString *hardcodedURL = @"https://launcher.mojang.com/v1/objects/8dd1a28015f5bda1061b5cef5a08d5a4b56926f4/client.jar";
+                                NSLog(@"[ResourceDownload] Using hardcoded client download URL as last resort");
+                                
+                                NSString *displayName = [NSString stringWithFormat:@"Minecraft %@ client (fallback)", versionId];
+                                NSURLSessionDownloadTask *clientTask = [self createDownloadTask:hardcodedURL 
+                                                                                           size:0 
+                                                                                            sha:nil 
+                                                                                        altName:displayName 
+                                                                                         toPath:clientJarPath 
+                                                                                        success:^{
+                                    [self checkForCompletionAndFinalize];
+                                }];
+                                
+                                if (clientTask) {
+                                    [clientTask resume];
+                                }
+                            });
+                        }
                     }];
                     
-                    if (clientTask) {
-                        [clientTask resume];
-                    }
+                    [manifestTask resume];
                 }
                 
                 // Continue with processing libraries and assets
@@ -544,7 +629,7 @@
 - (void)fetchAdditionalVersionInfoForId:(NSString *)versionId completion:(void (^)(NSDictionary *updatedVersion))completion {
     // Try to fetch detailed version information from Mojang's version manifest
     NSString *versionUrl = [NSString stringWithFormat:@"https://piston-meta.mojang.com/v1/packages/%@/%@.json", versionId, versionId];
-    NSString *manifestUrl = [NSString stringWithFormat:@"https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"];
+    NSString *manifestUrl = @"https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
     
     // First try direct version URL
     NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:versionUrl] 
@@ -605,6 +690,7 @@
     
     [task resume];
 }
+
     
     // Process libraries if needed
     NSArray *libraries = version[@"libraries"];
