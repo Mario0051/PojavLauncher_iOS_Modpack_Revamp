@@ -66,6 +66,47 @@
     NSLog(@"[ResourceDownload] Task marked as fully completed");
 }
 
+- (void)checkForCompletionAndFinalize {
+    // Check if all tasks are complete
+    BOOL allComplete = YES;
+    @synchronized(self.downloadTasks) {
+        for (NSURLSessionDownloadTask *task in [self.downloadTasks allValues]) {
+            if (task.state != NSURLSessionTaskStateCompleted) {
+                allComplete = NO;
+                break;
+            }
+        }
+    }
+    
+    if (allComplete) {
+        NSLog(@"[ResourceDownload] All download tasks completed, finalizing");
+        
+        // Mark progress as complete
+        self.progress.completedUnitCount = self.progress.totalUnitCount;
+        
+        // Update task metadata for launch
+        self.metadata[@"allTasksComplete"] = @YES;
+        
+        // Add completion indicator to file list
+        if (![self.fileList containsObject:@"Complete"]) {
+            [self.fileList addObject:@"Complete"];
+            
+            // Create completion progress
+            NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+            completeProgress.completedUnitCount = 1;
+            completeProgress.kind = NSProgressKindFile;
+            [self.progressList addObject:completeProgress];
+            [self.progress addChild:completeProgress withPendingUnitCount:1];
+        }
+    } else {
+        // Not all tasks are complete, check again after a delay
+        NSLog(@"[ResourceDownload] Some tasks still in progress, checking again later");
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self checkForCompletionAndFinalize];
+        });
+    }
+}
+
 - (void)prepareForDownload {
     // Initialize master progress trackers
     self.progress = [NSProgress progressWithTotalUnitCount:1];
