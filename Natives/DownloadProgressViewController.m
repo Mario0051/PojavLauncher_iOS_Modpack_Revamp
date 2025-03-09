@@ -211,6 +211,14 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     if (isComplete && ![self.task.fileList containsObject:@"Complete"]) {
         // Add completion marker if needed
         [self.task.fileList addObject:@"Complete"];
+        
+        // Create completion progress
+        NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+        completeProgress.completedUnitCount = 1;
+        completeProgress.kind = NSProgressKindFile;
+        [self.task.progressList addObject:completeProgress];
+        [self.task.progress addChild:completeProgress withPendingUnitCount:1];
+        
         [self.tableView reloadData];
         
         // Update status label
