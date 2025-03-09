@@ -63,6 +63,13 @@
     // Ensure overall progress shows as complete
     self.progress.completedUnitCount = self.progress.totalUnitCount;
     
+    // Make sure all in-progress tasks are marked as complete
+    for (NSProgress *progress in self.progressList) {
+        if (progress.fractionCompleted < 1.0) {
+            progress.completedUnitCount = progress.totalUnitCount;
+        }
+    }
+    
     NSLog(@"[ResourceDownload] Task marked as fully completed");
 }
 
