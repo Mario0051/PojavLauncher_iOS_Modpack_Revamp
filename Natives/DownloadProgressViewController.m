@@ -193,7 +193,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     }
     
     // Also check if progress is complete
-    if (self.task.progress.fractionCompleted >= 1.0 || self.task.progress.completed) {
+    if (self.task.progress.fractionCompleted >= 1.0 || self.task.progress.finished) {
         isComplete = YES;
     }
     
