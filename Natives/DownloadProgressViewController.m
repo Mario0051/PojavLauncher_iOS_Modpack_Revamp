@@ -197,6 +197,16 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         isComplete = YES;
     }
     
+    // Force progress completion for extraction and setup tasks that may be stuck
+    if (isComplete) {
+        for (NSInteger i = 0; i < self.task.progressList.count; i++) {
+            NSProgress *progress = self.task.progressList[i];
+            if (progress.fractionCompleted < 1.0) {
+                progress.completedUnitCount = progress.totalUnitCount;
+            }
+        }
+    }
+    
     // If complete, ensure UI reflects this
     if (isComplete && ![self.task.fileList containsObject:@"Complete"]) {
         // Add completion marker if needed
