@@ -718,13 +718,17 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     __block NSUInteger processedFiles = 0;
     
     // Count files first to enable accurate progress reporting
+    NSError *countError = nil;
     [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
         if ([fileInfo.filename hasPrefix:@"overrides/"]) {
             totalFiles++;
         }
-    } error:error];
+    } error:&countError];
     
-    if (*error) {
+    if (countError) {
+        if (error) {
+            *error = countError;
+        }
         return;
     }
     
@@ -765,6 +769,7 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
     dispatch_resume(progressTimer);
     
     // Now extract the files with progress updates
+    NSError *archiveError = nil;
     [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
         // Skip files that are not in the overrides directory
         if (![fileInfo.filename hasPrefix:@"overrides/"]) {
@@ -793,9 +798,10 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
                                                                    attributes:nil 
                                                                         error:&dirError];
             if (!created) {
-                NSError * __strong localError = dirError; // Create a strong reference
-                *error = localError;
                 *stop = YES;
+                if (error) {
+                    *error = dirError;
+                }
                 return;
             }
         }
@@ -810,9 +816,10 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         NSError *extractError = nil;
         NSData *fileData = [archive extractData:fileInfo error:&extractError];
         if (extractError) {
-            NSError * __strong localError = extractError; // Create a strong reference
-            *error = localError;
             *stop = YES;
+            if (error) {
+                *error = extractError;
+            }
             return;
         }
         
@@ -820,23 +827,29 @@ typedef NS_ENUM(NSInteger, ModrinthErrorCode) {
         NSError *writeError = nil;
         BOOL written = [fileData writeToFile:destItemPath options:NSDataWritingAtomic error:&writeError];
         if (!written) {
-            NSError * __strong localError = writeError; // Create a strong reference
-            *error = localError;
             *stop = YES;
+            if (error) {
+                *error = writeError;
+            }
             return;
         }
         
         // Update progress
         processedFiles++;
-    } error:error];
+    } error:&archiveError];
+    
+    // Handle archive error
+    if (archiveError && error) {
+        *error = archiveError;
+    }
     
     // Cancel timer if there was an error
-    if (*error) {
+    if (error && *error) {
         dispatch_source_cancel(progressTimer);
     }
     
     // Ensure final progress update
-    if (*error == nil && progressCallback) {
+    if ((!error || !*error) && progressCallback) {
         progressCallback(1.0);
     }
 }
