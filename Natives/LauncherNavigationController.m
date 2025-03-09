@@ -310,22 +310,69 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     NSProgress *progress = self.task.textProgress;
     struct timeval tv;
     gettimeofday(&tv, NULL); 
-    NSInteger completedUnitCount = self.task.progress.totalUnitCount * self.task.progress.fractionCompleted;
+    
+    // Get the actual number of files being processed
+    NSUInteger totalFiles = self.task.fileList.count;
+    NSUInteger completedFiles = 0;
+    
+    // Count completed files based on file progress
+    for (NSProgress *fileProgress in self.task.progressList) {
+        if (fileProgress.fractionCompleted >= 1.0 || fileProgress.finished) {
+            completedFiles++;
+        }
+    }
+    
+    // Use actual file counts instead of fractionCompleted
+    NSInteger completedUnitCount = completedFiles;
     progress.completedUnitCount = completedUnitCount;
+    progress.totalUnitCount = totalFiles > 0 ? totalFiles : 1; // Ensure we don't divide by zero
+    
     if (lastSecTime < tv.tv_sec) {
         CGFloat currentTime = tv.tv_sec + tv.tv_usec / 1000000.0;
-        NSInteger throughput = (completedUnitCount - lastCompletedUnitCount) / (currentTime - lastMsTime);
-        progress.throughput = @(throughput);
-        progress.estimatedTimeRemaining = @((progress.totalUnitCount - completedUnitCount) / throughput);
+        NSInteger throughputPerSec = (completedUnitCount - lastCompletedUnitCount) / (currentTime - lastMsTime);
+        progress.throughput = @(throughputPerSec);
+        
+        // Only calculate ETA if we have throughput and remaining items
+        if (throughputPerSec > 0 && progress.totalUnitCount > completedUnitCount) {
+            NSTimeInterval eta = (progress.totalUnitCount - completedUnitCount) / (double)throughputPerSec;
+            progress.estimatedTimeRemaining = @(eta);
+        } else {
+            progress.estimatedTimeRemaining = nil;
+        }
+        
         lastCompletedUnitCount = completedUnitCount;
         lastSecTime = tv.tv_sec;
         lastMsTime = currentTime;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.progressText.text = progress.localizedAdditionalDescription;
+        // Create a more informative progress description
+        NSString *progressDescription;
+        if (totalFiles > 0) {
+            progressDescription = [NSString stringWithFormat:@"Files: %lu of %lu", 
+                                   (unsigned long)completedFiles, 
+                                   (unsigned long)totalFiles];
+            
+            // Add ETA if available
+            if (progress.estimatedTimeRemaining && [progress.estimatedTimeRemaining doubleValue] > 0) {
+                NSTimeInterval etaSeconds = [progress.estimatedTimeRemaining doubleValue];
+                if (etaSeconds < 60) {
+                    progressDescription = [progressDescription stringByAppendingFormat:@" (ETA: %d sec)", (int)etaSeconds];
+                } else if (etaSeconds < 3600) {
+                    progressDescription = [progressDescription stringByAppendingFormat:@" (ETA: %d min)", (int)(etaSeconds / 60)];
+                } else {
+                    progressDescription = [progressDescription stringByAppendingFormat:@" (ETA: %.1f hr)", etaSeconds / 3600];
+                }
+            }
+        } else {
+            progressDescription = @"Preparing download...";
+        }
+        
+        self.progressText.text = progressDescription;
 
         if (!progress.finished) return;
+        
+        // REMOVED: Do not dismiss the progress view controller automatically
         // [self.progressVC dismissModalViewControllerAnimated:NO];
 
         self.progressViewMain.observedProgress = nil;
