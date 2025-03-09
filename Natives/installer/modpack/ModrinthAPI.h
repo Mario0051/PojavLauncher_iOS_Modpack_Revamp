@@ -61,7 +61,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)extractOverrides:(UZKArchive *)archive 
                   toPath:(NSString *)destPath 
             withProgress:(void (^)(double progress))progressCallback 
-                   error:(NSError **)error;
+                   error:(NSError * __strong *)error;
 
 /**
  * Downloads mod files from a modpack manifest
