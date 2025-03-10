@@ -80,13 +80,43 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
 
 #pragma mark - Error Handling
 
-- (NSError *)errorWithCode:(CurseForgeErrorCode)code message:(NSString *)message underlyingError:(NSError *)underlyingError {
+- (NSError *)errorWithCode:(ModpackAPIErrorCode)code message:(NSString *)message underlyingError:(NSError *)underlyingError {
+    // Map ModpackAPIErrorCode to appropriate CurseForgeErrorCode values
+    CurseForgeErrorCode curseForgeCode;
+    
+    switch (code) {
+        case ModpackAPIErrorCodeNetwork:
+            curseForgeCode = CurseForgeErrorCodeNetwork;
+            break;
+        case ModpackAPIErrorCodeParsing:
+            curseForgeCode = CurseForgeErrorCodeParsingError;
+            break;
+        case ModpackAPIErrorCodeResourceNotFound:
+            curseForgeCode = CurseForgeErrorCodeResourceNotFound;
+            break;
+        case ModpackAPIErrorCodeExtraction:
+            curseForgeCode = CurseForgeErrorCodeExtraction;
+            break;
+        case ModpackAPIErrorCodeInvalidManifest:
+            curseForgeCode = CurseForgeErrorCodeInvalidManifest;
+            break;
+        case ModpackAPIErrorCodeFileOperation:
+            curseForgeCode = CurseForgeErrorCodeFileOperation;
+            break;
+        case ModpackAPIErrorCodeAuthentication:
+            curseForgeCode = CurseForgeErrorCodeAuthentication;
+            break;
+        default:
+            curseForgeCode = CurseForgeErrorCodeNetwork; // Default case
+            break;
+    }
+    
     NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
     userInfo[NSLocalizedDescriptionKey] = message;
     if (underlyingError) {
         userInfo[NSUnderlyingErrorKey] = underlyingError;
     }
-    return [NSError errorWithDomain:CurseForgeAPIErrorDomain code:code userInfo:userInfo];
+    return [NSError errorWithDomain:CurseForgeAPIErrorDomain code:curseForgeCode userInfo:userInfo];
 }
 
 #pragma mark - Network Requests
@@ -94,7 +124,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
 - (void)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params completion:(void (^)(id, NSError *))completion {
     if (!endpoint) {
         if (completion) {
-            NSError *error = [self errorWithCode:CurseForgeErrorCodeParsingError 
+            NSError *error = [self errorWithCode:ModpackAPIErrorCodeParsing 
                                          message:@"Invalid endpoint" 
                                  underlyingError:nil];
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -108,7 +138,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     if (self.apiKey.length == 0) {
         NSLog(@"getEndpoint: No API key provided");
         if (completion) {
-            NSError *error = [self errorWithCode:CurseForgeErrorCodeAuthentication 
+            NSError *error = [self errorWithCode:ModpackAPIErrorCodeAuthentication 
                                          message:@"No API key provided" 
                                  underlyingError:nil];
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -164,19 +194,19 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         
         NSError *apiError;
         if (statusCode == 401 || statusCode == 403) {
-            apiError = [self errorWithCode:CurseForgeErrorCodeAuthentication 
+            apiError = [self errorWithCode:ModpackAPIErrorCodeAuthentication 
                                    message:@"Authentication failed. Please check your API key." 
                            underlyingError:error];
         } else if (statusCode == 404) {
-            apiError = [self errorWithCode:CurseForgeErrorCodeResourceNotFound 
+            apiError = [self errorWithCode:ModpackAPIErrorCodeResourceNotFound 
                                    message:@"The requested resource was not found." 
                            underlyingError:error];
         } else if (statusCode >= 500) {
-            apiError = [self errorWithCode:CurseForgeErrorCodeServerError 
+            apiError = [self errorWithCode:ModpackAPIErrorCodeNetwork 
                                    message:@"A server error occurred. Please try again later." 
                            underlyingError:error];
         } else {
-            apiError = [self errorWithCode:CurseForgeErrorCodeNetwork 
+            apiError = [self errorWithCode:ModpackAPIErrorCodeNetwork 
                                    message:@"A network error occurred. Please check your connection." 
                            underlyingError:error];
         }
@@ -639,7 +669,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
     // Validate input
     NSArray *versionUrls = modDetail[@"versionUrls"];
     if (selectedVersion >= versionUrls.count) {
-        NSError *error = [self errorWithCode:CurseForgeErrorCodeResourceNotFound
+        NSError *error = [self errorWithCode:ModpackAPIErrorCodeResourceNotFound
                                      message:@"Invalid version index"
                              underlyingError:nil];
         if (completion) {
@@ -676,7 +706,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
                                            completion:completion];
             }];
         } else {
-            NSError *error = [self errorWithCode:CurseForgeErrorCodeParsingError
+            NSError *error = [self errorWithCode:ModpackAPIErrorCodeParsing
                                          message:@"Invalid placeholder URL format"
                                  underlyingError:nil];
             if (completion) {
@@ -773,7 +803,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         if (!manifestData) {
             NSLog(@"[CurseForge-Modpack] Failed to extract manifest.json: %@", extractError);
             if (completion) {
-                NSError *customError = [weakSelf errorWithCode:CurseForgeErrorCodeExtraction
+                NSError *customError = [weakSelf errorWithCode:ModpackAPIErrorCodeExtraction
                                                message:@"Failed to extract manifest.json from modpack"
                                        underlyingError:extractError];
                 completion(customError);
@@ -786,7 +816,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         if (!manifestDict) {
             NSLog(@"[CurseForge-Modpack] Failed to parse manifest.json: %@", extractError);
             if (completion) {
-                NSError *customError = [weakSelf errorWithCode:CurseForgeErrorCodeParsingError
+                NSError *customError = [weakSelf errorWithCode:ModpackAPIErrorCodeParsing
                                                message:@"Failed to parse manifest.json"
                                        underlyingError:extractError];
                 completion(customError);
@@ -798,7 +828,7 @@ typedef NS_ENUM(NSInteger, CurseForgeErrorCode) {
         if (![weakSelf verifyManifestFromDictionary:manifestDict]) {
             NSLog(@"[CurseForge-Modpack] Invalid manifest");
             if (completion) {
-                NSError *customError = [weakSelf errorWithCode:CurseForgeErrorCodeInvalidManifest
+                NSError *customError = [weakSelf errorWithCode:ModpackAPIErrorCodeInvalidManifest
                                                message:@"Invalid manifest format"
                                        underlyingError:nil];
                 completion(customError);
