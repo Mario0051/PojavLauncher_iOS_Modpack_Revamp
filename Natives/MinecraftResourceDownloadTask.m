@@ -355,8 +355,8 @@
     NSLog(@"[ModDownload] Game directory from profile: %@", gameDir);
     
     // Ensure the profile directory exists
-    BOOL dirCreated = [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
-    NSLog(@"[ModDownload] Profile directory created or exists: %@", dirCreated ? @"YES" : @"NO");
+    [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
+    NSLog(@"[ModDownload] Profile directory created or exists");
     
     // Get the full path to the profile directory
     NSString *profileDir = [PLProfiles fullPathForProfileWithName:profileName gameDir:gameDir];
@@ -368,11 +368,11 @@
     // Create the mods directory if it doesn't exist
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
         NSError *createError = nil;
-        BOOL created = [[NSFileManager defaultManager] createDirectoryAtPath:modsDir 
-                                                  withIntermediateDirectories:YES 
-                                                                   attributes:nil 
-                                                                        error:&createError];
-        if (!created || createError) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir 
+                                  withIntermediateDirectories:YES 
+                                                   attributes:nil 
+                                                        error:&createError];
+        if (createError) {
             NSLog(@"[ModDownload] Failed to create mods directory: %@", createError.localizedDescription);
             [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription]];
             return;
@@ -392,7 +392,6 @@
     
     NSString *fileName = fileURL.lastPathComponent;
     if (fileName.length == 0) {
-        NSLog(@"[ModDownload] Could not determine filename from URL: %@", url);
         fileName = [NSString stringWithFormat:@"%@.jar", modName];
         NSLog(@"[ModDownload] Using fallback filename: %@", fileName);
     }
@@ -400,7 +399,6 @@
     NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
     NSLog(@"[ModDownload] Final destination path: %@", destinationPath);
     
-    // Create and start the download task
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:modName toPath:destinationPath success:^{
         NSLog(@"[ModDownload] Download completed successfully for mod: %@", modName);
     }];
