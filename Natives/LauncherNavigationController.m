@@ -331,7 +331,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         self.progressText.text = progress.localizedAdditionalDescription;
 
         if (!progress.finished) return;
-        [self.progressVC dismissViewControllerAnimated:NO completion:nil];
+        
+        // Make sure to dismiss the progress view controller when finished
+        if (self.progressVC && self.progressVC.presentingViewController) {
+            [self.progressVC dismissViewControllerAnimated:YES completion:nil];
+            self.progressVC = nil;
+        }
 
         self.progressViewMain.observedProgress = nil;
         if (self.task.metadata) {
@@ -371,6 +376,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     
     // Create and display progress VC proactively
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Dismiss any existing progress view controller first
+        if (self.progressVC && self.progressVC.presentingViewController) {
+            [self.progressVC dismissViewControllerAnimated:NO completion:nil];
+            self.progressVC = nil;
+        }
+        
+        // Create a new progress view controller
         if (!self.progressVC) {
             self.progressVC = [[DownloadProgressViewController alloc] initWithTask:self.task];
             UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:self.progressVC];
@@ -385,7 +397,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSLog(@"[NotificationHandler] Error handler invoked");
                 [weakSelf setInteractionEnabled:YES forDownloading:YES];
-                [weakSelf.progressVC dismissViewControllerAnimated:YES completion:nil];
+                if (weakSelf.progressVC && weakSelf.progressVC.presentingViewController) {
+                    [weakSelf.progressVC dismissViewControllerAnimated:YES completion:nil];
+                }
                 weakSelf.task = nil;
                 weakSelf.progressVC = nil;
             });
