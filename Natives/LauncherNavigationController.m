@@ -465,6 +465,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     // If a task is already running, cancel it cleanly first
     if (self.task) {
         [self.task cancelAllTasks];
+        [self removeProgressObserver]; // Safely remove the observer
         self.task = nil;
     }
     
@@ -542,6 +543,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 - (UIModalPresentationStyle)adaptivePresentationStyleForPresentationController:(UIPresentationController *)controller traitCollection:(UITraitCollection *)traitCollection {
     return UIModalPresentationNone;
 }
+
+- (void)dealloc {
+    // Make sure we clean up any observers when the controller is deallocated
+    [self removeProgressObserver];
+}
+
 
 #pragma mark - UIPickerView stuff
 - (void)pickerView:(PLPickerView *)pickerView didSelectRow:(NSInteger)row inComponent:(NSInteger)component {
