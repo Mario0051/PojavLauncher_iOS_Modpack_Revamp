@@ -364,19 +364,29 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         return;
     }
     
+    // Create and display progress VC proactively
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!self.progressVC) {
+            self.progressVC = [[DownloadProgressViewController alloc] initWithTask:self.task];
+            UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:self.progressVC];
+            nav.modalPresentationStyle = UIModalPresentationFormSheet;
+            [self presentViewController:nav animated:YES completion:nil];
+        }
+    });
+    
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         __weak LauncherNavigationController *weakSelf = self;
         self.task.handleError = ^{
             dispatch_async(dispatch_get_main_queue(), ^{
                 NSLog(@"[NotificationHandler] Error handler invoked");
                 [weakSelf setInteractionEnabled:YES forDownloading:YES];
+                [weakSelf.progressVC dismissViewControllerAnimated:YES completion:nil];
                 weakSelf.task = nil;
                 weakSelf.progressVC = nil;
             });
         };
         
-        NSLog(@"[NotificationHandler] Starting download process for %@", 
-              notification.name);
+        NSLog(@"[NotificationHandler] Starting download process for %@", notification.name);
         
         if ([notification.name isEqualToString:@"InstallModpack"]) {
             [self.task downloadModpackFromAPI:notification.object 
