@@ -313,6 +313,13 @@
             // Finalize installation even without mod files
             [self finalizeInstallation:processedManifest toPath:destPath withDownloader:downloader];
         }
+        
+        // Delete the package file to free up space (moved this from extractOverrides)
+        NSError *removeError = nil;
+        [[NSFileManager defaultManager] removeItemAtPath:packagePath error:&removeError];
+        if (removeError) {
+            NSLog(@"[ModpackAPI] Warning: Failed to delete modpack package: %@", removeError);
+        }
     });
 }
 
@@ -342,6 +349,8 @@
     if (!extractError) {
         [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:nil];
     }
+    
+    // Note: Package cleanup is now done in the calling method
 }
 
 - (void)downloadModFiles:(NSArray *)files toPath:(NSString *)destPath withDownloader:(MinecraftResourceDownloadTask *)downloader {
