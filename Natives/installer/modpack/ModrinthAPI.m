@@ -267,12 +267,16 @@
     // Extract key information from manifest
     NSString *profileName = manifest[@"name"] ?: @"Unknown Modpack";
     
-    // Create mods directory if it doesn't exist
+    // Create mods directory within the destination path
     NSString *modsDir = [destPath stringByAppendingPathComponent:@"mods"];
+    NSError *modsDirError = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:modsDir
                               withIntermediateDirectories:YES
                                                attributes:nil
-                                                    error:nil];
+                                                    error:&modsDirError];
+    if (modsDirError) {
+        NSLog(@"[ModrinthAPI] Warning: Failed to create mods directory: %@", modsDirError);
+    }
     
     // Download and set up mods from the manifest
     NSArray *files = manifest[@"files"];
@@ -288,7 +292,7 @@
         return;
     }
     
-    // Set up profile based on manifest
+    // Set up profile based on manifest before downloading mods
     [self processManifestForProfile:manifest destPath:destPath];
     
     // Process mod downloads
@@ -348,6 +352,8 @@
             sha1 = hashes[@"sha1"];
         }
         
+        NSLog(@"[ModrinthAPI] Downloading mod to: %@", filePath);
+        
         // Queue download
         dispatch_group_enter(group);
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:downloadUrl 
@@ -356,6 +362,7 @@
                                                                 altName:file[@"filename"] 
                                                                  toPath:filePath 
                                                                 success:^{
+                                                                    NSLog(@"[ModrinthAPI] Successfully downloaded file to: %@", filePath);
                                                                     dispatch_group_leave(group);
                                                                 }];
         if (task) {
@@ -431,12 +438,9 @@
         safeProfileName = @"UnknownModpack";
     }
     
-    // Determine if we should use the extracted folder (destPath) as the gameDir
-    // Extract the last path component from destPath which should be the modpack folder name
-    NSString *modpackFolderName = [destPath lastPathComponent];
-    
-    // Set up the game directory path - make it relative to fit with PLProfiles' expectations
-    NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", modpackFolderName];
+    // The key fix: Use the actual destination path for the game directory
+    // Instead of creating a new relative path, use the actual extracted path
+    NSString *gameDir = destPath;
     
     // Create profile info
     NSMutableDictionary *profileInfo = [@{
@@ -446,14 +450,33 @@
         @"icon": manifest[@"icon"] ?: @""
     } mutableCopy];
     
-    // Ensure the profile directory exists
-    [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
+    // Ensure the profile directory exists and create essential subdirectories
+    NSError *dirError = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:gameDir 
+                              withIntermediateDirectories:YES 
+                                               attributes:nil 
+                                                    error:&dirError];
+    
+    if (!dirError) {
+        // Create essential subdirectories
+        NSArray *essentialDirs = @[@"mods", @"resourcepacks", @"shaderpacks", @"saves", @"config"];
+        for (NSString *dir in essentialDirs) {
+            NSString *dirPath = [gameDir stringByAppendingPathComponent:dir];
+            [[NSFileManager defaultManager] createDirectoryAtPath:dirPath 
+                                      withIntermediateDirectories:YES 
+                                                       attributes:nil 
+                                                            error:nil];
+        }
+    }
     
     // Save profile
     dispatch_async(dispatch_get_main_queue(), ^{
         PLProfiles.current.profiles[profileName] = profileInfo;
         PLProfiles.current.selectedProfileName = profileName;
         [PLProfiles.current save];
+        
+        NSLog(@"[ModrinthAPI] Profile created with name: %@, gameDir: %@, versionId: %@", 
+              profileName, gameDir, versionId);
     });
 }
 
