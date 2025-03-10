@@ -100,10 +100,11 @@
 
 #pragma mark - Extraction Methods
 
-- (void)extractArchive:(UZKArchive *)archive directory:(NSString *)dir toPath:(NSString *)path progress:(void (^)(double))progressCallback error:(NSError **)error {
+- (void)extractArchive:(UZKArchive *)archive directory:(NSString *)dir toPath:(NSString *)path progress:(void (^)(double))progressCallback error:(NSError *__autoreleasing *)error {
     // Count files for progress tracking
     __block NSUInteger totalFiles = 0;
     __block NSUInteger processedFiles = 0;
+    __block NSError *strongError = nil;
     
     NSError *countError = nil;
     [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
@@ -157,9 +158,7 @@
                                                            error:&dirError];
             if (dirError) {
                 *stop = YES;
-                if (error) {
-                    *error = dirError;
-                }
+                strongError = dirError;
                 return;
             }
         }
@@ -176,9 +175,7 @@
         NSData *fileData = [archive extractData:fileInfo error:&extractError];
         if (extractError) {
             *stop = YES;
-            if (error) {
-                *error = extractError;
-            }
+            strongError = extractError;
             return;
         }
         
@@ -186,9 +183,7 @@
         BOOL written = [fileData writeToFile:destPath options:NSDataWritingAtomic error:&writeError];
         if (!written) {
             *stop = YES;
-            if (error) {
-                *error = writeError;
-            }
+            strongError = writeError;
             return;
         }
         
@@ -200,6 +195,8 @@
     
     if (archiveError && error) {
         *error = archiveError;
+    } else if (strongError && error) {
+        *error = strongError;
     }
 }
 
@@ -344,13 +341,6 @@
     // Optional extraction of client-specific files
     if (!extractError) {
         [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:nil];
-    }
-    
-    // Delete the package file to free up space
-    NSError *removeError = nil;
-    [[NSFileManager defaultManager] removeItemAtPath:packagePath error:&removeError];
-    if (removeError) {
-        NSLog(@"[ModpackAPI] Warning: Failed to delete modpack package: %@", removeError);
     }
 }
 
