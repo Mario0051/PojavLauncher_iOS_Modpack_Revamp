@@ -102,6 +102,11 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         selector:@selector(receiveNotification:) 
         name:@"InstallModpack"
         object:nil];
+    
+    [NSNotificationCenter.defaultCenter addObserver:self
+        selector:@selector(receiveNotification:) 
+        name:@"InstallMod"
+        object:nil];
 
     if ([BaseAuthenticator.current isKindOfClass:MicrosoftAuthenticator.class]) {
         // Perform token refreshment on startup
@@ -326,7 +331,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         self.progressText.text = progress.localizedAdditionalDescription;
 
         if (!progress.finished) return;
-        [self.progressVC dismissModalViewControllerAnimated:NO];
+        [self.progressVC dismissViewControllerAnimated:NO completion:nil];
 
         self.progressViewMain.observedProgress = nil;
         if (self.task.metadata) {
