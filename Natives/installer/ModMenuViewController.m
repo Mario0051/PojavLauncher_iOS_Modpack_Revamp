@@ -36,6 +36,107 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     }
 }
 
+#pragma mark - Profile Selection View Controller
+@interface ProfileSelectionViewController : UIViewController <UITableViewDelegate, UITableViewDataSource>
+@property (nonatomic, strong) UITableView *tableView;
+@property (nonatomic, strong) NSArray *profiles;
+@property (nonatomic, copy) void (^didSelectProfile)(NSString *profileName, NSString *mcVersion, NSString *loaderType);
+@end
+
+@implementation ProfileSelectionViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    self.title = @"Select Profile";
+    
+    // Add a close button
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose 
+                                                                                          target:self 
+                                                                                          action:@selector(dismissView)];
+    
+    // Create table view
+    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
+    self.tableView.delegate = self;
+    self.tableView.dataSource = self;
+    self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    
+    // Register cell class
+    [self.tableView registerClass:[UITableViewCell class] forCellReuseIdentifier:@"ProfileCell"];
+    
+    [self.view addSubview:self.tableView];
+}
+
+- (void)dismissView {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.profiles.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ProfileCell" forIndexPath:indexPath];
+    
+    NSDictionary *profile = self.profiles[indexPath.row];
+    NSString *profileName = profile[@"name"];
+    NSString *versionId = profile[@"lastVersionId"];
+    
+    // Parse version information
+    NSDictionary *parsed = [ModpackUtils parseVersionString:versionId];
+    NSString *mcVersion = parsed[@"mcVersion"] ?: versionId;
+    NSString *loaderType = parsed[@"loader"] ?: @"";
+    NSString *loaderVersion = parsed[@"loaderVersion"] ?: @"";
+    
+    // Create a more descriptive display 
+    cell.textLabel.text = profileName;
+    
+    if (loaderType.length > 0) {
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"MC %@, %@ %@", 
+                                    mcVersion, 
+                                    [loaderType capitalizedString], 
+                                    loaderVersion];
+    } else {
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"MC %@", mcVersion];
+    }
+    
+    // Add a checkmark for the currently selected profile
+    NSString *currentProfile = [PLProfiles current].selectedProfileName;
+    if ([profileName isEqualToString:currentProfile]) {
+        cell.accessoryType = UITableViewCellAccessoryCheckmark;
+    } else {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    NSDictionary *profile = self.profiles[indexPath.row];
+    NSString *profileName = profile[@"name"];
+    NSString *versionId = profile[@"lastVersionId"];
+    
+    // Parse version information
+    NSDictionary *parsed = [ModpackUtils parseVersionString:versionId];
+    NSString *mcVersion = parsed[@"mcVersion"] ?: versionId;
+    NSString *loaderType = parsed[@"loader"] ?: @"";
+    
+    // Set the selected profile in PLProfiles
+    [PLProfiles current].selectedProfileName = profileName;
+    [[PLProfiles current] save];
+    
+    if (self.didSelectProfile) {
+        self.didSelectProfile(profileName, mcVersion, loaderType);
+    }
+    
+    [self dismissView];
+}
+
+@end
+
 #pragma mark - ModQueueViewController Interface
 @interface ModQueueViewController : UITableViewController
 @property (nonatomic, strong) NSMutableArray *queue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
@@ -208,6 +309,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 @interface ModMenuViewController ()
 - (NSString *)stringFromVersionObject:(id)rawVersion;
 - (void)updateProfileFromSavedSettings;
+- (UIImage *)standardizeImage:(UIImage *)originalImage;
 @end
 
 #pragma mark - ModMenuViewController Interface
@@ -222,10 +324,54 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 @property (nonatomic, strong) NSString *selectedMCVersion;
 @property (nonatomic, strong) NSString *selectedModLoader;
 @property (nonatomic, strong) NSMutableArray *installQueue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
+@property (nonatomic, strong) UILabel *profileInfoLabel;
+@property (nonatomic, strong) UIView *profileContainerView;
 @end
 
 #pragma mark - ModMenuViewController Implementation
 @implementation ModMenuViewController
+
+// Helper method to standardize images
+- (UIImage *)standardizeImage:(UIImage *)originalImage {
+    if (!originalImage) {
+        return [UIImage imageNamed:@"DefaultProfile"];
+    }
+    
+    // Create a standard size for all images
+    CGFloat standardSize = 60.0;
+    CGSize size = CGSizeMake(standardSize, standardSize);
+    
+    UIGraphicsBeginImageContextWithOptions(size, NO, 0);
+    
+    // Create a rounded rect path
+    UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, size.width, size.height) 
+                                                cornerRadius:10.0];
+    [path addClip]; // Clip to the rounded rect
+    
+    // Calculate aspect ratio to maintain proportions
+    CGFloat widthRatio = size.width / originalImage.size.width;
+    CGFloat heightRatio = size.height / originalImage.size.height;
+    CGFloat ratio = MAX(widthRatio, heightRatio);
+    
+    CGFloat newWidth = originalImage.size.width * ratio;
+    CGFloat newHeight = originalImage.size.height * ratio;
+    
+    // Center the image
+    CGFloat xOffset = (size.width - newWidth) / 2.0;
+    CGFloat yOffset = (size.height - newHeight) / 2.0;
+    
+    [originalImage drawInRect:CGRectMake(xOffset, yOffset, newWidth, newHeight)];
+    
+    // Draw a border
+    [[UIColor lightGrayColor] setStroke];
+    [path setLineWidth:1.0];
+    [path stroke];
+    
+    UIImage *standardizedImage = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    
+    return standardizedImage;
+}
 
 // Auto-update from saved profile settings if available.
 - (void)updateProfileFromSavedSettings {
@@ -241,9 +387,36 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
             self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
             self.selectedModLoader = parsed[@"loader"] ?: @"";
+            
+            // Update the profile info label
+            [self updateProfileInfoLabel];
+            
             NSLog(@"Auto-selected profile: %@, mod loader: %@, MC version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
             self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
         }
+    }
+}
+
+// Helper method to update the profile info label
+- (void)updateProfileInfoLabel {
+    if (self.selectedProfileName) {
+        NSString *versionInfo = @"";
+        
+        if (self.selectedMCVersion.length > 0) {
+            versionInfo = [NSString stringWithFormat:@"MC %@", self.selectedMCVersion];
+            
+            if (self.selectedModLoader.length > 0) {
+                versionInfo = [NSString stringWithFormat:@"%@, %@", 
+                              versionInfo, 
+                              [self.selectedModLoader capitalizedString]];
+            }
+        }
+        
+        self.profileInfoLabel.text = [NSString stringWithFormat:@"%@ (%@)", 
+                                     self.selectedProfileName, 
+                                     versionInfo.length > 0 ? versionInfo : @"Unknown"];
+    } else {
+        self.profileInfoLabel.text = @"No profile selected";
     }
 }
 
@@ -274,6 +447,27 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     self.modsList = [NSMutableArray new];
     self.installQueue = [NSMutableArray new];
     
+    // Create the profile container view
+    self.profileContainerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 50)];
+    
+    // Create and configure the profile info label
+    self.profileInfoLabel = [[UILabel alloc] initWithFrame:CGRectMake(20, 0, self.view.bounds.size.width - 100, 50)];
+    self.profileInfoLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    self.profileInfoLabel.textColor = [UIColor labelColor];
+    [self.profileContainerView addSubview:self.profileInfoLabel];
+    
+    // Add a "Change" button
+    UIButton *changeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [changeButton setTitle:@"Change" forState:UIControlStateNormal];
+    changeButton.frame = CGRectMake(self.view.bounds.size.width - 80, 0, 60, 50);
+    [changeButton addTarget:self action:@selector(actionShowProfileSelection) forControlEvents:UIControlEventTouchUpInside];
+    [self.profileContainerView addSubview:changeButton];
+    
+    // Add a separator line
+    UIView *separatorView = [[UIView alloc] initWithFrame:CGRectMake(0, 49, self.view.bounds.size.width, 1)];
+    separatorView.backgroundColor = [UIColor separatorColor];
+    [self.profileContainerView addSubview:separatorView];
+    
     // Auto-select saved profile if available
     [self updateProfileFromSavedSettings];
     
@@ -291,24 +485,18 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self.apiSegmentedControl addTarget:self action:@selector(updateModsList) forControlEvents:UIControlEventValueChanged];
     
     // Create a header view with the segmented control centered
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 50)];
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 100)];
+    
+    // Add profile container to header view
+    self.profileContainerView.frame = CGRectMake(0, 0, self.view.bounds.size.width, 50);
+    [headerView addSubview:self.profileContainerView];
+    
+    // Add segmented control below profile container
     self.apiSegmentedControl.translatesAutoresizingMaskIntoConstraints = NO;
     [headerView addSubview:self.apiSegmentedControl];
-    
-    // Center the segmented control in the header view
-    [NSLayoutConstraint activateConstraints:@[
-        [self.apiSegmentedControl.centerXAnchor constraintEqualToAnchor:headerView.centerXAnchor],
-        [self.apiSegmentedControl.centerYAnchor constraintEqualToAnchor:headerView.centerYAnchor],
-        [self.apiSegmentedControl.widthAnchor constraintEqualToConstant:240]
-    ]];
+    self.apiSegmentedControl.frame = CGRectMake((self.view.bounds.size.width - 240) / 2, 60, 240, 30);
     
     self.tableView.tableHeaderView = headerView;
-    
-    // More descriptive button titles
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Profile"
-                                                                             style:UIBarButtonItemStylePlain
-                                                                            target:self
-                                                                            action:@selector(actionChooseProfile)];
     
     // Modern right bar button with badge for queue count
     [self updateQueueButtonTitle];
@@ -339,44 +527,54 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     [self.tableView.refreshControl endRefreshing];
 }
 
-// Profile selection: Presents a sorted list of profiles for the user to choose from.
-- (void)actionChooseProfile {
-    NSDictionary *profiles = [PLProfiles current].profiles;
-    if (!profiles || profiles.count == 0) {
+// New method to show profile selection
+- (void)actionShowProfileSelection {
+    // Get the list of profiles
+    NSDictionary *profilesDict = [PLProfiles current].profiles;
+    if (!profilesDict || profilesDict.count == 0) {
         presentAlertDialog(localize(@"Error", nil), @"No profiles available.");
         return;
     }
-    NSArray *sortedProfiles = [[profiles allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *p1, NSDictionary *p2) {
+    
+    // Convert to array and sort
+    NSArray *sortedProfiles = [[profilesDict allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *p1, NSDictionary *p2) {
         return [p1[@"name"] compare:p2[@"name"] options:NSCaseInsensitiveSearch];
     }];
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Profile"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSDictionary *profile in sortedProfiles) {
-        NSString *profileName = profile[@"name"];
-        [alert addAction:[UIAlertAction actionWithTitle:profileName
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction * _Nonnull action) {
-            self.selectedProfileName = profileName;
-            NSString *lastVersionId = profile[@"lastVersionId"];
-            if (![lastVersionId isKindOfClass:[NSString class]]) {
-                lastVersionId = [lastVersionId description];
-            }
-            NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
-            self.selectedMCVersion = parsed[@"mcVersion"] ?: lastVersionId;
-            self.selectedModLoader = parsed[@"loader"] ?: @"";
-            NSLog(@"Selected profile: %@, mod loader: %@, MC version: %@", self.selectedProfileName, self.selectedModLoader, self.selectedMCVersion);
-            self.searchFilters[@"mcVersion"] = self.selectedMCVersion;
-        }]];
+    
+    // Create and configure the profile selection view controller
+    ProfileSelectionViewController *profileVC = [[ProfileSelectionViewController alloc] init];
+    profileVC.profiles = sortedProfiles;
+    
+    __weak typeof(self) weakSelf = self;
+    profileVC.didSelectProfile = ^(NSString *profileName, NSString *mcVersion, NSString *loaderType) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        
+        strongSelf.selectedProfileName = profileName;
+        strongSelf.selectedMCVersion = mcVersion;
+        strongSelf.selectedModLoader = loaderType;
+        
+        // Update UI
+        [strongSelf updateProfileInfoLabel];
+        
+        // Update search filters
+        strongSelf.searchFilters[@"mcVersion"] = mcVersion;
+        
+        // Reload mods list with new filter
+        [strongSelf refreshModsList];
+    };
+    
+    // Present in a navigation controller
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:profileVC];
+    navController.modalPresentationStyle = UIModalPresentationFormSheet;
+    
+    // On iPads, use popover presentation
+    if (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad) {
+        navController.modalPresentationStyle = UIModalPresentationPopover;
+        navController.popoverPresentationController.sourceView = self.profileContainerView;
+        navController.popoverPresentationController.sourceRect = self.profileContainerView.bounds;
     }
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-    alert.popoverPresentationController.sourceView = self.view;
-    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
-                                                                CGRectGetMidY(self.view.bounds),
-                                                                1, 1);
-    [self presentViewController:alert animated:YES completion:nil];
+    
+    [self presentViewController:navController animated:YES completion:nil];
 }
 
 // Always prompt for CurseForge API key when the CurseForge segment is active.
@@ -408,6 +606,16 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
     [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
     [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext>  _Nonnull context) {
+        // Update frames for orientation change
+        self.profileContainerView.frame = CGRectMake(0, 0, size.width, 50);
+        self.profileInfoLabel.frame = CGRectMake(20, 0, size.width - 100, 50);
+        UIButton *changeButton = [self.profileContainerView.subviews objectAtIndex:1];
+        changeButton.frame = CGRectMake(size.width - 80, 0, 60, 50);
+        UIView *separatorView = [self.profileContainerView.subviews objectAtIndex:2];
+        separatorView.frame = CGRectMake(0, 49, size.width, 1);
+        
+        self.apiSegmentedControl.frame = CGRectMake((size.width - 240) / 2, 60, 240, 30);
+        
         [self.tableView reloadData];
     } completion:nil];
 }
@@ -513,17 +721,11 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.modsList.count;
 }
+
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"modCell"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"modCell"];
-        
-        // Modern cell appearance
-        cell.imageView.contentMode = UIViewContentModeScaleAspectFill;
-        cell.imageView.clipsToBounds = YES;
-        cell.imageView.layer.cornerRadius = 8;
-        cell.imageView.layer.borderWidth = 0.5;
-        cell.imageView.layer.borderColor = [UIColor lightGrayColor].CGColor;
         
         // Set up subtitle text properties
         cell.detailTextLabel.numberOfLines = 2;
@@ -535,27 +737,18 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     cell.textLabel.text = mod[@"title"];
     cell.detailTextLabel.text = mod[@"description"];
     
-    // Modern image loading with placeholder
+    // Modern image loading with placeholder and standardization
     UIImage *placeholder = [UIImage imageNamed:@"DefaultProfile"];
     
     NSURL *imageURL = [NSURL URLWithString:mod[@"imageUrl"]];
     [cell.imageView setImageWithURLRequest:[NSURLRequest requestWithURL:imageURL]
                           placeholderImage:placeholder
                                    success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
-        if (image.size.width < 50 || image.size.height < 50) {
-            cell.imageView.image = placeholder;
-        } else {
-            // Create square thumbnail for consistency
-            CGSize size = CGSizeMake(50, 50);
-            UIGraphicsBeginImageContextWithOptions(size, NO, 0);
-            CGRect rect = CGRectMake(0, 0, size.width, size.height);
-            [image drawInRect:rect];
-            cell.imageView.image = UIGraphicsGetImageFromCurrentImageContext();
-            UIGraphicsEndImageContext();
-        }
+        // Standardize the image to ensure consistent appearance
+        cell.imageView.image = [self standardizeImage:image];
         [cell setNeedsLayout];
     } failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
-        cell.imageView.image = placeholder;
+        cell.imageView.image = [self standardizeImage:placeholder];
         [cell setNeedsLayout];
     }];
     
