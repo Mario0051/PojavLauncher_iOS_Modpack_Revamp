@@ -406,13 +406,14 @@
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Load the index file from disk if manifest wasn't provided
-        if (!manifest) {
+        __block NSDictionary *manifestDict = manifest;
+        if (!manifestDict) {
             NSString *indexPath = [destPath stringByAppendingPathComponent:@"modrinth.index.json"];
             NSData *indexData = [NSData dataWithContentsOfFile:indexPath];
             
             if (indexData) {
                 NSError *error = nil;
-                manifest = [NSJSONSerialization JSONObjectWithData:indexData options:0 error:&error];
+                manifestDict = [NSJSONSerialization JSONObjectWithData:indexData options:0 error:&error];
                 
                 if (error) {
                     NSLog(@"[ModrinthAPI] Error loading index file: %@", error);
@@ -422,7 +423,7 @@
         }
         
         // Get mod loader information
-        NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:manifest[@"dependencies"]];
+        NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:manifestDict[@"dependencies"]];
         
         if (depInfo[@"json"]) {
             NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), depInfo[@"id"]];
@@ -444,7 +445,7 @@
                 });
                 
                 // Create profile after JSON download
-                [self createProfileFromManifest:manifest depInfo:depInfo destPath:destPath downloader:downloader];
+                [self createProfileFromManifest:manifestDict depInfo:depInfo destPath:destPath downloader:downloader];
             }];
             
             if (jsonTask) {
@@ -456,7 +457,7 @@
                     setupProgress.completedUnitCount = 1; // Skip first step
                 });
                 
-                [self createProfileFromManifest:manifest depInfo:depInfo destPath:destPath downloader:downloader];
+                [self createProfileFromManifest:manifestDict depInfo:depInfo destPath:destPath downloader:downloader];
             }
         } else {
             // No JSON to download
@@ -465,7 +466,7 @@
                 setupProgress.completedUnitCount = 1; // Skip first step
             });
             
-            [self createProfileFromManifest:manifest depInfo:depInfo destPath:destPath downloader:downloader];
+            [self createProfileFromManifest:manifestDict depInfo:depInfo destPath:destPath downloader:downloader];
         }
     });
 }
