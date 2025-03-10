@@ -138,17 +138,24 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
 - (void)showModpackDetails:(NSDictionary *)details atIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
     NSMutableArray<UIAction *> *versionActions = [NSMutableArray new];
-    [details[@"versionNames"] enumerateObjectsUsingBlock:^(NSString *version, NSUInteger i, BOOL *stop) {
-        NSString *displayName = version;
-        NSString *mcVersion = details[@"mcVersionNames"][i];
-        if (![version hasSuffix:mcVersion]) {
+    
+    NSArray *versionNames = details[@"versionNames"] ?: @[];
+    NSArray *mcVersionNames = details[@"mcVersionNames"] ?: @[];
+    
+    [versionNames enumerateObjectsUsingBlock:^(NSString *version, NSUInteger i, BOOL *stop) {
+        NSString *displayName = version ?: @"";
+        NSString *mcVersion = (i < mcVersionNames.count) ? mcVersionNames[i] : @"";
+        
+        if (mcVersion.length > 0 && version.length > 0 && ![version hasSuffix:mcVersion]) {
             displayName = [NSString stringWithFormat:@"%@ - %@", version, mcVersion];
         }
+        
         [versionActions addObject:[UIAction actionWithTitle:displayName image:nil identifier:nil handler:^(UIAction *action) {
             [self.modrinth installModpackFromDetail:self.list[indexPath.row] atIndex:i];
             [self actionClose]; // Ensure we dismiss this view controller
         }]];
     }];
+    
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Version" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
     for (UIAction *action in versionActions) {
         [alert addAction:[UIAlertAction actionWithTitle:action.title style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
