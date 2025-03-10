@@ -210,24 +210,33 @@
         return;
     }
     
-    // Extract the manifest
+    // Extract the manifest - try modrinth.index.json first (newer format)
     NSError *manifestError = nil;
-    NSString *manifestPath = [destPath stringByAppendingPathComponent:@"manifest.json"];
-    NSData *manifestData = [archive extractDataFromFile:@"manifest.json" error:&manifestError];
-    if (!manifestData && manifestError) {
-        NSLog(@"[ModrinthAPI] Failed to extract manifest.json: %@", manifestError);
-        // Try alternative paths for manifest
-        manifestData = [archive extractDataFromFile:@"modrinth.index.json" error:&manifestError];
-        if (!manifestData && manifestError) {
-            NSLog(@"[ModrinthAPI] Failed to extract modrinth.index.json: %@", manifestError);
-            [downloader finishDownloadWithErrorString:@"Failed to extract manifest from modpack. This might not be a valid modpack."];
-            return;
+    NSString *manifestPath = [destPath stringByAppendingPathComponent:@"modrinth.index.json"];
+    NSData *manifestData = [archive extractDataFromFile:@"modrinth.index.json" error:&manifestError];
+    
+    // If no modrinth.index.json, try manifest.json (older format)
+    if (!manifestData) {
+        manifestError = nil;
+        manifestData = [archive extractDataFromFile:@"manifest.json" error:&manifestError];
+        if (manifestData) {
+            manifestPath = [destPath stringByAppendingPathComponent:@"manifest.json"];
         }
-        manifestPath = [destPath stringByAppendingPathComponent:@"modrinth.index.json"];
     }
     
+    if (!manifestData) {
+        NSLog(@"[ModrinthAPI] Failed to extract any manifest file: %@", manifestError);
+        [downloader finishDownloadWithErrorString:@"Failed to extract manifest from modpack. This might not be a valid modpack."];
+        return;
+    }
+    
+    // Save manifest data
     if (manifestData) {
-        [manifestData writeToFile:manifestPath options:NSDataWritingAtomic error:nil];
+        NSError *writeError = nil;
+        [manifestData writeToFile:manifestPath options:NSDataWritingAtomic error:&writeError];
+        if (writeError) {
+            NSLog(@"[ModrinthAPI] Warning: couldn't write manifest file: %@", writeError);
+        }
     }
     
     // Extract overrides
@@ -267,13 +276,15 @@
     
     // Download and set up mods from the manifest
     NSArray *files = manifest[@"files"];
-    NSArray *dependencies = manifest[@"dependencies"];
     
     if (!files || ![files isKindOfClass:[NSArray class]] || files.count == 0) {
         NSLog(@"[ModrinthAPI] Warning: No files found in manifest");
         // Create a profile even if no files are found
         [self processManifestForProfile:manifest destPath:destPath];
-        [downloader finishDownloadWithErrorString:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+            downloader.textProgress.completedUnitCount = downloader.textProgress.totalUnitCount;
+        });
         return;
     }
     
@@ -281,49 +292,99 @@
     [self processManifestForProfile:manifest destPath:destPath];
     
     // Process mod downloads
+    dispatch_group_t group = dispatch_group_create();
+    
     for (NSDictionary *file in files) {
-        NSString *downloadUrl = file[@"downloads"][0];
-        NSString *path = file[@"path"];
-        
-        if (!downloadUrl || ![downloadUrl isKindOfClass:[NSString class]]) {
-            NSLog(@"[ModrinthAPI] Warning: Missing download URL for file");
+        NSArray *downloads = file[@"downloads"];
+        if (!downloads || ![downloads isKindOfClass:[NSArray class]] || downloads.count == 0) {
+            NSLog(@"[ModrinthAPI] Warning: No download URLs for file %@", file[@"filename"]);
             continue;
         }
         
-        NSString *filePath;
-        if (path && ![path isEqualToString:@""]) {
-            filePath = [destPath stringByAppendingPathComponent:path];
-        } else {
-            // If no path is specified, put it in the mods folder with the filename from URL
-            NSURL *url = [NSURL URLWithString:downloadUrl];
-            filePath = [modsDir stringByAppendingPathComponent:url.lastPathComponent];
+        NSString *downloadUrl = downloads[0];
+        if (!downloadUrl || ![downloadUrl isKindOfClass:[NSString class]]) {
+            NSLog(@"[ModrinthAPI] Warning: Invalid download URL for file");
+            continue;
         }
         
-        // Create directory for file if needed
-        [[NSFileManager defaultManager] createDirectoryAtPath:[filePath stringByDeletingLastPathComponent]
+        // Determine the correct path for this file
+        NSString *filePath;
+        NSString *path = file[@"path"];
+        
+        if (path && [path length] > 0) {
+            // Use the specified path relative to the destination directory
+            filePath = [destPath stringByAppendingPathComponent:path];
+        } else {
+            // Default to mods folder with filename
+            NSString *fileName = file[@"filename"];
+            if (!fileName || [fileName length] == 0) {
+                // Extract filename from URL if not provided
+                NSURL *url = [NSURL URLWithString:downloadUrl];
+                fileName = url.lastPathComponent ?: @"unknown.jar";
+            }
+            filePath = [modsDir stringByAppendingPathComponent:fileName];
+        }
+        
+        // Ensure the directory exists
+        NSString *fileDirectory = [filePath stringByDeletingLastPathComponent];
+        NSError *dirCreateError = nil;
+        [[NSFileManager defaultManager] createDirectoryAtPath:fileDirectory
                                   withIntermediateDirectories:YES
                                                    attributes:nil
-                                                        error:nil];
+                                                        error:&dirCreateError];
+        if (dirCreateError) {
+            NSLog(@"[ModrinthAPI] Warning: Failed to create directory for file %@: %@", filePath, dirCreateError);
+            continue;
+        }
         
         // Get file size if available
         NSNumber *size = file[@"fileSize"];
         NSUInteger fileSize = size ? [size unsignedIntegerValue] : 1;
         
+        // Get hash if available
+        NSString *sha1 = nil;
+        NSDictionary *hashes = file[@"hashes"];
+        if (hashes) {
+            sha1 = hashes[@"sha1"];
+        }
+        
         // Queue download
+        dispatch_group_enter(group);
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:downloadUrl 
                                                                    size:fileSize 
-                                                                    sha:file[@"hashes"][@"sha1"] 
-                                                                altName:nil 
-                                                                 toPath:filePath];
+                                                                    sha:sha1 
+                                                                altName:file[@"filename"] 
+                                                                 toPath:filePath 
+                                                                success:^{
+                                                                    dispatch_group_leave(group);
+                                                                }];
         if (task) {
-            [task resume];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [task resume];
+            });
+        } else {
+            NSLog(@"[ModrinthAPI] Warning: Failed to create download task for %@", filePath);
+            dispatch_group_leave(group);
         }
     }
     
-    // Cleanup the zip file
-    [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
-    
-    NSLog(@"[ModrinthAPI] Modpack extraction and download setup complete");
+    // Wait for all downloads to complete
+    dispatch_group_notify(group, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Cleanup the zip file
+        NSError *removeError = nil;
+        [[NSFileManager defaultManager] removeItemAtPath:packagePath error:&removeError];
+        if (removeError) {
+            NSLog(@"[ModrinthAPI] Warning: Failed to remove package file: %@", removeError);
+        }
+        
+        NSLog(@"[ModrinthAPI] Modpack extraction and download setup complete");
+        
+        // Signal completion
+        dispatch_async(dispatch_get_main_queue(), ^{
+            downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+            downloader.textProgress.completedUnitCount = downloader.textProgress.totalUnitCount;
+        });
+    });
 }
 
 // Helper method to process manifest and set up profile
@@ -364,9 +425,18 @@
     NSString *safeProfileName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
     safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
     safeProfileName = [safeProfileName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+    safeProfileName = [safeProfileName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     
-    // Set up the game directory path
-    NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", safeProfileName];
+    if (safeProfileName.length == 0) {
+        safeProfileName = @"UnknownModpack";
+    }
+    
+    // Determine if we should use the extracted folder (destPath) as the gameDir
+    // Extract the last path component from destPath which should be the modpack folder name
+    NSString *modpackFolderName = [destPath lastPathComponent];
+    
+    // Set up the game directory path - make it relative to fit with PLProfiles' expectations
+    NSString *gameDir = [NSString stringWithFormat:@"./profiles/%@", modpackFolderName];
     
     // Create profile info
     NSMutableDictionary *profileInfo = [@{
