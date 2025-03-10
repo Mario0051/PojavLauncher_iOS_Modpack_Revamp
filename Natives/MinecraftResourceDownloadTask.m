@@ -25,6 +25,7 @@
     self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
     self.fileList = [NSMutableArray new];
     self.progressList = [NSMutableArray new];
+    self.currentStage = @"Initializing";
     return self;
 }
 
@@ -45,6 +46,7 @@
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
         NSLog(@"[MCDL] Downloading %@", name);
+        self.currentStage = [NSString stringWithFormat:@"Downloading %@", name];
         progress = [self.manager downloadProgressForTask:task];
         if (!size && task) {
             [self addDownloadTaskToProgress:task size:response.expectedContentLength];
@@ -62,6 +64,7 @@
             [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
         } else {
             progress.totalUnitCount = progress.completedUnitCount;
+            self.currentStage = [NSString stringWithFormat:@"Completed %@", name];
             if (success) success();
         }
     }];
@@ -93,6 +96,7 @@
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
     // Download base json
+    self.currentStage = @"Preparing version metadata";
     NSString *versionStr = version[@"id"];
     if ([versionStr isEqualToString:@"latest-release"]) {
         versionStr = getPrefObject(@"internal.latest_version.release");
@@ -111,6 +115,7 @@
             return;
         }
         if (self.metadata[@"inheritsFrom"]) {
+            self.currentStage = @"Processing inherited version";
             NSMutableDictionary *inheritsFromDict = parseJSONFromFile([NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), self.metadata[@"inheritsFrom"]]);
             if (inheritsFromDict) {
                 [MinecraftResourceUtils processVersion:self.metadata inheritsFrom:inheritsFromDict];
@@ -145,6 +150,25 @@
     [task resume];
 }
 
+- (void)downloadAssetMetadataWithSuccess:(void (^)())success {
+    self.currentStage = @"Downloading asset index";
+    NSDictionary *assetIndex = self.metadata[@"assetIndex"];
+    if (!assetIndex) {
+        success();
+        return;
+    }
+    NSString *name = [NSString stringWithFormat:@"assets/indexes/%@.json", assetIndex[@"id"]];
+    NSString *path = [@(getenv("POJAV_GAME_DIR")) stringByAppendingPathComponent:name];
+    NSString *url = assetIndex[@"url"];
+    NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
+    NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:^{
+        self.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
+        success();
+    }];
+    [task resume];
+}
+
 #pragma mark - Minecraft installation
 
 - (void)downloadAssetMetadataWithSuccess:(void (^)())success {
@@ -166,6 +190,7 @@
 }
 
 - (NSArray *)downloadClientLibraries {
+    self.currentStage = @"Downloading libraries";
     NSMutableArray *tasks = [NSMutableArray new];
     for (NSDictionary *library in self.metadata[@"libraries"]) {
         NSString *name = library[@"name"];
@@ -201,6 +226,7 @@
 }
 
 - (NSArray *)downloadClientAssets {
+    self.currentStage = @"Downloading game assets";
     NSMutableArray *tasks = [NSMutableArray new];
     NSDictionary *assets = self.metadata[@"assetIndexObj"];
     if (!assets) {
@@ -241,6 +267,7 @@
 
 - (void)downloadVersion:(NSDictionary *)version {
     [self prepareForDownload];
+    self.currentStage = @"Starting download";
     [self downloadVersionMetadata:version success:^{
         [self downloadAssetMetadataWithSuccess:^{
             NSArray *libTasks = [self downloadClientLibraries];
@@ -254,6 +281,7 @@
                 self.progress.completedUnitCount = 1;
                 self.textProgress.totalUnitCount = 1;
                 self.textProgress.completedUnitCount = 1;
+                self.currentStage = @"Download completed";
                 return;
             }
             [libTasks makeObjectsPerformSelector:@selector(resume)];
@@ -267,6 +295,7 @@
 
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     [self prepareForDownload];
+    self.currentStage = @"Preparing modpack download";
 
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
     NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
@@ -276,6 +305,7 @@
     NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", name];
 
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:packagePath success:^{
+        self.currentStage = @"Extracting modpack";
         NSString *path = [NSString stringWithFormat:@"%s/custom_gamedir/%@", getenv("POJAV_GAME_DIR"), name];
         [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:path];
     }];
@@ -297,16 +327,21 @@
     self.progress.totalUnitCount = 1;
     [self.fileList removeAllObjects];
     [self.progressList removeAllObjects];
+    
+    self.currentStage = @"Preparing download";
 }
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
+    self.currentStage = @"Error";
     [self.progress cancel];
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
     showDialog(localize(@"Error", nil), error);
     self.handleError();
 }
 
+
 - (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
+    self.currentStage = @"Error";
     NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
     NSLog(@"[MCDL] Error: %@ %@", errorStr, NSThread.callStackSymbols);
     [self finishDownloadWithErrorString:errorStr];
