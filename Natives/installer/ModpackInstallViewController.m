@@ -145,8 +145,8 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
             displayName = [NSString stringWithFormat:@"%@ - %@", version, mcVersion];
         }
         [versionActions addObject:[UIAction actionWithTitle:displayName image:nil identifier:nil handler:^(UIAction *action) {
-            [self actionClose];
             [self.modrinth installModpackFromDetail:self.list[indexPath.row] atIndex:i];
+            [self actionClose]; // Ensure we dismiss this view controller
         }]];
     }];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select Version" message:nil preferredStyle:UIAlertControllerStyleActionSheet];
@@ -154,9 +154,12 @@ static inline void presentAlertDialog(NSString *title, NSString *message) {
         [alert addAction:[UIAlertAction actionWithTitle:action.title style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull alertAction) {
             NSUInteger index = [versionActions indexOfObject:action];
             [self.modrinth installModpackFromDetail:details atIndex:index];
+            [self actionClose]; // Ensure we dismiss this view controller
         }]];
     }
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:nil]];
+    alert.popoverPresentationController.sourceView = cell;
+    alert.popoverPresentationController.sourceRect = cell.bounds;
     [self presentViewController:alert animated:YES completion:nil];
 }
 
