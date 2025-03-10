@@ -1,6 +1,7 @@
 #import "NetworkService.h"
 #import "AFNetworking.h"
 #import <objc/runtime.h>
+#import <CommonCrypto/CommonCrypto.h>
 
 // Define constants for caching
 static NSString * const kNetworkServiceCachePrefix = @"NetworkServiceCache_";
@@ -448,7 +449,8 @@ static const NSUInteger kMaxConcurrentRequests = 10;
             }];
             
             [headTask resume];
-            return headTask;
+            NSURLSessionDownloadTask *downloadTask = [self performDownloadToPath:path fromURL:url progressHandler:progressHandler completion:completion];
+return downloadTask;
         }
     }
     
@@ -553,10 +555,6 @@ static const NSUInteger kMaxConcurrentRequests = 10;
     dispatch_async(self.cacheQueue, ^{
         [self.cacheExpirations removeAllObjects];
     });
-}
-
-- (void)dealloc {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 @end
