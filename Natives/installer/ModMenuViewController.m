@@ -517,60 +517,69 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 #pragma mark - Version Filtering and Action Sheet
 - (void)showModDetails:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
+    // Extract all needed arrays upfront instead of accessing dictionary repeatedly
     NSArray *versionNames = mod[@"versionNames"];
     NSArray *gameVersionsArray = mod[@"gameVersions"] ?: mod[@"mcVersionNames"];
     NSArray *loadersArray = mod[@"versionLoaders"];
     
-    NSLog(@"[DEBUG] versionNames count: %lu", (unsigned long)versionNames.count);
-    NSLog(@"[DEBUG] gameVersionsArray count: %lu", (unsigned long)gameVersionsArray.count);
-    NSLog(@"[DEBUG] loadersArray count: %lu", (unsigned long)loadersArray.count);
-    
+    // Pre-process profile information once instead of in each loop iteration
     NSString *profileMCVer = [[self.selectedMCVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     NSString *profileLoader = [[self.selectedModLoader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     NSLog(@"Filtering for MC version: %@ and loader: %@", profileMCVer, profileLoader);
     
+    // Arrays to store filtered versions
     NSMutableArray<NSNumber *> *supportedIndices = [NSMutableArray array];
     NSMutableArray<NSString *> *supportedDisplayNames = [NSMutableArray array];
     
+    // Optimize by handling the no-filter case separately
     if (profileMCVer.length == 0 || profileLoader.length == 0) {
+        // No filtering needed, include all versions
         for (NSUInteger i = 0; i < versionNames.count; i++) {
+            [supportedIndices addObject:@(i)];
             NSString *verStr = SafeStringFromVersion(versionNames[i]);
             NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
             NSString *modFileVersion = parsed[@"loaderVersion"] ?: verStr;
-            [supportedIndices addObject:@(i)];
             [supportedDisplayNames addObject:modFileVersion];
         }
     } else {
+        // Full filtering needed
         for (NSUInteger i = 0; i < versionNames.count; i++) {
-            NSArray *gameVers = @[];
+            // Check MC version match first
+            BOOL mcMatch = NO;
             if (i < gameVersionsArray.count) {
                 id gameVerItem = gameVersionsArray[i];
-                gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : @[gameVerItem];
-            }
-            BOOL mcMatch = NO;
-            for (NSString *gv in gameVers) {
-                NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                if ([trimmedGV isEqualToString:profileMCVer] ||
-                    [trimmedGV hasPrefix:profileMCVer] ||
-                    [profileMCVer hasPrefix:trimmedGV]) {
-                    mcMatch = YES;
-                    break;
+                NSArray *gameVers = [gameVerItem isKindOfClass:[NSArray class]] ? gameVerItem : @[gameVerItem];
+                
+                for (NSString *gv in gameVers) {
+                    NSString *trimmedGV = [[gv stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                    if ([trimmedGV isEqualToString:profileMCVer] ||
+                        [trimmedGV hasPrefix:profileMCVer] ||
+                        [profileMCVer hasPrefix:trimmedGV]) {
+                        mcMatch = YES;
+                        break;
+                    }
                 }
             }
-            NSArray *versionLoaders = @[];
+            
+            // Skip to next version if MC version doesn't match (early rejection)
+            if (!mcMatch) continue;
+            
+            // Only check loader match if MC version matches
+            BOOL loaderMatch = NO;
             if (loadersArray && i < loadersArray.count) {
                 id loaderItem = loadersArray[i];
-                versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
-            }
-            BOOL loaderMatch = NO;
-            for (NSString *ld in versionLoaders) {
-                NSString *trimmedLD = [[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
-                if ([trimmedLD isEqualToString:profileLoader]) {
-                    loaderMatch = YES;
-                    break;
+                NSArray *versionLoaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
+                
+                for (NSString *ld in versionLoaders) {
+                    NSString *trimmedLD = [[ld stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                    if ([trimmedLD isEqualToString:profileLoader]) {
+                        loaderMatch = YES;
+                        break;
+                    }
                 }
             }
-            NSLog(@"Version %lu: mcMatch=%d, loaderMatch=%d", (unsigned long)i, mcMatch, loaderMatch);
+            
+            // Add to supported versions if both MC and loader match
             if (mcMatch && loaderMatch) {
                 [supportedIndices addObject:@(i)];
                 NSString *verStr = SafeStringFromVersion(versionNames[i]);
@@ -579,6 +588,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                 [supportedDisplayNames addObject:modFileVersion];
             }
         }
+        
+        // Handle case where no versions match
         if (supportedIndices.count == 0) {
             NSLog(@"No supported versions found for mod: %@", mod[@"title"]);
             presentAlertDialog(localize(@"Error", nil), @"No supported versions available for your selected profile.");
@@ -586,6 +597,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         }
     }
     
+    // Continue with existing code to present version selection alert...
     UIAlertController *versionAlert = [UIAlertController alertControllerWithTitle:@"Select Version"
                                                                           message:nil
                                                                    preferredStyle:UIAlertControllerStyleActionSheet];
