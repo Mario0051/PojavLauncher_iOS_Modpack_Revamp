@@ -18,12 +18,6 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     return self;
 }
 
-- (void)loadView {
-    [super loadView];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
-    self.tableView.allowsSelection = NO;
-}
-
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
@@ -42,7 +36,6 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     [self.tableView reloadData];
     [self.tableView.refreshControl endRefreshing];
 }
-
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
