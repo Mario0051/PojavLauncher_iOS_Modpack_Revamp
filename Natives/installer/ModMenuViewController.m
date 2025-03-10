@@ -66,13 +66,24 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         return;
     }
     
+    NSLog(@"[ModQueue] Starting installation of %lu mods", (unsigned long)self.queue.count);
+    
+    // Create a ModrinthAPI for mod downloads
+    ModrinthAPI *modrinthAPI = [ModrinthAPI new];
+    
     for (NSDictionary *entry in self.queue) {
         NSDictionary *mod = entry[@"mod"];
         NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
         NSNumber *apiSource = mod[@"apiSource"];
+        
+        NSLog(@"[ModQueue] Installing mod: %@, version index: %lu", 
+              mod[@"title"], 
+              (unsigned long)versionIndex);
+        
         if ([apiSource integerValue] == 1) {
+            // Direct notification for Modrinth mods
             [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
-                                                                object:nil
+                                                                object:modrinthAPI
                                                               userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
         } else {
             if ([mod[@"isModpack"] boolValue]) {
@@ -85,6 +96,9 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                                                                   userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
             }
         }
+        
+        // Add a small delay between notifications to ensure proper processing
+        [NSThread sleepForTimeInterval:0.5];
     }
     
     [self.queue removeAllObjects];
@@ -97,6 +111,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         presentAlertDialog(@"Installation Started", @"Queued mod installations have been initiated. You can monitor progress in the main window.");
     }];
 }
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.queue.count;
 }
