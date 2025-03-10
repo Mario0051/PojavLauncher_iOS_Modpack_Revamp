@@ -11,6 +11,7 @@
 
 - (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, id> *)searchFilters
                        previousPageResult:(NSMutableArray *)modrinthSearchResult {
+    // Create facets array once
     NSString *projectType = [searchFilters[@"isModpack"] boolValue] ? @"modpack" : @"mod";
     NSString *mcVer = searchFilters[@"mcVersion"];
     NSMutableArray *outerFacets = [NSMutableArray array];
@@ -19,6 +20,7 @@
         [outerFacets addObject:@[[NSString stringWithFormat:@"versions:%@", mcVer]]];
     }
     
+    // Serialize facets to JSON once with better error handling
     NSError *jsonError = nil;
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:outerFacets options:0 error:&jsonError];
     NSString *facetsParam = @"[]";
@@ -28,6 +30,7 @@
         NSLog(@"ModrinthAPI.searchModWithFilters: JSON error: %@", jsonError.localizedDescription);
     }
     
+    // Build query parameters with defaults for nil values
     int limit = 20;
     NSString *rawName = (searchFilters[@"name"] != nil ? searchFilters[@"name"] : @"");
     NSString *nameQuery = [rawName stringByReplacingOccurrencesOfString:@" " withString:@"+"];
@@ -39,12 +42,14 @@
         @"query": nameQuery
     };
     
+    // Make API request
     NSDictionary *response = [self getEndpoint:@"search" params:params];
     if (!response) {
         NSLog(@"[ModrinthAPI] searchModWithFilters: No response returned");
         return nil;
     }
     
+    // Process results more efficiently
     NSMutableArray *result = modrinthSearchResult ?: [NSMutableArray new];
     for (NSDictionary *hit in response[@"hits"]) {
         BOOL isModpack = [hit[@"project_type"] isEqualToString:@"modpack"];
@@ -58,6 +63,7 @@
         } mutableCopy]];
     }
     
+    // Update pagination state with proper type conversion
     self.reachedLastPage = result.count >= [response[@"total_hits"] unsignedLongValue];
     return result;
 }
@@ -72,14 +78,18 @@
         NSLog(@"loadDetailsOfModSync: No response for mod id %@", item[@"id"]);
         return;
     }
-    NSMutableArray *versionNames = [NSMutableArray new];
-    NSMutableArray *gameVersionsArray = [NSMutableArray new];
-    NSMutableArray *versionUrls = [NSMutableArray new];
-    NSMutableArray *versionSizes = [NSMutableArray new];
-    NSMutableArray *versionHashes = [NSMutableArray new];
-    NSMutableArray *versionLoaders = [NSMutableArray new];
+    
+    // Pre-allocate arrays with estimated capacity
+    NSUInteger estimatedCount = response.count;
+    NSMutableArray *versionNames = [NSMutableArray arrayWithCapacity:estimatedCount];
+    NSMutableArray *gameVersionsArray = [NSMutableArray arrayWithCapacity:estimatedCount];
+    NSMutableArray *versionUrls = [NSMutableArray arrayWithCapacity:estimatedCount];
+    NSMutableArray *versionSizes = [NSMutableArray arrayWithCapacity:estimatedCount];
+    NSMutableArray *versionHashes = [NSMutableArray arrayWithCapacity:estimatedCount];
+    NSMutableArray *versionLoaders = [NSMutableArray arrayWithCapacity:estimatedCount];
     
     for (NSDictionary *versionDict in response) {
+        // Use nil coalescing to simplify null checks
         NSString *versionDisplay = versionDict[@"version_number"] ?: versionDict[@"name"] ?: @"";
         NSArray *supportedGameVersions = versionDict[@"game_versions"] ?: @[];
         NSDictionary *file = [versionDict[@"files"] firstObject];
@@ -87,12 +97,15 @@
             NSLog(@"loadDetailsOfModSync: Missing file info for version %@", versionDict);
             continue;
         }
+        
+        // Extract all needed values at once
         NSString *url = file[@"url"] ?: @"";
         NSNumber *size = file[@"size"] ?: @0;
         NSDictionary *hashes = file[@"hashes"];
         NSString *sha1 = hashes[@"sha1"] ?: @"";
         NSArray *loaders = versionDict[@"loaders"] ?: @[];
         
+        // Add all values to arrays
         [versionNames addObject:versionDisplay];
         [gameVersionsArray addObject:supportedGameVersions];
         [versionUrls addObject:url];
@@ -100,6 +113,8 @@
         [versionHashes addObject:sha1];
         [versionLoaders addObject:loaders];
     }
+    
+    // Assign arrays to the item dictionary once at the end
     item[@"versionNames"] = versionNames;
     item[@"gameVersions"] = gameVersionsArray;
     item[@"versionUrls"] = versionUrls;
