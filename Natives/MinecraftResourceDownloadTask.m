@@ -171,24 +171,6 @@
 
 #pragma mark - Minecraft installation
 
-- (void)downloadAssetMetadataWithSuccess:(void (^)())success {
-    NSDictionary *assetIndex = self.metadata[@"assetIndex"];
-    if (!assetIndex) {
-        success();
-        return;
-    }
-    NSString *name = [NSString stringWithFormat:@"assets/indexes/%@.json", assetIndex[@"id"]];
-    NSString *path = [@(getenv("POJAV_GAME_DIR")) stringByAppendingPathComponent:name];
-    NSString *url = assetIndex[@"url"];
-    NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
-    NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:^{
-        self.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
-        success();
-    }];
-    [task resume];
-}
-
 - (NSArray *)downloadClientLibraries {
     self.currentStage = @"Downloading libraries";
     NSMutableArray *tasks = [NSMutableArray new];
