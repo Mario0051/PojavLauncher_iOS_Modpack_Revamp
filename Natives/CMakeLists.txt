@@ -127,6 +127,7 @@ add_executable(PojavLauncher
   external/ballpa1n/wrapped/HostManagerBridge.m
 
   MinecraftResourceDownloadTask.m
+  installer/modpack/NetworkService.m
   installer/FabricInstallViewController.m
   installer/ForgeInstallViewController.m
   installer/ModpackInstallViewController.m
