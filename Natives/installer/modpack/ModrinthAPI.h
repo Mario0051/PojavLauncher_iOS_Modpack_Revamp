@@ -9,6 +9,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)loadDetailsOfMod:(NSMutableDictionary *)item completion:(void (^)(NSError *error))completion;
 - (void)loadDetailsOfMod:(NSMutableDictionary *)item;
 - (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
+- (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath;
+- (void)processManifestForProfile:(NSDictionary *)manifest destPath:(NSString *)destPath;
 
 @end
 
