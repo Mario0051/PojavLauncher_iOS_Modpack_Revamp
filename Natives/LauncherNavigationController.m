@@ -347,23 +347,44 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         return;
     }
     
+    NSLog(@"[NotificationHandler] Received %@ notification", notification.name);
     [self setInteractionEnabled:NO forDownloading:YES];
+    
+    // Important: Create the download task synchronously before dispatching to a background thread
     self.task = [MinecraftResourceDownloadTask new];
     NSDictionary *userInfo = notification.userInfo;
+    NSLog(@"[NotificationHandler] Processing %@ for %@", 
+          notification.name, 
+          [userInfo[@"detail"][@"title"] description]);
+    
+    // Verify notification data
+    if (!userInfo || !userInfo[@"detail"] || !userInfo[@"index"]) {
+        NSLog(@"[NotificationHandler] Missing required info in notification");
+        [self setInteractionEnabled:YES forDownloading:NO];
+        return;
+    }
+    
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         __weak LauncherNavigationController *weakSelf = self;
         self.task.handleError = ^{
             dispatch_async(dispatch_get_main_queue(), ^{
+                NSLog(@"[NotificationHandler] Error handler invoked");
                 [weakSelf setInteractionEnabled:YES forDownloading:YES];
                 weakSelf.task = nil;
                 weakSelf.progressVC = nil;
             });
         };
         
+        NSLog(@"[NotificationHandler] Starting download process for %@", 
+              notification.name);
+        
         if ([notification.name isEqualToString:@"InstallModpack"]) {
-            [self.task downloadModpackFromAPI:notification.object detail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
+            [self.task downloadModpackFromAPI:notification.object 
+                                       detail:userInfo[@"detail"] 
+                                      atIndex:[userInfo[@"index"] unsignedLongValue]];
         } else if ([notification.name isEqualToString:@"InstallMod"]) {
-            [self.task downloadModFromDetail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
+            [self.task downloadModFromDetail:userInfo[@"detail"] 
+                                     atIndex:[userInfo[@"index"] unsignedLongValue]];
         }
         
         dispatch_async(dispatch_get_main_queue(), ^{
