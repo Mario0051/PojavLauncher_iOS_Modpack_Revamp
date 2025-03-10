@@ -485,17 +485,47 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 #pragma mark - Notification Handlers
 - (void)handleInstallModNotification:(NSNotification *)notification {
     // LauncherNavigationController now handles the actual download
-    // Just close any presented view controllers
+    // Ensure we dismiss all presented view controllers
     if (self.presentedViewController) {
-        [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
+        // Dismiss the current view controller and all its presented view controllers
+        UIViewController *currentVC = self.presentedViewController;
+        while (currentVC.presentedViewController) {
+            currentVC = currentVC.presentedViewController;
+        }
+        
+        // Work backwards dismissing each controller
+        [self dismissViewControllerChain:currentVC];
     }
 }
 
 - (void)handleInstallModpackNotification:(NSNotification *)notification {
     // LauncherNavigationController now handles the actual download
-    // Just close any presented view controllers
+    // Ensure we dismiss all presented view controllers
     if (self.presentedViewController) {
-        [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
+        // Dismiss the current view controller and all its presented view controllers
+        UIViewController *currentVC = self.presentedViewController;
+        while (currentVC.presentedViewController) {
+            currentVC = currentVC.presentedViewController;
+        }
+        
+        // Work backwards dismissing each controller
+        [self dismissViewControllerChain:currentVC];
+    }
+}
+
+// Helper method to recursively dismiss view controllers
+- (void)dismissViewControllerChain:(UIViewController *)viewController {
+    if (viewController == self.presentedViewController) {
+        // This is the root presented view controller, dismiss it directly
+        [viewController dismissViewControllerAnimated:YES completion:nil];
+    } else {
+        // This is a child view controller, dismiss it and then move up the chain
+        [viewController dismissViewControllerAnimated:YES completion:^{
+            if (viewController.presentingViewController && 
+                viewController.presentingViewController != self) {
+                [self dismissViewControllerChain:viewController.presentingViewController];
+            }
+        }];
     }
 }
 
