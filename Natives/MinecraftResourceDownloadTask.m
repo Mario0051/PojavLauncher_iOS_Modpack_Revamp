@@ -294,6 +294,46 @@
     [task resume];
 }
 
+#pragma mark - Mod installation
+
+- (void)downloadModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    [self prepareForDownload];
+    self.currentStage = @"Preparing mod download";
+
+    NSString *url = modDetail[@"versionUrls"][selectedVersion];
+    NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
+    NSString *sha = modDetail[@"versionHashes"][selectedVersion];
+    NSString *modName = modDetail[@"title"];
+    
+    // Get the profile information
+    NSString *profileName = [PLProfiles current].selectedProfileName;
+    NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
+    NSString *gameDir = profile[@"gameDir"];
+    
+    // Ensure the profile directory exists
+    [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
+    
+    // Get the full path to the profile directory
+    NSString *profileDir = [PLProfiles fullPathForProfileWithName:profileName gameDir:gameDir];
+    NSString *modsDir = [profileDir stringByAppendingPathComponent:@"mods"];
+    
+    // Create the mods directory if it doesn't exist
+    if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
+        NSError *createError = nil;
+        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
+        if (createError) {
+            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription]];
+            return;
+        }
+    }
+    
+    // Use the URL's last path component as the filename
+    NSString *fileName = [[NSURL URLWithString:url] lastPathComponent];
+    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
+    
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:modName toPath:destinationPath success:nil];
+    [task resume];
+}
 #pragma mark - Utilities
 
 - (void)prepareForDownload {
