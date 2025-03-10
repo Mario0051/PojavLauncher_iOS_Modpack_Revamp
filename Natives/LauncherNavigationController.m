@@ -317,19 +317,42 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         return;
     }
 
-    // Calculate download speed and ETA
+    // Use static values for tracking progress to prevent excessive UI updates
+    static CGFloat lastProgressValue = 0.0;
+    static NSTimeInterval lastUpdateTime = 0.0;
     static CGFloat lastMsTime;
     static NSUInteger lastSecTime, lastCompletedUnitCount;
+    
+    // Get current time
     NSProgress *progress = self.task.textProgress;
     struct timeval tv;
     gettimeofday(&tv, NULL); 
+    CGFloat currentTime = tv.tv_sec + tv.tv_usec / 1000000.0;
+    
+    // Calculate elapsed time since last update
+    NSTimeInterval timeSinceLastUpdate = currentTime - lastUpdateTime;
+    
+    // Only update UI if significant progress (5%) or time (250ms) has passed
+    if (progress.fractionCompleted - lastProgressValue < 0.05 && 
+        timeSinceLastUpdate < 0.25 && 
+        progress.fractionCompleted < 0.99) {
+        // Skip this update for better performance
+        return;
+    }
+    
+    // Update our tracking variables
+    lastProgressValue = progress.fractionCompleted;
+    lastUpdateTime = currentTime;
     
     // Get the actual number of files being processed
     NSUInteger totalFiles = self.task.fileList.count;
     NSUInteger completedFiles = 0;
     
-    // Make a copy of the progress list to avoid mutation during enumeration
-    NSArray *progressListCopy = [self.task.progressList copy];
+    // Count completed files based on file progress - using a thread-safe approach
+    NSArray *progressListCopy;
+    @synchronized(self.task.progressList) {
+        progressListCopy = [self.task.progressList copy];
+    }
     
     // Count completed files based on file progress
     for (NSProgress *fileProgress in progressListCopy) {
@@ -343,8 +366,8 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     progress.completedUnitCount = completedUnitCount;
     progress.totalUnitCount = totalFiles > 0 ? totalFiles : 1; // Ensure we don't divide by zero
     
+    // Calculate speed and ETA once per second for efficiency
     if (lastSecTime < tv.tv_sec) {
-        CGFloat currentTime = tv.tv_sec + tv.tv_usec / 1000000.0;
         NSInteger throughputPerSec = (completedUnitCount - lastCompletedUnitCount) / (currentTime - lastMsTime);
         progress.throughput = @(throughputPerSec);
         
@@ -361,7 +384,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         lastMsTime = currentTime;
     }
 
+    // Use weak reference to self to prevent retain cycles
+    __weak typeof(self) weakSelf = self;
+    
     dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        
         // Create a more informative progress description
         NSString *progressDescription;
         if (totalFiles > 0) {
@@ -384,21 +413,21 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             progressDescription = @"Preparing download...";
         }
         
-        self.progressText.text = progressDescription;
+        strongSelf.progressText.text = progressDescription;
 
         if (!progress.finished) return;
         
-        self.progressViewMain.observedProgress = nil;
+        strongSelf.progressViewMain.observedProgress = nil;
         
         // Check explicit completion flag in metadata
-        BOOL allTasksComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
+        BOOL allTasksComplete = [strongSelf.task.metadata[@"allTasksComplete"] boolValue];
         
         // Prevent double-launch attempts by checking if we're already in the process of launching
         static BOOL isLaunchingMinecraft = NO;
         
-        if (self.task.metadata && allTasksComplete && !isLaunchingMinecraft) {
+        if (strongSelf.task.metadata && allTasksComplete && !isLaunchingMinecraft) {
             // Make sure we have a valid versionId before launching
-            if (self.task.metadata[@"versionId"] != nil) {
+            if (strongSelf.task.metadata[@"versionId"] != nil) {
                 NSLog(@"[ResourceDownload] All tasks complete, launching Minecraft");
                 
                 // Set flag to prevent multiple launches
@@ -406,18 +435,18 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 
                 // Remove our KVO observer to prevent further callbacks
                 @try {
-                    [progress removeObserver:self forKeyPath:@"fractionCompleted" context:ProgressObserverContext];
+                    [progress removeObserver:strongSelf forKeyPath:@"fractionCompleted" context:ProgressObserverContext];
                 } @catch (NSException *exception) {
                     // Observer wasn't registered, or already removed
                     NSLog(@"[LauncherNavigationController] Failed to remove observer: %@", exception);
                 }
                 
                 // Clear task reference to prevent further processing
-                MinecraftResourceDownloadTask *completedTask = self.task;
-                self.task = nil;
+                MinecraftResourceDownloadTask *completedTask = strongSelf.task;
+                strongSelf.task = nil;
                 
-                [self invokeAfterJITEnabled:^{
-                    UIKit_launchMinecraftSurfaceVC(self.view.window, completedTask.metadata);
+                [strongSelf invokeAfterJITEnabled:^{
+                    UIKit_launchMinecraftSurfaceVC(strongSelf.view.window, completedTask.metadata);
                     
                     // Reset the flag after a delay to allow for cleanup
                     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -426,19 +455,19 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 }];
             } else {
                 NSLog(@"[ResourceDownload] Cannot launch - missing required version information");
-                self.task = nil;
-                [self setInteractionEnabled:YES forDownloading:YES];
-                [self reloadProfileList];
+                strongSelf.task = nil;
+                [strongSelf setInteractionEnabled:YES forDownloading:YES];
+                [strongSelf reloadProfileList];
             }
-        } else if (self.task.metadata && !isLaunchingMinecraft) {
+        } else if (strongSelf.task.metadata && !isLaunchingMinecraft) {
             // Not all tasks are complete, just waiting
             NSLog(@"[ResourceDownload] Download finished but waiting for mod installation to complete");
         } else if (!isLaunchingMinecraft) {
             // Safely remove the observer before clearing the task
-            [self removeProgressObserver];
-            self.task = nil;
-            [self setInteractionEnabled:YES forDownloading:YES];
-            [self reloadProfileList];
+            [strongSelf removeProgressObserver];
+            strongSelf.task = nil;
+            [strongSelf setInteractionEnabled:YES forDownloading:YES];
+            [strongSelf reloadProfileList];
         } else {
             // A launch is already in progress, log this to help with debugging
             NSLog(@"[ResourceDownload] Ignored additional launch attempt - launch already in progress");
@@ -446,6 +475,152 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     });
 }
 
+- (void)removeProgressObserver {
+    if (self.task && self.task.progress) {
+        @try {
+            [self.task.progress removeObserver:self forKeyPath:@"fractionCompleted" context:ProgressObserverContext];
+        } @catch (NSException *exception) {
+            // Observer wasn't registered or was already removed
+            NSLog(@"[LauncherNavigationController] Warning: Failed to remove progress observer: %@", exception);
+        }
+    }
+}
+
+- (void)receiveNotification:(NSNotification *)notification {
+    if (![notification.name isEqualToString:@"InstallModpack"]) {
+        return;
+    }
+    
+    // Prevent multiple simultaneous installations
+    static BOOL isInstallingModpack = NO;
+    if (isInstallingModpack) {
+        NSLog(@"[Launcher] Modpack installation already in progress, ignoring request");
+        return;
+    }
+    
+    isInstallingModpack = YES;
+    
+    [self setInteractionEnabled:NO forDownloading:YES];
+    
+    // If a task is already running, cancel it cleanly first
+    if (self.task) {
+        [self.task cancelAllTasks];
+        [self removeProgressObserver]; // Safely remove the observer
+        self.task = nil;
+    }
+    
+    // Create a new task for modpack installation
+    self.task = [MinecraftResourceDownloadTask new];
+    NSDictionary *userInfo = notification.userInfo;
+    
+    // Use weak self to prevent retain cycles
+    __weak typeof(self) weakSelf = self;
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            isInstallingModpack = NO;
+            return;
+        }
+        
+        // Set up error handler
+        strongSelf.task.handleError = ^{
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf setInteractionEnabled:YES forDownloading:YES];
+                weakSelf.task = nil;
+                weakSelf.progressVC = nil;
+                isInstallingModpack = NO;
+            });
+        };
+        
+        // Start the download process
+        [strongSelf.task downloadModpackFromAPI:notification.object 
+                                         detail:userInfo[@"detail"] 
+                                        atIndex:[userInfo[@"index"] unsignedLongValue]];
+        
+        // Set up UI updates on main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongInner = weakSelf;
+            if (!strongInner) {
+                isInstallingModpack = NO;
+                return;
+            }
+            
+            strongInner.progressViewMain.observedProgress = strongInner.task.progress;
+            
+            // Set up KVO for progress tracking
+            [strongInner.task.progress addObserver:strongInner
+                                        forKeyPath:@"fractionCompleted"
+                                          options:NSKeyValueObservingOptionInitial
+                                          context:ProgressObserverContext];
+            
+            // Reset flag after a delay
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                isInstallingModpack = NO;
+            });
+        });
+    });
+}
+
+- (void)launchMinecraft:(UIButton *)sender {
+    if (!self.versionTextField.hasText) {
+        [self.versionTextField becomeFirstResponder];
+        return;
+    }
+
+    if (BaseAuthenticator.current == nil) {
+        // Present the account selector if none selected
+        UIViewController *view = [(UINavigationController *)self.splitViewController.viewControllers[0]
+        viewControllers][0];
+        [view performSelector:@selector(selectAccount:) withObject:sender];
+        return;
+    }
+
+    [self setInteractionEnabled:NO forDownloading:YES];
+
+    NSString *versionId = PLProfiles.current.profiles[self.versionTextField.text][@"lastVersionId"];
+    NSDictionary *object = [remoteVersionList filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(id == %@)", versionId]].firstObject;
+    if (!object) {
+        object = @{
+            @"id": versionId,
+            @"type": @"custom"
+        };
+    }
+
+    // Safely remove any existing observer before creating a new task
+    [self removeProgressObserver];
+    
+    self.task = [MinecraftResourceDownloadTask new];
+    
+    // Use weak self to prevent retain cycles
+    __weak typeof(self) weakSelf = self;
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        
+        strongSelf.task.handleError = ^{
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf setInteractionEnabled:YES forDownloading:YES];
+                weakSelf.task = nil;
+                weakSelf.progressVC = nil;
+            });
+        };
+        
+        [strongSelf.task downloadVersion:object];
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) innerStrongSelf = weakSelf;
+            if (!innerStrongSelf) return;
+            
+            innerStrongSelf.progressViewMain.observedProgress = innerStrongSelf.task.progress;
+            [innerStrongSelf.task.progress addObserver:innerStrongSelf
+                                           forKeyPath:@"fractionCompleted"
+                                             options:NSKeyValueObservingOptionInitial
+                                             context:ProgressObserverContext];
+        });
+    });
+}
 - (void)receiveNotification:(NSNotification *)notification {
     if (![notification.name isEqualToString:@"InstallModpack"]) {
         return;
