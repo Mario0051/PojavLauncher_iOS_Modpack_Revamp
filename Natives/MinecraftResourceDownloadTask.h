@@ -10,6 +10,7 @@
 @property(nonatomic, copy) NSString *currentStage;
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path;
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)(void))success;
 - (void)finishDownloadWithErrorString:(NSString *)error;
 
 - (void)downloadVersion:(NSDictionary *)version;
