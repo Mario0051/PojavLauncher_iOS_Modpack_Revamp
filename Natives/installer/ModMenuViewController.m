@@ -38,7 +38,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 #pragma mark - Private Method Declarations
 @interface ModMenuViewController ()
-- (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion;
 - (NSString *)stringFromVersionObject:(id)rawVersion;
 - (void)updateProfileFromSavedSettings;
 @end
@@ -66,6 +65,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         presentAlertDialog(localize(@"Queue Empty", nil), @"There are no mods in the install queue.");
         return;
     }
+    
     for (NSDictionary *entry in self.queue) {
         NSDictionary *mod = entry[@"mod"];
         NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
@@ -86,12 +86,16 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             }
         }
     }
+    
     [self.queue removeAllObjects];
     if (self.didFinishInstallation) {
         self.didFinishInstallation();
     }
-    [self.tableView reloadData];
-    presentAlertDialog(@"Installation Started", @"Queued mod installations have been triggered.");
+    
+    // Dismiss the queue view controller after initiating all downloads
+    [self dismissViewControllerAnimated:YES completion:^{
+        presentAlertDialog(@"Installation Started", @"Queued mod installations have been initiated. You can monitor progress in the main window.");
+    }];
 }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return self.queue.count;
@@ -162,79 +166,17 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     return SafeStringFromVersion(rawVersion);
 }
 
-// Implementation of the download method with file conflict resolution.
-- (void)downloadModFromURL:(NSString *)urlString toDestination:(NSString *)destinationPath completion:(void(^)(BOOL success, NSError *error))completion {
-    NSURL *url = [NSURL URLWithString:urlString];
-    NSURLSessionDownloadTask *downloadTask = [[NSURLSession sharedSession] downloadTaskWithURL:url
-        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
-            if (error) {
-                if (completion) completion(NO, error);
-                return;
-            }
-            NSFileManager *fm = [NSFileManager defaultManager];
-            if ([fm fileExistsAtPath:destinationPath]) {
-                NSError *removeError = nil;
-                [fm removeItemAtPath:destinationPath error:&removeError];
-                if (removeError) {
-                    if (completion) completion(NO, removeError);
-                    return;
-                }
-            }
-            NSError *fileError = nil;
-            [fm moveItemAtURL:location toURL:[NSURL fileURLWithPath:destinationPath] error:&fileError];
-            if (fileError) {
-                if (completion) completion(NO, fileError);
-            } else {
-                if (completion) completion(YES, nil);
-            }
-    }];
-    [downloadTask resume];
-}
-
 // Method to handle mod installation when a version is selected.
 - (void)installModNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
-    NSArray *urls = mod[@"versionUrls"];
-    if (index >= urls.count) {
-        presentAlertDialog(localize(@"Error", nil), @"Invalid version index for installation.");
-        return;
+    // Post notification for download task to handle
+    NSDictionary *userInfo = @{@"detail": mod, @"index": @(index)};
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod" object:nil userInfo:userInfo];
+    
+    // Dismiss any presented view controllers like version selection
+    if (self.presentedViewController) {
+        [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
     }
-    NSString *urlString = urls[index];
-    // Use the lastPathComponent of the URL to preserve the original file name.
-    NSString *fileName = [[NSURL URLWithString:urlString] lastPathComponent];
-    
-    // Retrieve the actual gameDir path for the current profile
-    NSString *profileName = [PLProfiles current].selectedProfileName;
-    NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
-    NSString *gameDir = profile[@"gameDir"];
-    
-    // Ensure the profile directory exists
-    [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
-    
-    // Get the full path to the profile directory
-    NSString *profileDir = [PLProfiles fullPathForProfileWithName:profileName gameDir:gameDir];
-    NSString *modsDir = [profileDir stringByAppendingPathComponent:@"mods"];
-    
-    // Create the mods directory if it doesn't exist
-    if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
-        NSError *createError = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
-        if (createError) {
-            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription]);
-            return;
-        }
-    }
-    
-    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
-    
-    [self downloadModFromURL:urlString toDestination:destinationPath completion:^(BOOL success, NSError *error) {
-        if (success) {
-            presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", fileName]);
-        } else {
-            presentAlertDialog(localize(@"Error", nil), [NSString stringWithFormat:@"Failed to install %@: %@", fileName, error.localizedDescription]);
-        }
-    }];
 }
-
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -353,25 +295,31 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 #pragma mark - Notification Handlers
 - (void)handleInstallModNotification:(NSNotification *)notification {
-    NSDictionary *userInfo = notification.userInfo;
-    NSDictionary *mod = userInfo[@"detail"];
-    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
-    [self installModNow:mod versionIndex:index];
+    // LauncherNavigationController now handles the actual download
+    // Just close any presented view controllers
+    if (self.presentedViewController) {
+        [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 - (void)handleInstallModpackNotification:(NSNotification *)notification {
-    NSDictionary *userInfo = notification.userInfo;
-    NSDictionary *mod = userInfo[@"detail"];
-    NSUInteger index = [userInfo[@"index"] unsignedIntegerValue];
-    [self installModpackNow:mod versionIndex:index];
+    // LauncherNavigationController now handles the actual download
+    // Just close any presented view controllers
+    if (self.presentedViewController) {
+        [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 #pragma mark - Installation Methods
 - (void)installModpackNow:(NSDictionary *)mod versionIndex:(NSUInteger)index {
-    NSString *modTitle = mod[@"title"] ?: @"Modpack";
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        presentAlertDialog(@"Installation Complete", [NSString stringWithFormat:@"%@ installed successfully.", modTitle]);
-    });
+    // Post notification for download task to handle
+    NSDictionary *userInfo = @{@"detail": mod, @"index": @(index)};
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack" object:nil userInfo:userInfo];
+    
+    // Dismiss any presented view controllers
+    if (self.presentedViewController) {
+        [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
+    }
 }
 
 #pragma mark - Mod Search
@@ -483,6 +431,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         [self loadModDetailsForMod:mod atIndexPath:indexPath];
     }
 }
+
 - (void)loadModDetailsForMod:(NSDictionary *)mod atIndexPath:(NSIndexPath *)indexPath {
     NSMutableDictionary *modMutable = [mod mutableCopy];
     __weak typeof(self) weakSelf = self;
@@ -608,8 +557,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction * _Nonnull action) {
             UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
-                                                                                    message:@"Choose to install now or add to the install queue."
-                                                                             preferredStyle:UIAlertControllerStyleAlert];
+                                                                                 message:@"Choose to install now or add to the install queue."
+                                                                          preferredStyle:UIAlertControllerStyleAlert];
             [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Install Now"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(UIAlertAction * _Nonnull action) {
