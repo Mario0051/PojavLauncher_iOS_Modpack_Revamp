@@ -143,6 +143,17 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     }
 }
 
+- (void)removeProgressObserver {
+    if (self.task && self.task.progress) {
+        @try {
+            [self.task.progress removeObserver:self forKeyPath:@"fractionCompleted" context:ProgressObserverContext];
+        } @catch (NSException *exception) {
+            // Observer wasn't registered or was already removed
+            NSLog(@"[LauncherNavigationController] Warning: Failed to remove progress observer: %@", exception);
+        }
+    }
+}
+
 - (void)fetchRemoteVersionList {
     self.buttonInstall.enabled = NO;
     remoteVersionList = @[
@@ -263,6 +274,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         };
     }
 
+    // Safely remove any existing observer before creating a new task
+    [self removeProgressObserver];
+    
     self.task = [MinecraftResourceDownloadTask new];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         __weak LauncherNavigationController *weakSelf = self;
@@ -283,7 +297,6 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         });
     });
 }
-
 - (void)performInstallOrShowDetails:(UIButton *)sender {
     if (self.task) {
         if (!self.progressVC) {
@@ -392,7 +405,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 isLaunchingMinecraft = YES;
                 
                 // Remove our KVO observer to prevent further callbacks
-                [progress removeObserver:self forKeyPath:@"fractionCompleted" context:ProgressObserverContext];
+                @try {
+                    [progress removeObserver:self forKeyPath:@"fractionCompleted" context:ProgressObserverContext];
+                } @catch (NSException *exception) {
+                    // Observer wasn't registered, or already removed
+                    NSLog(@"[LauncherNavigationController] Failed to remove observer: %@", exception);
+                }
                 
                 // Clear task reference to prevent further processing
                 MinecraftResourceDownloadTask *completedTask = self.task;
@@ -416,6 +434,8 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             // Not all tasks are complete, just waiting
             NSLog(@"[ResourceDownload] Download finished but waiting for mod installation to complete");
         } else if (!isLaunchingMinecraft) {
+            // Safely remove the observer before clearing the task
+            [self removeProgressObserver];
             self.task = nil;
             [self setInteractionEnabled:YES forDownloading:YES];
             [self reloadProfileList];
@@ -425,6 +445,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         }
     });
 }
+
 - (void)receiveNotification:(NSNotification *)notification {
     if (![notification.name isEqualToString:@"InstallModpack"]) {
         return;
