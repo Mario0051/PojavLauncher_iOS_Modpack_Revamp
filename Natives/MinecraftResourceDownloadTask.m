@@ -399,8 +399,17 @@
     NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
     NSLog(@"[ModDownload] Final destination path: %@", destinationPath);
     
+    __weak typeof(self) weakSelf = self;
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:modName toPath:destinationPath success:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
         NSLog(@"[ModDownload] Download completed successfully for mod: %@", modName);
+        
+        // Ensure the progress is completed to trigger UI updates
+        dispatch_async(dispatch_get_main_queue(), ^{
+            strongSelf.progress.completedUnitCount = strongSelf.progress.totalUnitCount;
+            strongSelf.textProgress.completedUnitCount = strongSelf.textProgress.totalUnitCount;
+            strongSelf.currentStage = @"Download completed";
+        });
     }];
     
     if (task) {
