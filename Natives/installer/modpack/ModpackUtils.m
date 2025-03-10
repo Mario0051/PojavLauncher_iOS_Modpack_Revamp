@@ -50,10 +50,13 @@
 // - Quilt: "1.20-quilt-<version>"
 + (NSDictionary *)parseVersionString:(NSString *)versionString {
     if (!versionString || versionString.length == 0) return @{};
+    
+    // Normalize string once
     NSString *trimmed = [[versionString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
     NSArray *components = [trimmed componentsSeparatedByString:@"-"];
     NSMutableDictionary *result = [NSMutableDictionary new];
     
+    // Handle common cases efficiently
     if (components.count == 4 && [components[0] isEqualToString:@"fabric"] && [components[1] isEqualToString:@"loader"]) {
         // Fabric example: "fabric-loader-0.16.10-1.21.4"
         result[@"loader"] = @"fabric";
@@ -74,5 +77,4 @@
     }
     return result;
 }
-
 @end
