@@ -24,6 +24,26 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     self.tableView.allowsSelection = NO;
 }
 
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
+    self.tableView.allowsSelection = NO;
+    
+    // Add a refresh button to update the list if needed
+    UIRefreshControl *refreshControl = [[UIRefreshControl alloc] init];
+    [refreshControl addTarget:self action:@selector(refreshTableView) forControlEvents:UIControlEventValueChanged];
+    self.tableView.refreshControl = refreshControl;
+    
+    // Set a more descriptive title
+    self.title = @"Download Progress";
+}
+
+- (void)refreshTableView {
+    [self.tableView reloadData];
+    [self.tableView.refreshControl endRefreshing];
+}
+
+
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     
@@ -90,20 +110,29 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         });
     } else if (context == TotalProgressObserverContext) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Update overall download status with more descriptive text
+            // Ensure we're updating the title on the main thread
             NSString *currentTask = @"Downloading";
             if (self.task.currentStage) {
                 currentTask = self.task.currentStage;
             }
             
-            // Format the title to show current task
+            // Format the title to show current task and percentage
             if (progress.fractionCompleted < 1.0) {
                 self.title = [NSString stringWithFormat:@"%@ - %.0f%%", 
                              currentTask, progress.fractionCompleted * 100];
+                
+                // Update navigation bar progress indicator if available
+                if (@available(iOS 15.0, *)) {
+                    UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
+                    [appearance configureWithDefaultBackground];
+                    self.navigationItem.scrollEdgeAppearance = appearance;
+                    self.navigationItem.standardAppearance = appearance;
+                }
             } else {
                 self.title = @"Download Complete";
             }
             
+            // Check if we need to reload the table
             if (self.fileListCount != self.task.fileList.count) {
                 [self.tableView reloadData];
             }
