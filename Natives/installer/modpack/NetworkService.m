@@ -1,5 +1,6 @@
 #import "NetworkService.h"
 #import "AFNetworking.h"
+#import <objc/runtime.h>
 
 @interface NetworkService ()
 @property (nonatomic, strong) AFHTTPSessionManager *sessionManager;
@@ -119,7 +120,7 @@
     
     if (progressHandler) {
         [task addObserver:self forKeyPath:@"countOfBytesReceived" options:NSKeyValueObservingOptionNew context:NULL];
-        objc_setAssociatedObject(task, @"progressHandler", progressHandler, OBJC_ASSOCIATION_COPY);
+        objc_setAssociatedObject(task, @"progressHandler", progressHandler, OBJC_ASSOCIATION_COPY_NONATOMIC);
     }
     
     return task;
