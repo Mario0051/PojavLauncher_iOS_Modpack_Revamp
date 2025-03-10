@@ -378,6 +378,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 - (void)refreshModsList {
     [self.modsList removeAllObjects];
+    [self.tableView reloadData]; 
     [self refreshModsListWithPrevList:NO];
     [self.tableView.refreshControl endRefreshing];
 }
