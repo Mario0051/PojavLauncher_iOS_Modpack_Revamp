@@ -32,38 +32,72 @@
 
 // Add file to the queue
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+    NSLog(@"[DownloadTask] Creating download task - URL: %@, Path: %@, Size: %lu", url, path, (unsigned long)size);
+    
+    // Validate URL
+    if (!url || url.length == 0 || ![NSURL URLWithString:url]) {
+        NSLog(@"[DownloadTask] Invalid URL provided: %@", url);
+        if (success) success();
+        return nil;
+    }
+    
     BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    // logSuccess?
+    NSLog(@"[DownloadTask] File exists at destination: %@", fileExists ? @"YES" : @"NO");
+    
+    // Check if file already exists and SHA matches
     if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+        NSLog(@"[DownloadTask] File already exists and SHA matches. Skipping download.");
         if (success) success();
         return nil;
     } else if (![self checkAccessWithDialog:YES]) {
+        NSLog(@"[DownloadTask] Access check failed. Cancelling download.");
         return nil;
     }
 
     NSString *name = altName ?: path.lastPathComponent;
+    NSLog(@"[DownloadTask] Display name for download: %@", name);
+    
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:url]];
+    NSLog(@"[DownloadTask] Created URL request for: %@", url);
+    
     __block NSProgress *progress;
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-        NSLog(@"[MCDL] Downloading %@", name);
+        NSLog(@"[DownloadTask] Download started for: %@", name);
         self.currentStage = [NSString stringWithFormat:@"Downloading %@", name];
         progress = [self.manager downloadProgressForTask:task];
+        
         if (!size && task) {
+            NSLog(@"[DownloadTask] No size provided, using response size: %lld", response.expectedContentLength);
             [self addDownloadTaskToProgress:task size:response.expectedContentLength];
             [self.fileList addObject:name];
         }
-        [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        
+        NSString *dirPath = path.stringByDeletingLastPathComponent;
+        NSLog(@"[DownloadTask] Creating directory at: %@", dirPath);
+        NSError *dirError = nil;
+        BOOL dirCreated = [NSFileManager.defaultManager createDirectoryAtPath:dirPath 
+                                                   withIntermediateDirectories:YES 
+                                                                    attributes:nil 
+                                                                         error:&dirError];
+        if (!dirCreated) {
+            NSLog(@"[DownloadTask] Failed to create directory: %@", dirError.localizedDescription);
+        }
+        
         [NSFileManager.defaultManager removeItemAtPath:path error:nil];
         return [NSURL fileURLWithPath:path];
     } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
         if (self.progress.cancelled) {
+            NSLog(@"[DownloadTask] Download cancelled for: %@", name);
             // Ignore any further errors
         } else if (error != nil) {
+            NSLog(@"[DownloadTask] Download error for %@: %@", name, error.localizedDescription);
             [self finishDownloadWithError:error file:name];
         } else if (![self checkSHA:sha forFile:path altName:altName]) {
+            NSLog(@"[DownloadTask] SHA verification failed for: %@", name);
             [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
         } else {
+            NSLog(@"[DownloadTask] Download completed successfully for: %@", name);
             progress.totalUnitCount = progress.completedUnitCount;
             self.currentStage = [NSString stringWithFormat:@"Completed %@", name];
             if (success) success();
@@ -71,10 +105,14 @@
     }];
 
     if (size && task) {
+        NSLog(@"[DownloadTask] Added task to progress tracker with size: %lu", (unsigned long)size);
         [self addDownloadTaskToProgress:task size:size];
         [self.fileList addObject:name];
+    } else if (!task) {
+        NSLog(@"[DownloadTask] Failed to create download task");
     }
 
+    NSLog(@"[DownloadTask] Returning download task: %@", task ? @"Valid task" : @"nil");
     return task;
 }
 
@@ -306,35 +344,76 @@
     NSString *sha = modDetail[@"versionHashes"][selectedVersion];
     NSString *modName = modDetail[@"title"];
     
+    NSLog(@"[ModDownload] Starting download for mod: %@, URL: %@, size: %lu", modName, url, (unsigned long)size);
+    
     // Get the profile information
     NSString *profileName = [PLProfiles current].selectedProfileName;
+    NSLog(@"[ModDownload] Selected profile name: %@", profileName);
+    
     NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
     NSString *gameDir = profile[@"gameDir"];
+    NSLog(@"[ModDownload] Game directory from profile: %@", gameDir);
     
     // Ensure the profile directory exists
-    [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
+    BOOL dirCreated = [PLProfiles ensureProfileDirectoryExists:profileName gameDir:gameDir];
+    NSLog(@"[ModDownload] Profile directory created or exists: %@", dirCreated ? @"YES" : @"NO");
     
     // Get the full path to the profile directory
     NSString *profileDir = [PLProfiles fullPathForProfileWithName:profileName gameDir:gameDir];
+    NSLog(@"[ModDownload] Full profile directory path: %@", profileDir);
+    
     NSString *modsDir = [profileDir stringByAppendingPathComponent:@"mods"];
+    NSLog(@"[ModDownload] Mods directory path: %@", modsDir);
     
     // Create the mods directory if it doesn't exist
     if (![[NSFileManager defaultManager] fileExistsAtPath:modsDir]) {
         NSError *createError = nil;
-        [[NSFileManager defaultManager] createDirectoryAtPath:modsDir withIntermediateDirectories:YES attributes:nil error:&createError];
-        if (createError) {
+        BOOL created = [[NSFileManager defaultManager] createDirectoryAtPath:modsDir 
+                                                  withIntermediateDirectories:YES 
+                                                                   attributes:nil 
+                                                                        error:&createError];
+        if (!created || createError) {
+            NSLog(@"[ModDownload] Failed to create mods directory: %@", createError.localizedDescription);
             [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create mods directory: %@", createError.localizedDescription]];
             return;
         }
+        NSLog(@"[ModDownload] Created mods directory at: %@", modsDir);
+    } else {
+        NSLog(@"[ModDownload] Mods directory already exists at: %@", modsDir);
     }
     
     // Use the URL's last path component as the filename
-    NSString *fileName = [[NSURL URLWithString:url] lastPathComponent];
-    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
+    NSURL *fileURL = [NSURL URLWithString:url];
+    if (!fileURL) {
+        NSLog(@"[ModDownload] Invalid URL: %@", url);
+        [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Invalid download URL for mod: %@", modName]];
+        return;
+    }
     
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:modName toPath:destinationPath success:nil];
-    [task resume];
+    NSString *fileName = fileURL.lastPathComponent;
+    if (fileName.length == 0) {
+        NSLog(@"[ModDownload] Could not determine filename from URL: %@", url);
+        fileName = [NSString stringWithFormat:@"%@.jar", modName];
+        NSLog(@"[ModDownload] Using fallback filename: %@", fileName);
+    }
+    
+    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
+    NSLog(@"[ModDownload] Final destination path: %@", destinationPath);
+    
+    // Create and start the download task
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:modName toPath:destinationPath success:^{
+        NSLog(@"[ModDownload] Download completed successfully for mod: %@", modName);
+    }];
+    
+    if (task) {
+        NSLog(@"[ModDownload] Starting download task for mod: %@", modName);
+        [task resume];
+    } else {
+        NSLog(@"[ModDownload] Failed to create download task for mod: %@", modName);
+        [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create download task for mod: %@", modName]];
+    }
 }
+
 #pragma mark - Utilities
 
 - (void)prepareForDownload {
