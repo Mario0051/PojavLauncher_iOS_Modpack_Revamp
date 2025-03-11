@@ -13,6 +13,9 @@
 
 @interface MinecraftResourceDownloadTask ()
 @property AFURLSessionManager* manager;
+@property(nonatomic, strong) NSMutableArray *dependencyQueue;
+@property(nonatomic, assign) BOOL processingDependencies;
+@property(nonatomic, strong) NSMutableSet *processedDependencyIds;
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -338,7 +341,22 @@
 - (void)downloadModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     [self prepareForDownload];
     self.currentStage = @"Preparing mod download";
-
+    
+    // Initialize dependency tracking
+    if (!self.dependencyQueue) {
+        self.dependencyQueue = [NSMutableArray new];
+    } else {
+        [self.dependencyQueue removeAllObjects];
+    }
+    
+    if (!self.processedDependencyIds) {
+        self.processedDependencyIds = [NSMutableSet new];
+    } else {
+        [self.processedDependencyIds removeAllObjects];
+    }
+    
+    self.processingDependencies = NO;
+    
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
     NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
     NSString *sha = modDetail[@"versionHashes"][selectedVersion];
@@ -399,17 +417,58 @@
     NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
     NSLog(@"[ModDownload] Final destination path: %@", destinationPath);
     
+    // Check for dependencies
+    NSArray *versionDependencies = modDetail[@"versionDependencies"];
+    if (versionDependencies && [versionDependencies isKindOfClass:[NSArray class]] && selectedVersion < versionDependencies.count) {
+        NSArray *dependencies = versionDependencies[selectedVersion];
+        
+        if (dependencies && [dependencies isKindOfClass:[NSArray class]] && dependencies.count > 0) {
+            NSLog(@"[ModDownload] Found %lu dependencies for %@", (unsigned long)dependencies.count, modName);
+            
+            for (NSDictionary *dependency in dependencies) {
+                NSString *depType = dependency[@"dependency_type"];
+                NSString *depId = dependency[@"project_id"];
+                NSString *depName = dependency[@"project_name"] ?: @"Unknown Dependency";
+                
+                if (!depId || ![depId isKindOfClass:[NSString class]] || depId.length == 0) {
+                    NSLog(@"[ModDownload] Skipping dependency with missing project_id: %@", dependency);
+                    continue;
+                }
+                
+                // Only add required dependencies to the queue
+                if ([depType isEqualToString:@"required"] && ![self.processedDependencyIds containsObject:depId]) {
+                    [self.dependencyQueue addObject:@{
+                        @"id": depId,
+                        @"name": depName,
+                        @"type": depType
+                    }];
+                    [self.processedDependencyIds addObject:depId];
+                    NSLog(@"[ModDownload] Added required dependency to queue: %@", depName);
+                }
+            }
+            
+            // Update progress total to include dependencies
+            self.progress.totalUnitCount += self.dependencyQueue.count;
+            self.textProgress.totalUnitCount += self.dependencyQueue.count;
+        }
+    }
+    
     __weak typeof(self) weakSelf = self;
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:modName toPath:destinationPath success:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         NSLog(@"[ModDownload] Download completed successfully for mod: %@", modName);
         
-        // Ensure the progress is completed to trigger UI updates
-        dispatch_async(dispatch_get_main_queue(), ^{
-            strongSelf.progress.completedUnitCount = strongSelf.progress.totalUnitCount;
-            strongSelf.textProgress.completedUnitCount = strongSelf.textProgress.totalUnitCount;
-            strongSelf.currentStage = @"Download completed";
-        });
+        // Check if we have dependencies to process
+        if (strongSelf.dependencyQueue.count > 0 && !strongSelf.processingDependencies) {
+            [strongSelf processNextDependency:modsDir];
+        } else {
+            // No dependencies, complete the download
+            dispatch_async(dispatch_get_main_queue(), ^{
+                strongSelf.progress.completedUnitCount = strongSelf.progress.totalUnitCount;
+                strongSelf.textProgress.completedUnitCount = strongSelf.textProgress.totalUnitCount;
+                strongSelf.currentStage = @"Download completed";
+            });
+        }
     }];
     
     if (task) {
@@ -418,6 +477,136 @@
     } else {
         NSLog(@"[ModDownload] Failed to create download task for mod: %@", modName);
         [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create download task for mod: %@", modName]];
+    }
+}
+
+- (void)processNextDependency:(NSString *)modsDir {
+    if (self.dependencyQueue.count == 0) {
+        // All dependencies processed
+        self.processingDependencies = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.progress.completedUnitCount = self.progress.totalUnitCount;
+            self.textProgress.completedUnitCount = self.textProgress.totalUnitCount;
+            self.currentStage = @"Download completed";
+        });
+        return;
+    }
+    
+    self.processingDependencies = YES;
+    NSDictionary *dependency = [self.dependencyQueue firstObject];
+    [self.dependencyQueue removeObjectAtIndex:0];
+    
+    NSString *depId = dependency[@"id"];
+    NSString *depName = dependency[@"name"];
+    
+    self.currentStage = [NSString stringWithFormat:@"Downloading dependency: %@", depName];
+    NSLog(@"[ModDownload] Processing dependency: %@", depName);
+    
+    // Use the ModrinthAPI to fetch dependency details
+    ModrinthAPI *api = [ModrinthAPI new];
+    NSMutableDictionary *depItem = [@{
+        @"id": depId,
+        @"title": depName
+    } mutableCopy];
+    
+    [api loadDetailsOfModSync:depItem];
+    
+    if (![depItem[@"versionDetailsLoaded"] boolValue]) {
+        NSLog(@"[ModDownload] Failed to load details for dependency: %@", depName);
+        // Continue with next dependency
+        [self processNextDependency:modsDir];
+        return;
+    }
+    
+    // Find the most recent compatible version
+    NSArray *versionNames = depItem[@"versionNames"];
+    NSArray *gameVersions = depItem[@"gameVersions"];
+    NSArray *versionUrls = depItem[@"versionUrls"];
+    NSArray *versionSizes = depItem[@"versionSizes"];
+    NSArray *versionHashes = depItem[@"versionHashes"];
+    
+    if (versionNames.count == 0 || versionUrls.count == 0) {
+        NSLog(@"[ModDownload] No versions found for dependency: %@", depName);
+        // Continue with next dependency
+        [self processNextDependency:modsDir];
+        return;
+    }
+    
+    // Use the first version for now (most recent)
+    NSUInteger versionIndex = 0;
+    NSString *url = versionUrls[versionIndex];
+    NSUInteger size = [versionSizes[versionIndex] unsignedLongLongValue];
+    NSString *sha = versionHashes[versionIndex];
+    
+    // Use the URL's last path component as the filename
+    NSURL *fileURL = [NSURL URLWithString:url];
+    if (!fileURL) {
+        NSLog(@"[ModDownload] Invalid URL for dependency: %@", url);
+        // Continue with next dependency
+        [self processNextDependency:modsDir];
+        return;
+    }
+    
+    NSString *fileName = fileURL.lastPathComponent;
+    if (fileName.length == 0) {
+        fileName = [NSString stringWithFormat:@"%@.jar", depName];
+    }
+    
+    NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
+    NSLog(@"[ModDownload] Dependency destination path: %@", destinationPath);
+    
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:depName toPath:destinationPath success:^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        NSLog(@"[ModDownload] Downloaded dependency: %@", depName);
+        
+        // Check for nested dependencies
+        NSArray *depDependencies = depItem[@"versionDependencies"];
+        if (depDependencies && [depDependencies isKindOfClass:[NSArray class]] && versionIndex < depDependencies.count) {
+            NSArray *nestedDeps = depDependencies[versionIndex];
+            
+            if (nestedDeps && [nestedDeps isKindOfClass:[NSArray class]] && nestedDeps.count > 0) {
+                NSLog(@"[ModDownload] Found %lu nested dependencies for %@", (unsigned long)nestedDeps.count, depName);
+                
+                for (NSDictionary *nestedDep in nestedDeps) {
+                    NSString *nestedType = nestedDep[@"dependency_type"];
+                    NSString *nestedId = nestedDep[@"project_id"];
+                    NSString *nestedName = nestedDep[@"project_name"] ?: @"Unknown Dependency";
+                    
+                    if (!nestedId || ![nestedId isKindOfClass:[NSString class]] || nestedId.length == 0) {
+                        continue;
+                    }
+                    
+                    // Only add required dependencies that we haven't processed yet
+                    if ([nestedType isEqualToString:@"required"] && ![strongSelf.processedDependencyIds containsObject:nestedId]) {
+                        [strongSelf.dependencyQueue addObject:@{
+                            @"id": nestedId,
+                            @"name": nestedName,
+                            @"type": nestedType
+                        }];
+                        [strongSelf.processedDependencyIds addObject:nestedId];
+                        
+                        // Update progress total to include nested dependency
+                        strongSelf.progress.totalUnitCount += 1;
+                        strongSelf.textProgress.totalUnitCount += 1;
+                        
+                        NSLog(@"[ModDownload] Added nested dependency to queue: %@", nestedName);
+                    }
+                }
+            }
+        }
+        
+        // Process next dependency
+        [strongSelf processNextDependency:modsDir];
+    }];
+    
+    if (task) {
+        NSLog(@"[ModDownload] Starting download task for dependency: %@", depName);
+        [task resume];
+    } else {
+        NSLog(@"[ModDownload] Failed to create download task for dependency: %@", depName);
+        // Continue with next dependency
+        [self processNextDependency:modsDir];
     }
 }
 
