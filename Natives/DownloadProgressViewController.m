@@ -61,76 +61,86 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     if (context == CellProgressObserverContext) {
         UITableViewCell *cell = objc_getAssociatedObject(progress, @"cell");
         if (!cell) return;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // Calculate progress details for display
-            NSUInteger completed = progress.completedUnitCount;
-            NSUInteger total = progress.totalUnitCount;
-            float fraction = progress.fractionCompleted;
+        
+        // Only update UI on the main thread at a reasonable rate using debouncing
+        static NSDate *lastUIUpdate = nil;
+        NSDate *now = [NSDate date];
+        
+        // Limit UI updates to max 10 per second
+        if (!lastUIUpdate || [now timeIntervalSinceDate:lastUIUpdate] > 0.1 || progress.finished) {
+            lastUIUpdate = now;
             
-            // Format sizes in MB with 2 decimal places
-            float completedMB = completed / 1048576.0; // Convert bytes to MB
-            float totalMB = total / 1048576.0;
-            
-            NSString *progressText;
-            UIImageView *statusImageView = (UIImageView *)cell.accessoryView;
-            
-            if (progress.finished) {
-                // Show "Done" when download is complete
-                progressText = [NSString stringWithFormat:@"Done (%.2f MB)", totalMB];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // Calculate progress details for display
+                NSUInteger completed = progress.completedUnitCount;
+                NSUInteger total = progress.totalUnitCount;
+                float fraction = progress.fractionCompleted;
                 
-                // Replace with checkmark
-                if (![statusImageView.image.accessibilityIdentifier isEqualToString:@"checkmark"]) {
-                    UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
-                    checkmarkImage.accessibilityIdentifier = @"checkmark";
-                    statusImageView.image = checkmarkImage;
-                    statusImageView.tintColor = [UIColor systemGreenColor];
-                }
-            } else {
-                // Show progress as "X.XX MB / Y.YY MB"
-                progressText = [NSString stringWithFormat:@"%.2f MB / %.2f MB (%.0f%%)", 
-                               completedMB, totalMB, fraction * 100];
+                // Format sizes in MB with 2 decimal places
+                float completedMB = completed / 1048576.0; // Convert bytes to MB
+                float totalMB = total / 1048576.0;
                 
-                // Update download indicator if needed
-                if (![statusImageView.image.accessibilityIdentifier isEqualToString:@"downloading"]) {
-                    UIImage *downloadImage = [UIImage systemImageNamed:@"arrow.down.circle"];
-                    downloadImage.accessibilityIdentifier = @"downloading";
-                    statusImageView.image = downloadImage;
-                    statusImageView.tintColor = self.view.tintColor;
+                NSString *progressText;
+                UIImageView *statusImageView = (UIImageView *)cell.accessoryView;
+                
+                if (progress.finished) {
+                    // Show "Done" when download is complete
+                    progressText = [NSString stringWithFormat:@"Done (%.2f MB)", totalMB];
+                    
+                    // Replace with checkmark
+                    if (![statusImageView.image.accessibilityIdentifier isEqualToString:@"checkmark"]) {
+                        UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                        checkmarkImage.accessibilityIdentifier = @"checkmark";
+                        statusImageView.image = checkmarkImage;
+                        statusImageView.tintColor = [UIColor systemGreenColor];
+                    }
+                } else {
+                    // Show progress as "X.XX MB / Y.YY MB"
+                    progressText = [NSString stringWithFormat:@"%.2f MB / %.2f MB (%.0f%%)", 
+                                   completedMB, totalMB, fraction * 100];
+                    
+                    // Update download indicator if needed
+                    if (![statusImageView.image.accessibilityIdentifier isEqualToString:@"downloading"]) {
+                        UIImage *downloadImage = [UIImage systemImageNamed:@"arrow.down.circle"];
+                        downloadImage.accessibilityIdentifier = @"downloading";
+                        statusImageView.image = downloadImage;
+                        statusImageView.tintColor = self.view.tintColor;
+                    }
                 }
-            }
-            
-            cell.detailTextLabel.text = progressText;
-        });
+                
+                cell.detailTextLabel.text = progressText;
+            });
+        }
     } else if (context == TotalProgressObserverContext) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // Ensure we're updating the title on the main thread
-            NSString *currentTask = @"Downloading";
-            if (self.task.currentStage) {
-                currentTask = self.task.currentStage;
-            }
+        // Update less frequently for overall progress to reduce UI load
+        static NSDate *lastTotalUpdate = nil;
+        NSDate *now = [NSDate date];
+        
+        if (!lastTotalUpdate || [now timeIntervalSinceDate:lastTotalUpdate] > 0.5 || progress.fractionCompleted >= 1.0) {
+            lastTotalUpdate = now;
             
-            // Format the title to show current task and percentage
-            if (progress.fractionCompleted < 1.0) {
-                self.title = [NSString stringWithFormat:@"%@ - %.0f%%", 
-                             currentTask, progress.fractionCompleted * 100];
-                
-                // Update navigation bar progress indicator if available
-                if (@available(iOS 15.0, *)) {
-                    UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
-                    [appearance configureWithDefaultBackground];
-                    self.navigationItem.scrollEdgeAppearance = appearance;
-                    self.navigationItem.standardAppearance = appearance;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // Ensure we're updating the title on the main thread
+                NSString *currentTask = @"Downloading";
+                if (self.task.currentStage) {
+                    currentTask = self.task.currentStage;
                 }
-            } else {
-                self.title = @"Download Complete";
-            }
-            
-            // Check if we need to reload the table
-            if (self.fileListCount != self.task.fileList.count) {
-                [self.tableView reloadData];
-            }
-            self.fileListCount = self.task.fileList.count;
-        });
+                
+                // Format the title to show current task and percentage
+                if (progress.fractionCompleted < 1.0) {
+                    self.title = [NSString stringWithFormat:@"%@ - %.0f%%", 
+                                 currentTask, progress.fractionCompleted * 100];
+                } else {
+                    self.title = @"Download Complete";
+                }
+                
+                // Check if we need to reload the table
+                if (self.fileListCount != self.task.fileList.count) {
+                    [self.tableView reloadData];
+                }
+                self.fileListCount = self.task.fileList.count;
+            });
+        }
     } else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     }
