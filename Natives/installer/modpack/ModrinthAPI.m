@@ -90,6 +90,7 @@
     NSMutableArray *versionSizes = [NSMutableArray arrayWithCapacity:estimatedCount];
     NSMutableArray *versionHashes = [NSMutableArray arrayWithCapacity:estimatedCount];
     NSMutableArray *versionLoaders = [NSMutableArray arrayWithCapacity:estimatedCount];
+    NSMutableArray *versionDependencies = [NSMutableArray arrayWithCapacity:estimatedCount];
     
     for (NSDictionary *versionDict in response) {
         // Use nil coalescing to simplify null checks
@@ -108,6 +109,9 @@
         NSString *sha1 = hashes[@"sha1"] ?: @"";
         NSArray *loaders = versionDict[@"loaders"] ?: @[];
         
+        // Extract dependencies array directly from API response
+        NSArray *dependencies = versionDict[@"dependencies"] ?: @[];
+        
         // Add all values to arrays
         [versionNames addObject:versionDisplay];
         [gameVersionsArray addObject:supportedGameVersions];
@@ -115,6 +119,7 @@
         [versionSizes addObject:size];
         [versionHashes addObject:sha1];
         [versionLoaders addObject:loaders];
+        [versionDependencies addObject:dependencies];
     }
     
     // Assign arrays to the item dictionary once at the end
@@ -124,6 +129,7 @@
     item[@"versionSizes"] = versionSizes;
     item[@"versionHashes"] = versionHashes;
     item[@"versionLoaders"] = versionLoaders;
+    item[@"versionDependencies"] = versionDependencies;
     item[@"versionDetailsLoaded"] = @(YES);
 }
 
@@ -147,6 +153,9 @@
         NSMutableArray *versionHashes = [NSMutableArray new];
         NSMutableArray *versionLoaders = [NSMutableArray new];
         
+        // New array for dependencies
+        NSMutableArray *versionDependencies = [NSMutableArray new];
+        
         for (NSDictionary *versionDict in response) {
             NSString *versionDisplay = versionDict[@"version_number"] ?: versionDict[@"name"] ?: @"";
             NSArray *supportedGameVersions = versionDict[@"game_versions"] ?: @[];
@@ -161,12 +170,16 @@
             NSString *sha1 = hashes[@"sha1"] ?: @"";
             NSArray *loaders = versionDict[@"loaders"] ?: @[];
             
+            // Extract dependencies array directly from API response
+            NSArray *dependencies = versionDict[@"dependencies"] ?: @[];
+            
             [versionNames addObject:versionDisplay];
             [gameVersionsArray addObject:supportedGameVersions];
             [versionUrls addObject:url];
             [versionSizes addObject:size];
             [versionHashes addObject:sha1];
             [versionLoaders addObject:loaders];
+            [versionDependencies addObject:dependencies];
         }
         
         item[@"versionNames"] = versionNames;
@@ -175,11 +188,13 @@
         item[@"versionSizes"] = versionSizes;
         item[@"versionHashes"] = versionHashes;
         item[@"versionLoaders"] = versionLoaders;
+        item[@"versionDependencies"] = versionDependencies;
         item[@"versionDetailsLoaded"] = @(YES);
-        NSLog(@"loadDetailsOfMod: Loaded %lu versions for mod %@", (unsigned long)versionNames.count, item[@"id"]);
+        NSLog(@"loadDetailsOfMod: Loaded %lu versions with dependencies for mod %@", (unsigned long)versionNames.count, item[@"id"]);
         if (completion) completion(nil);
     }];
 }
+
 
 - (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     NSDictionary *userInfo = @{@"detail": modDetail, @"index": @(selectedVersion)};
