@@ -6,6 +6,7 @@
 #import "UIKit+AFNetworking.h"
 #import "utils.h"
 #import "PLProfiles.h"
+#import "MinecraftResourceDownloadTask.h"
 
 #pragma mark - Alert Dialog Helper
 static inline void presentAlertDialog(NSString *title, NSString *message) {
@@ -35,174 +36,6 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
         return [rawVersion description];
     }
 }
-
-#pragma mark - ModQueueViewController Interface
-@interface ModQueueViewController : UITableViewController
-@property (nonatomic, strong) NSMutableArray *queue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
-@property (nonatomic, copy) void (^didFinishInstallation)(void);
-@end
-
-#pragma mark - ModQueueViewController Implementation
-@implementation ModQueueViewController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"Mod Installation Queue";
-    
-    // Add a nice background color if the table is empty
-    UIView *emptyView = [[UIView alloc] initWithFrame:self.tableView.bounds];
-    UILabel *emptyLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 80)];
-    emptyLabel.text = @"Your installation queue is empty.\nSearch for mods to add them here.";
-    emptyLabel.textAlignment = NSTextAlignmentCenter;
-    emptyLabel.numberOfLines = 0;
-    emptyLabel.textColor = [UIColor grayColor];
-    emptyLabel.center = emptyView.center;
-    [emptyView addSubview:emptyLabel];
-    self.tableView.backgroundView = self.queue.count == 0 ? emptyView : nil;
-    
-    // Modern toolbar buttons
-    UIBarButtonItem *flexSpace = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace target:nil action:nil];
-    UIBarButtonItem *installButton = [[UIBarButtonItem alloc] initWithTitle:@"Install All" 
-                                                                      style:UIBarButtonItemStyleDone 
-                                                                     target:self 
-                                                                     action:@selector(installQueueAction)];
-    
-    self.toolbarItems = @[flexSpace, installButton, flexSpace];
-    self.navigationController.toolbarHidden = NO;
-    
-    // Editing capabilities
-    self.navigationItem.leftBarButtonItem = self.editButtonItem;
-    
-    // Close button
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose 
-                                                                                           target:self 
-                                                                                           action:@selector(dismissAction)];
-}
-
-- (void)dismissAction {
-    [self dismissViewControllerAnimated:YES completion:nil];
-}
-
-- (void)installQueueAction {
-    if (self.queue.count == 0) {
-        presentAlertDialog(localize(@"Queue Empty", nil), @"There are no mods in the install queue.");
-        return;
-    }
-    
-    // Confirm installation with count
-    UIAlertController *confirmAlert = [UIAlertController alertControllerWithTitle:@"Install All Mods" 
-                                                                          message:[NSString stringWithFormat:@"Install %lu mods from the queue?", (unsigned long)self.queue.count] 
-                                                                   preferredStyle:UIAlertControllerStyleAlert];
-    
-    [confirmAlert addAction:[UIAlertAction actionWithTitle:@"Install" 
-                                                     style:UIAlertActionStyleDefault 
-                                                   handler:^(UIAlertAction * _Nonnull action) {
-        // Show a progress indicator
-        UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-        [indicator startAnimating];
-        self.navigationItem.titleView = indicator;
-        self.navigationItem.title = nil;
-        
-        // Create a ModrinthAPI for mod downloads
-        ModrinthAPI *modrinthAPI = [ModrinthAPI new];
-        
-        // Install each mod with a slight delay to prevent notification overlap
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            for (NSUInteger i = 0; i < self.queue.count; i++) {
-                NSDictionary *entry = self.queue[i];
-                NSDictionary *mod = entry[@"mod"];
-                NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
-                NSNumber *apiSource = mod[@"apiSource"];
-                
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if ([apiSource integerValue] == 1) {
-                        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
-                                                                            object:modrinthAPI
-                                                                          userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
-                    } else {
-                        if ([mod[@"isModpack"] boolValue]) {
-                            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack"
-                                                                                object:nil
-                                                                              userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
-                        } else {
-                            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
-                                                                                object:nil
-                                                                              userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
-                        }
-                    }
-                    
-                    // Wait a moment before posting the next notification
-                    [NSThread sleepForTimeInterval:0.5];
-                });
-            }
-            
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self.queue removeAllObjects];
-                if (self.didFinishInstallation) {
-                    self.didFinishInstallation();
-                }
-                
-                [self dismissViewControllerAnimated:YES completion:^{
-                    presentAlertDialog(@"Installation Started", 
-                                      @"Mod installations have been initiated. You can monitor progress in the downloads window.");
-                }];
-            });
-        });
-    }]];
-    
-    [confirmAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) 
-                                                     style:UIAlertActionStyleCancel 
-                                                   handler:nil]];
-    
-    [self presentViewController:confirmAlert animated:YES completion:nil];
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.queue.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"QueueCell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"QueueCell"];
-        cell.accessoryType = UITableViewCellAccessoryDetailButton;
-    }
-    
-    NSDictionary *entry = self.queue[indexPath.row];
-    NSDictionary *mod = entry[@"mod"];
-    NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
-    
-    // Set main title to mod name
-    cell.textLabel.text = mod[@"title"];
-    
-    // Format subtitle with version info
-    NSArray *versionNames = mod[@"versionNames"];
-    NSString *verStr = (versionIndex < versionNames.count) ? SafeStringFromVersion(versionNames[versionIndex]) : @"";
-    NSDictionary *parsed = [ModpackUtils parseVersionString:verStr];
-    
-    // Check if we can get MC version info
-    NSString *mcVersion = @"";
-    NSArray *mcVersionNames = mod[@"mcVersionNames"];
-    if (mcVersionNames && versionIndex < mcVersionNames.count) {
-        mcVersion = [NSString stringWithFormat:@" (MC %@)", SafeStringFromVersion(mcVersionNames[versionIndex])];
-    }
-    
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@%@", 
-                                 parsed[@"loaderVersion"] ?: verStr,
-                                 mcVersion];
-    
-    return cell;
-}
-
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle 
- forRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (editingStyle == UITableViewCellEditingStyleDelete) {
-        [self.queue removeObjectAtIndex:indexPath.row];
-        [tableView deleteRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
-    }
-}
-
-@end
 
 #pragma mark - Dependency List Helper Classes
 @interface DependencyListDataSource : NSObject <UITableViewDataSource>
@@ -297,7 +130,8 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 @property (nonatomic, strong) NSString *selectedProfileName;
 @property (nonatomic, strong) NSString *selectedMCVersion;
 @property (nonatomic, strong) NSString *selectedModLoader;
-@property (nonatomic, strong) NSMutableArray *installQueue; // @{@"mod": modDictionary, @"versionIndex": @(index)}
+@property (nonatomic, strong) NSMutableArray *installQueue; // @{@"mod": modDictionary, @"versionIndex": @(index), @"isDependency": @YES/NO, @"isLoading": @YES/NO}
+@property (nonatomic, strong) NSMutableSet *queuedModIds; // Track queued mod IDs to avoid duplicates
 @end
 
 #pragma mark - ModMenuViewController Implementation
@@ -382,6 +216,105 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     }
 }
 
+#pragma mark - Dependency handling methods
+- (void)addModDependenciesToQueue:(NSDictionary *)mod atVersionIndex:(NSUInteger)versionIndex {
+    NSArray *versionDependencies = mod[@"versionDependencies"];
+    if (!versionDependencies || ![versionDependencies isKindOfClass:[NSArray class]] || versionIndex >= versionDependencies.count) {
+        return;
+    }
+    
+    NSArray *dependencies = versionDependencies[versionIndex];
+    if (!dependencies || ![dependencies isKindOfClass:[NSArray class]] || dependencies.count == 0) {
+        return;
+    }
+    
+    for (NSDictionary *dependency in dependencies) {
+        NSString *depType = dependency[@"dependency_type"];
+        NSString *depId = dependency[@"project_id"];
+        NSString *depName = dependency[@"project_name"] ?: @"Unknown Dependency";
+        
+        // Only process required dependencies and avoid duplicates
+        if (![depType isEqualToString:@"required"] || !depId || depId.length == 0 || [self.queuedModIds containsObject:depId]) {
+            continue;
+        }
+        
+        // Track this dependency
+        [self.queuedModIds addObject:depId];
+        
+        // Load dependency details and add to queue
+        [self loadDependencyDetails:depId name:depName];
+    }
+}
+
+- (void)loadDependencyDetails:(NSString *)depId name:(NSString *)depName {
+    // Create a loading indicator for the dependency
+    NSUInteger currentQueueSize = self.installQueue.count;
+    [self.installQueue addObject:@{
+        @"mod": @{@"title": [NSString stringWithFormat:@"Loading %@...", depName], @"id": depId},
+        @"versionIndex": @(0),
+        @"isLoading": @YES
+    }];
+    [self updateQueueButtonTitle];
+    
+    // Fetch dependency details
+    ModrinthAPI *api = [ModrinthAPI new];
+    NSMutableDictionary *dependencyMod = [@{
+        @"id": depId,
+        @"title": depName,
+        @"apiSource": @(1) // Default to Modrinth
+    } mutableCopy];
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [api loadDetailsOfModSync:dependencyMod];
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Remove the loading placeholder
+            if (currentQueueSize < self.installQueue.count) {
+                [self.installQueue removeObjectAtIndex:currentQueueSize];
+            }
+            
+            if ([dependencyMod[@"versionDetailsLoaded"] boolValue]) {
+                NSArray *versionNames = dependencyMod[@"versionNames"];
+                if (versionNames.count > 0) {
+                    // Find compatible version
+                    NSInteger compatibleIndex = [self findCompatibleVersionIndexForDependency:dependencyMod];
+                    
+                    // Add to queue
+                    [self.installQueue addObject:@{
+                        @"mod": dependencyMod,
+                        @"versionIndex": @(compatibleIndex),
+                        @"isDependency": @YES // Mark as dependency for UI
+                    }];
+                    
+                    // Update UI
+                    [self updateQueueButtonTitle];
+                    
+                    // Process nested dependencies
+                    [self addModDependenciesToQueue:dependencyMod atVersionIndex:compatibleIndex];
+                }
+            }
+        });
+    });
+}
+
+- (NSInteger)findCompatibleVersionIndexForDependency:(NSDictionary *)dependency {
+    NSString *profileName = [PLProfiles current].selectedProfileName;
+    NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
+    NSString *lastVersionId = profile[@"lastVersionId"];
+    
+    // Parse the version ID to extract game version and loader
+    NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
+    NSString *mcVersion = parsed[@"mcVersion"] ?: @"";
+    NSString *loader = parsed[@"loader"] ?: @"";
+    
+    // Use MinecraftResourceDownloadTask's method to find compatible version
+    MinecraftResourceDownloadTask *dummyTask = [MinecraftResourceDownloadTask new];
+    return [dummyTask findCompatibleVersionIndex:dependency[@"gameVersions"] 
+                                     loaderArray:dependency[@"versionLoaders"] 
+                               selectedMCVersion:mcVersion 
+                                  selectedLoader:loader];
+}
+
 // Method to display dependency information for a mod version
 - (void)showDependenciesForMod:(NSDictionary *)mod atVersionIndex:(NSUInteger)versionIndex {
     NSArray *dependenciesArray = mod[@"versionDependencies"];
@@ -418,6 +351,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     self.searchFilters = [@{@"isModpack": @(NO), @"name": @""} mutableCopy];
     self.modsList = [NSMutableArray new];
     self.installQueue = [NSMutableArray new];
+    self.queuedModIds = [NSMutableSet new]; // Initialize set for tracking queued mods
     
     // Auto-select saved profile if available
     [self updateProfileFromSavedSettings];
@@ -928,9 +862,17 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
             [choiceAlert addAction:[UIAlertAction actionWithTitle:@"Add to Queue"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(UIAlertAction * _Nonnull action) {
+                // Add the mod ID to the tracked set
+                if (mod[@"id"]) {
+                    [self.queuedModIds addObject:mod[@"id"]];
+                }
+                
                 NSDictionary *queueEntry = @{@"mod": mod, @"versionIndex": @(idx)};
                 [self.installQueue addObject:queueEntry];
                 [self updateQueueButtonTitle];
+                
+                // Process dependencies
+                [self addModDependenciesToQueue:mod atVersionIndex:idx];
                 
                 // Show toast-style feedback
                 UIAlertController *toast = [UIAlertController alertControllerWithTitle:nil
@@ -997,19 +939,165 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 }
 
 - (void)actionShowQueue {
-    ModQueueViewController *queueVC = [ModQueueViewController new];
-    queueVC.queue = self.installQueue;
-    __weak typeof(self) weakSelf = self;
-    queueVC.didFinishInstallation = ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf.installQueue removeAllObjects];
-        [strongSelf updateQueueButtonTitle];
-    };
+    if (self.installQueue.count == 0) {
+        presentAlertDialog(@"Queue Empty", @"There are no mods in the install queue.");
+        return;
+    }
     
-    // Use a more modern presentation style
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:queueVC];
-    nav.modalPresentationStyle = UIModalPresentationFormSheet;
-    [self presentViewController:nav animated:YES completion:nil];
+    // Create alert controller with table style for the queue display
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Mod Installation Queue"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    // Add actions for each item in the queue
+    for (NSUInteger i = 0; i < self.installQueue.count; i++) {
+        NSDictionary *entry = self.installQueue[i];
+        NSDictionary *mod = entry[@"mod"];
+        NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
+        BOOL isLoading = [entry[@"isLoading"] boolValue];
+        BOOL isDependency = [entry[@"isDependency"] boolValue];
+        
+        NSString *title = mod[@"title"];
+        
+        if (isDependency) {
+            title = [NSString stringWithFormat:@"📦 %@ (Dependency)", title];
+        }
+        
+        if (isLoading) {
+            title = [NSString stringWithFormat:@"%@ (Loading...)", title];
+            [alert addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:nil]];
+            continue;
+        }
+        
+        // Use block variables to capture the current index and mod safely
+        NSUInteger capturedIndex = i;
+        NSDictionary *capturedMod = mod;
+        
+        // Create remove option for each item
+        [alert addAction:[UIAlertAction actionWithTitle:title
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(UIAlertAction * _Nonnull action) {
+            // Option to remove from queue
+            UIAlertController *removeAlert = [UIAlertController alertControllerWithTitle:@"Remove from Queue"
+                                                                                message:[NSString stringWithFormat:@"Remove %@ from the installation queue?", capturedMod[@"title"]]
+                                                                         preferredStyle:UIAlertControllerStyleAlert];
+            
+            [removeAlert addAction:[UIAlertAction actionWithTitle:@"Remove"
+                                                            style:UIAlertActionStyleDestructive
+                                                          handler:^(UIAlertAction * _Nonnull action) {
+                if (capturedIndex < self.installQueue.count) {
+                    [self.installQueue removeObjectAtIndex:capturedIndex];
+                    if (capturedMod[@"id"]) {
+                        [self.queuedModIds removeObject:capturedMod[@"id"]];
+                    }
+                    [self updateQueueButtonTitle];
+                }
+            }]];
+            
+            [removeAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                                           style:UIAlertActionStyleCancel
+                                                         handler:nil]];
+            
+            [self presentViewController:removeAlert animated:YES completion:nil];
+        }]];
+    }
+    
+    // Add install all action
+    [alert addAction:[UIAlertAction actionWithTitle:@"Install All"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction * _Nonnull action) {
+        [self installQueueAction];
+    }]];
+    
+    // Add cancel action
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    
+    // Configure for iPad
+    alert.popoverPresentationController.sourceView = self.view;
+    alert.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
+                                                               CGRectGetMidY(self.view.bounds),
+                                                               1, 1);
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+// Add installQueueAction method to handle installing all mods in the queue
+- (void)installQueueAction {
+    // Count non-loading entries
+    NSUInteger readyCount = 0;
+    for (NSDictionary *entry in self.installQueue) {
+        if (![entry[@"isLoading"] boolValue]) {
+            readyCount++;
+        }
+    }
+    
+    // Confirm installation
+    UIAlertController *confirmAlert = [UIAlertController alertControllerWithTitle:@"Install All Mods" 
+                                                                          message:[NSString stringWithFormat:@"Install %lu mods from the queue?", (unsigned long)readyCount] 
+                                                                   preferredStyle:UIAlertControllerStyleAlert];
+    
+    [confirmAlert addAction:[UIAlertAction actionWithTitle:@"Install" 
+                                                     style:UIAlertActionStyleDefault 
+                                                   handler:^(UIAlertAction * _Nonnull action) {
+        // Filter out loading entries and create a fresh install queue
+        NSMutableArray *installQueue = [NSMutableArray new];
+        for (NSDictionary *entry in self.installQueue) {
+            if (![entry[@"isLoading"] boolValue]) {
+                [installQueue addObject:entry];
+            }
+        }
+        
+        // Create a ModrinthAPI for mod downloads
+        ModrinthAPI *modrinthAPI = [ModrinthAPI new];
+        
+        // Install each mod with a slight delay to prevent notification overlap
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            for (NSUInteger i = 0; i < installQueue.count; i++) {
+                NSDictionary *entry = installQueue[i];
+                NSDictionary *mod = entry[@"mod"];
+                NSUInteger versionIndex = [entry[@"versionIndex"] unsignedIntegerValue];
+                NSNumber *apiSource = mod[@"apiSource"];
+                
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if ([apiSource integerValue] == 1) {
+                        [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
+                                                                            object:modrinthAPI
+                                                                          userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
+                    } else {
+                        if ([mod[@"isModpack"] boolValue]) {
+                            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallModpack"
+                                                                                object:nil
+                                                                              userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
+                        } else {
+                            [[NSNotificationCenter defaultCenter] postNotificationName:@"InstallMod"
+                                                                                object:nil
+                                                                              userInfo:@{@"detail": mod, @"index": @(versionIndex)}];
+                        }
+                    }
+                    
+                    // Wait a moment before posting the next notification
+                    [NSThread sleepForTimeInterval:0.5];
+                });
+            }
+            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.installQueue removeAllObjects];
+                [self.queuedModIds removeAllObjects];
+                [self updateQueueButtonTitle];
+                
+                presentAlertDialog(@"Installation Started", 
+                                  @"Mod installations have been initiated. You can monitor progress in the downloads window.");
+            });
+        });
+    }]];
+    
+    [confirmAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil) 
+                                                     style:UIAlertActionStyleCancel 
+                                                   handler:nil]];
+    
+    [self presentViewController:confirmAlert animated:YES completion:nil];
 }
 
 @end
