@@ -157,6 +157,8 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
     }];
 }
 
+
+
 #pragma mark - Manifest Extraction
 
 - (NSDictionary *)loadManifestFromDestination:(NSString *)destPath error:(NSError **)error {
@@ -672,6 +674,24 @@ static NSError *saveJSONToFile(NSDictionary *jsonDict, NSString *filePath) {
     if (writeErr) {
         NSLog(@"autoInstallNeoForge: Failed to write NeoForge JSON: %@", writeErr);
     }
+}
+
+// Helper method to handle mod loader installation
+- (void)handleModLoaderInstallation:(NSString *)modLoaderId vanillaVersion:(NSString *)vanillaVersion loaderVersion:(NSString *)modLoaderVersion {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if ([modLoaderId isEqualToString:@"forge"]) {
+            NSLog(@"[CurseForgeAPI] Auto-installing Forge");
+            [self autoInstallForge:vanillaVersion loaderVersion:modLoaderVersion];
+        } else if ([modLoaderId isEqualToString:@"fabric"]) {
+            NSLog(@"[CurseForgeAPI] Auto-installing Fabric");
+            [self autoInstallFabricWithFullString:[NSString stringWithFormat:@"fabric-%@-%@", modLoaderVersion, vanillaVersion]];
+        } else if ([modLoaderId isEqualToString:@"neoforge"]) {
+            NSLog(@"[CurseForgeAPI] Auto-installing NeoForge");
+            [self autoInstallNeoForgeWithVanillaVersion:vanillaVersion loaderVersion:modLoaderVersion];
+        } else {
+            NSLog(@"[CurseForgeAPI] Unrecognized loader: %@", modLoaderId);
+        }
+    });
 }
 
 #pragma mark - Manifest Verification
