@@ -500,6 +500,16 @@
     self.currentStage = [NSString stringWithFormat:@"Downloading dependency: %@", depName];
     NSLog(@"[ModDownload] Processing dependency: %@", depName);
     
+    // Get the current Minecraft version and loader from the selected profile
+    NSString *profileName = [PLProfiles current].selectedProfileName;
+    NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
+    NSString *lastVersionId = profile[@"lastVersionId"];
+    
+    // Parse the version ID to extract game version and loader
+    NSDictionary *parsed = [ModpackUtils parseVersionString:lastVersionId];
+    NSString *mcVersion = parsed[@"mcVersion"] ?: @"";
+    NSString *loader = parsed[@"loader"] ?: @"";
+    
     // Use the ModrinthAPI to fetch dependency details
     ModrinthAPI *api = [ModrinthAPI new];
     NSMutableDictionary *depItem = [@{
@@ -516,12 +526,13 @@
         return;
     }
     
-    // Find the most recent compatible version
+    // Verify we have version information
     NSArray *versionNames = depItem[@"versionNames"];
     NSArray *gameVersions = depItem[@"gameVersions"];
     NSArray *versionUrls = depItem[@"versionUrls"];
     NSArray *versionSizes = depItem[@"versionSizes"];
     NSArray *versionHashes = depItem[@"versionHashes"];
+    NSArray *versionLoaders = depItem[@"versionLoaders"];
     
     if (versionNames.count == 0 || versionUrls.count == 0) {
         NSLog(@"[ModDownload] No versions found for dependency: %@", depName);
@@ -530,11 +541,19 @@
         return;
     }
     
-    // Use the first version for now (most recent)
-    NSUInteger versionIndex = 0;
+    // Find a compatible version based on game version and loader
+    NSInteger versionIndex = [self findCompatibleVersionIndex:gameVersions 
+                                                  loaderArray:versionLoaders 
+                                            selectedMCVersion:mcVersion 
+                                                selectedLoader:loader];
+    
+    // Get the version details
     NSString *url = versionUrls[versionIndex];
     NSUInteger size = [versionSizes[versionIndex] unsignedLongLongValue];
     NSString *sha = versionHashes[versionIndex];
+    NSString *versionName = versionNames[versionIndex];
+    
+    NSLog(@"[ModDownload] Selected version %@ for dependency %@", versionName, depName);
     
     // Use the URL's last path component as the filename
     NSURL *fileURL = [NSURL URLWithString:url];
@@ -552,6 +571,16 @@
     
     NSString *destinationPath = [modsDir stringByAppendingPathComponent:fileName];
     NSLog(@"[ModDownload] Dependency destination path: %@", destinationPath);
+    
+    // Check if file already exists and has correct SHA
+    if ([NSFileManager.defaultManager fileExistsAtPath:destinationPath]) {
+        if ([self checkSHA:sha forFile:destinationPath altName:depName]) {
+            NSLog(@"[ModDownload] Dependency %@ already exists with correct SHA, skipping download", depName);
+            // Process next dependency
+            [self processNextDependency:modsDir];
+            return;
+        }
+    }
     
     __weak typeof(self) weakSelf = self;
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:depName toPath:destinationPath success:^{
@@ -572,6 +601,7 @@
                     NSString *nestedName = nestedDep[@"project_name"] ?: @"Unknown Dependency";
                     
                     if (!nestedId || ![nestedId isKindOfClass:[NSString class]] || nestedId.length == 0) {
+                        NSLog(@"[ModDownload] Skipping nested dependency with missing project_id: %@", nestedDep);
                         continue;
                     }
                     
@@ -585,8 +615,10 @@
                         [strongSelf.processedDependencyIds addObject:nestedId];
                         
                         // Update progress total to include nested dependency
-                        strongSelf.progress.totalUnitCount += 1;
-                        strongSelf.textProgress.totalUnitCount += 1;
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            strongSelf.progress.totalUnitCount += 1;
+                            strongSelf.textProgress.totalUnitCount += 1;
+                        });
                         
                         NSLog(@"[ModDownload] Added nested dependency to queue: %@", nestedName);
                     }
@@ -601,6 +633,9 @@
     if (task) {
         NSLog(@"[ModDownload] Starting download task for dependency: %@", depName);
         [task resume];
+    } else if (self.progress.cancelled) {
+        NSLog(@"[ModDownload] Download cancelled for dependency: %@", depName);
+        // Don't process more dependencies if cancelled
     } else {
         NSLog(@"[ModDownload] Failed to create download task for dependency: %@", depName);
         // Continue with next dependency
@@ -608,7 +643,63 @@
     }
 }
 
+- (NSInteger)findCompatibleVersionIndex:(NSArray *)gameVersions loaderArray:(NSArray *)loaderArray selectedMCVersion:(NSString *)mcVersion selectedLoader:(NSString *)loader {
+    // If no game versions available, use the first (most recent) version
+    if (!gameVersions || gameVersions.count == 0) {
+        return 0;
+    }
+    
+    // Normalize MC version and loader for comparison
+    NSString *normalizedMCVersion = [[mcVersion stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    NSString *normalizedLoader = [[loader stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    
+    // Loop through versions to find a compatible one
+    for (NSInteger i = 0; i < gameVersions.count; i++) {
+        id gameVersionItem = gameVersions[i];
+        NSArray *versions = [gameVersionItem isKindOfClass:[NSArray class]] ? gameVersionItem : @[gameVersionItem];
+        
+        BOOL mcMatch = NO;
+        // Check for MC version match
+        for (id versionObj in versions) {
+            NSString *version = [versionObj isKindOfClass:[NSString class]] ? versionObj : [versionObj description];
+            NSString *trimmedVersion = [[version stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+            
+            if ([trimmedVersion isEqualToString:normalizedMCVersion] || 
+                [trimmedVersion hasPrefix:normalizedMCVersion] || 
+                [normalizedMCVersion hasPrefix:trimmedVersion]) {
+                mcMatch = YES;
+                break;
+            }
+        }
+        
+        // If MC version matches and no loader is specified, or if loaders not available, use this version
+        if (mcMatch && (normalizedLoader.length == 0 || !loaderArray || i >= loaderArray.count)) {
+            return i;
+        }
+        
+        // If MC version matches, check loader compatibility
+        if (mcMatch && normalizedLoader.length > 0 && i < loaderArray.count) {
+            id loaderItem = loaderArray[i];
+            NSArray *loaders = [loaderItem isKindOfClass:[NSArray class]] ? loaderItem : (loaderItem ? @[loaderItem] : @[]);
+            
+            for (id loaderObj in loaders) {
+                NSString *loaderStr = [loaderObj isKindOfClass:[NSString class]] ? loaderObj : [loaderObj description];
+                NSString *trimmedLoader = [[loaderStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+                
+                if ([trimmedLoader isEqualToString:normalizedLoader]) {
+                    return i;
+                }
+            }
+        }
+    }
+    
+    // If no exact match found, return the first version as fallback
+    return 0;
+}
+
 #pragma mark - Utilities
+
+
 
 - (void)prepareForDownload {
     // Create a fake progress which is used to update completedUnitCount properly
