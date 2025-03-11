@@ -2,6 +2,7 @@
 
 #import "authenticator/BaseAuthenticator.h"
 #import "installer/modpack/ModpackAPI.h"
+#import "installer/modpack/ModrinthAPI.h"
 #import "AFNetworking.h"
 #import "LauncherNavigationController.h"
 #import "LauncherPreferences.h"
@@ -13,9 +14,6 @@
 
 @interface MinecraftResourceDownloadTask ()
 @property AFURLSessionManager* manager;
-@property(nonatomic, strong) NSMutableArray *dependencyQueue;
-@property(nonatomic, assign) BOOL processingDependencies;
-@property(nonatomic, strong) NSMutableSet *processedDependencyIds;
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -34,7 +32,7 @@
 }
 
 // Add file to the queue
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)(void))success {
     NSLog(@"[DownloadTask] Creating download task - URL: %@, Path: %@, Size: %lu", url, path, (unsigned long)size);
     
     // Validate URL
