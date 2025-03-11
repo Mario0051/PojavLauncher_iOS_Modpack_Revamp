@@ -204,6 +204,81 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
 
 @end
 
+#pragma mark - Dependency List Helper Classes
+@interface DependencyListDataSource : NSObject <UITableViewDataSource>
+@property (nonatomic, strong) NSArray *dependencies;
+- (instancetype)initWithDependencies:(NSArray *)dependencies;
+@end
+
+@implementation DependencyListDataSource
+- (instancetype)initWithDependencies:(NSArray *)dependencies {
+    self = [super init];
+    if (self) {
+        _dependencies = dependencies;
+    }
+    return self;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.dependencies.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"DependencyCell"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"DependencyCell"];
+    }
+    
+    NSDictionary *dependency = self.dependencies[indexPath.row];
+    NSString *name = dependency[@"project_name"] ?: @"Unknown";
+    NSString *type = dependency[@"dependency_type"] ?: @"unknown";
+    
+    cell.textLabel.text = name;
+    
+    if ([type isEqualToString:@"required"]) {
+        cell.detailTextLabel.text = @"Required";
+        cell.detailTextLabel.textColor = [UIColor systemRedColor];
+    } else if ([type isEqualToString:@"optional"]) {
+        cell.detailTextLabel.text = @"Optional";
+        cell.detailTextLabel.textColor = [UIColor systemGrayColor];
+    } else if ([type isEqualToString:@"incompatible"]) {
+        cell.detailTextLabel.text = @"Incompatible";
+        cell.detailTextLabel.textColor = [UIColor systemOrangeColor];
+    } else {
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"Type: %@", type];
+        cell.detailTextLabel.textColor = [UIColor systemGrayColor];
+    }
+    
+    return cell;
+}
+@end
+
+@interface DependencyListDelegate : NSObject <UITableViewDelegate>
+@property (nonatomic, strong) NSArray *dependencies;
+- (instancetype)initWithDependencies:(NSArray *)dependencies;
+@end
+
+@implementation DependencyListDelegate
+- (instancetype)initWithDependencies:(NSArray *)dependencies {
+    self = [super init];
+    if (self) {
+        _dependencies = dependencies;
+    }
+    return self;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    // In the future, you could implement functionality to view or install this dependency
+    NSDictionary *dependency = self.dependencies[indexPath.row];
+    NSString *id = dependency[@"project_id"];
+    if (id) {
+        // Could implement a method to view this mod on Modrinth or install it
+    }
+}
+@end
+
 #pragma mark - Private Method Declarations
 @interface ModMenuViewController ()
 - (NSString *)stringFromVersionObject:(id)rawVersion;
@@ -305,6 +380,33 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
     if (self.presentedViewController) {
         [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
     }
+}
+
+// Method to display dependency information for a mod version
+- (void)showDependenciesForMod:(NSDictionary *)mod atVersionIndex:(NSUInteger)versionIndex {
+    NSArray *dependenciesArray = mod[@"versionDependencies"];
+    if (!dependenciesArray || ![dependenciesArray isKindOfClass:[NSArray class]] || versionIndex >= dependenciesArray.count) {
+        presentAlertDialog(@"No Dependencies", @"This mod does not have any dependencies or dependency information could not be loaded.");
+        return;
+    }
+    
+    NSArray *dependencies = dependenciesArray[versionIndex];
+    if (!dependencies || ![dependencies isKindOfClass:[NSArray class]] || dependencies.count == 0) {
+        presentAlertDialog(@"No Dependencies", @"This mod does not have any dependencies.");
+        return;
+    }
+    
+    // Create a table view controller to display dependencies
+    UITableViewController *depsVC = [[UITableViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    depsVC.title = @"Dependencies";
+    
+    // Setup the table view
+    depsVC.tableView.dataSource = [[DependencyListDataSource alloc] initWithDependencies:dependencies];
+    depsVC.tableView.delegate = [[DependencyListDelegate alloc] initWithDependencies:dependencies];
+    
+    // Present the controller
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:depsVC];
+    [self presentViewController:navController animated:YES completion:nil];
 }
 
 - (void)viewDidLoad {
@@ -813,7 +915,7 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction * _Nonnull action) {
             // Modern install options dialog
-            UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Install or Queue?"
+            UIAlertController *choiceAlert = [UIAlertController alertControllerWithTitle:@"Installation Options"
                                                                                  message:[NSString stringWithFormat:@"Choose how to handle %@", mod[@"title"]]
                                                                           preferredStyle:UIAlertControllerStyleAlert];
             
@@ -840,6 +942,19 @@ static inline NSString *SafeStringFromVersion(id rawVersion) {
                     });
                 }];
             }]];
+            
+            // Add View Dependencies option 
+            NSArray *dependenciesArray = mod[@"versionDependencies"];
+            if (dependenciesArray && [dependenciesArray isKindOfClass:[NSArray class]] && idx < dependenciesArray.count) {
+                NSArray *dependencies = dependenciesArray[idx];
+                if (dependencies && [dependencies isKindOfClass:[NSArray class]] && dependencies.count > 0) {
+                    [choiceAlert addAction:[UIAlertAction actionWithTitle:@"View Dependencies"
+                                                                   style:UIAlertActionStyleDefault
+                                                                 handler:^(UIAlertAction * _Nonnull action) {
+                        [self showDependenciesForMod:mod atVersionIndex:idx];
+                    }]];
+                }
+            }
             
             [choiceAlert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
                                                             style:UIAlertActionStyleCancel
