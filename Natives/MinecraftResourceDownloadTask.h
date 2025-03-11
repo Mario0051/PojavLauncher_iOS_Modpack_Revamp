@@ -22,5 +22,6 @@
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
 - (void)downloadModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
 - (void)processNextDependency:(NSString *)modsDir;
+- (NSInteger)findCompatibleVersionIndex:(NSArray *)gameVersions loaderArray:(NSArray *)loaderArray selectedMCVersion:(NSString *)mcVersion selectedLoader:(NSString *)loader;
 
 @end
