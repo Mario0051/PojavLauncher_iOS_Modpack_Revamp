@@ -90,6 +90,7 @@
     NSMutableArray *versionSizes = [NSMutableArray arrayWithCapacity:estimatedCount];
     NSMutableArray *versionHashes = [NSMutableArray arrayWithCapacity:estimatedCount];
     NSMutableArray *versionLoaders = [NSMutableArray arrayWithCapacity:estimatedCount];
+    // Add a new array for dependencies
     NSMutableArray *versionDependencies = [NSMutableArray arrayWithCapacity:estimatedCount];
     
     for (NSDictionary *versionDict in response) {
@@ -109,7 +110,7 @@
         NSString *sha1 = hashes[@"sha1"] ?: @"";
         NSArray *loaders = versionDict[@"loaders"] ?: @[];
         
-        // Extract dependencies array directly from API response
+        // Extract the dependencies array from the version
         NSArray *dependencies = versionDict[@"dependencies"] ?: @[];
         
         // Add all values to arrays
@@ -152,8 +153,7 @@
         NSMutableArray *versionSizes = [NSMutableArray new];
         NSMutableArray *versionHashes = [NSMutableArray new];
         NSMutableArray *versionLoaders = [NSMutableArray new];
-        
-        // New array for dependencies
+        // Add a new array for dependencies
         NSMutableArray *versionDependencies = [NSMutableArray new];
         
         for (NSDictionary *versionDict in response) {
@@ -170,7 +170,7 @@
             NSString *sha1 = hashes[@"sha1"] ?: @"";
             NSArray *loaders = versionDict[@"loaders"] ?: @[];
             
-            // Extract dependencies array directly from API response
+            // Extract the dependencies array from the version
             NSArray *dependencies = versionDict[@"dependencies"] ?: @[];
             
             [versionNames addObject:versionDisplay];
@@ -194,7 +194,6 @@
         if (completion) completion(nil);
     }];
 }
-
 
 - (void)installModFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     NSDictionary *userInfo = @{@"detail": modDetail, @"index": @(selectedVersion)};
