@@ -10,14 +10,16 @@ static PLProfiles* current;
 @implementation PLProfiles
 
 + (id)defaultProfiles {
+    NSString *defaultProfileName = @"(Default)";
     return @{
         @"profiles": @{
-            @"(Default)": @{
-                @"name": @"(Default)",
-                @"lastVersionId": @"latest-release"
+            defaultProfileName: @{
+                @"name": defaultProfileName,
+                @"lastVersionId": @"latest-release",
+                @"gameDir": [self uniqueGameDirForProfileName:defaultProfileName]
             }
         },
-        @"selectedProfile": @"(Default)"
+        @"selectedProfile": defaultProfileName
     }.mutableCopy;
 }
 
@@ -32,6 +34,66 @@ static PLProfiles* current;
     current = [[PLProfiles alloc] initWithCurrentInstance];
 }
 
++ (NSString *)uniqueGameDirForProfileName:(NSString *)profileName {
+    // Create a normalized directory name from profile name
+    NSString *safeName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+    safeName = [safeName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
+    safeName = [safeName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
+    return [NSString stringWithFormat:@"./profiles/%@", safeName];
+}
+
++ (NSString *)fullPathForProfileWithName:(NSString *)profileName gameDir:(NSString *)gameDir {
+    if (!gameDir || gameDir.length == 0) {
+        gameDir = [self uniqueGameDirForProfileName:profileName];
+    }
+    
+    // Handle relative paths (starting with ./) by resolving against the instance directory
+    if ([gameDir hasPrefix:@"./"]) {
+        gameDir = [gameDir substringFromIndex:2]; // Remove "./" prefix
+        return [NSString stringWithFormat:@"%s/instances/%@/%@", 
+                getenv("POJAV_HOME"), 
+                getPrefObject(@"general.game_directory"),
+                gameDir];
+    }
+    
+    // If it's an absolute path, return it as is
+    if ([gameDir hasPrefix:@"/"]) {
+        return gameDir;
+    }
+    
+    // Otherwise, assume it's relative to the instance
+    return [NSString stringWithFormat:@"%s/instances/%@/%@", 
+            getenv("POJAV_HOME"), 
+            getPrefObject(@"general.game_directory"),
+            gameDir];
+}
+
++ (BOOL)ensureProfileDirectoryExists:(NSString *)profileName gameDir:(NSString *)gameDir {
+    NSString *fullPath = [self fullPathForProfileWithName:profileName gameDir:gameDir];
+    NSError *error = nil;
+    
+    BOOL success = [NSFileManager.defaultManager createDirectoryAtPath:fullPath 
+                                         withIntermediateDirectories:YES 
+                                                          attributes:nil 
+                                                               error:&error];
+    if (!success) {
+        NSLog(@"[PLProfiles] Failed to create profile directory at %@: %@", fullPath, error.localizedDescription);
+        return NO;
+    }
+    
+    // Create essential subdirectories for Minecraft
+    NSArray *essentialDirs = @[@"mods", @"resourcepacks", @"shaderpacks", @"saves", @"config"];
+    for (NSString *dir in essentialDirs) {
+        NSString *dirPath = [fullPath stringByAppendingPathComponent:dir];
+        [NSFileManager.defaultManager createDirectoryAtPath:dirPath 
+                               withIntermediateDirectories:YES 
+                                                attributes:nil 
+                                                     error:nil];
+    }
+    
+    return YES;
+}
+
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
     NSString *value = profile[key];
     if (value.length > 0) {
@@ -41,7 +103,7 @@ static PLProfiles* current;
 
     NSDictionary *valueDefaults = @{
         @"javaVersion": @"0",
-        @"gameDir": @"."
+        @"gameDir": [self uniqueGameDirForProfileName:profile[@"name"]]
     };
     if (valueDefaults[key]) {
         return valueDefaults[key];
@@ -68,7 +130,16 @@ static PLProfiles* current;
         self.profileDict = PLProfiles.defaultProfiles;
         [self save];
     }
-
+    
+    // Ensure all existing profiles have a gameDir
+    for (NSString *profileName in self.profiles) {
+        NSMutableDictionary *profile = self.profiles[profileName];
+        if (!profile[@"gameDir"] || [profile[@"gameDir"] isEqualToString:@"."]) {
+            profile[@"gameDir"] = [PLProfiles uniqueGameDirForProfileName:profileName];
+            [PLProfiles ensureProfileDirectoryExists:profileName gameDir:profile[@"gameDir"]];
+        }
+    }
+    
     return self;
 }
 
