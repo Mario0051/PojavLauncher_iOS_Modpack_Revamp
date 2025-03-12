@@ -23,6 +23,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 @property (nonatomic, assign) BOOL isModpackInstall;
 @property (nonatomic, strong) NSMutableDictionary *cellProgressMap;
 @property (nonatomic, strong) NSTimer *refreshTimer;
+@property (nonatomic, strong) NSMutableArray *filteredFileList;
 @end
 
 @implementation DownloadProgressViewController
@@ -32,6 +33,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     if (self) {
         self.task = task;
         self.cellProgressMap = [NSMutableDictionary dictionary];
+        self.filteredFileList = [NSMutableArray array];
     }
     return self;
 }
@@ -141,6 +143,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             break;
         }
     }
+    
+    // Initialize filtered file list
+    [self updateFilteredFileList];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -175,6 +180,67 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     [self removeAllProgressObservers];
 }
 
+- (void)updateFilteredFileList {
+    // Clear previous filtered list
+    [self.filteredFileList removeAllObjects];
+    
+    // Create a dictionary to track files by their base name
+    NSMutableDictionary *fileMap = [NSMutableDictionary dictionary];
+    
+    // First pass: group files by base name
+    for (NSString *filePath in self.task.fileList) {
+        // Skip special entries
+        if ([filePath hasPrefix:@"Extracting"] || 
+            [filePath hasPrefix:@"Setting"] || 
+            [filePath hasPrefix:@"Installing"] || 
+            [filePath isEqualToString:@"Complete"]) {
+            [self.filteredFileList addObject:filePath];
+            continue;
+        }
+        
+        // Get just the file name without path
+        NSString *fileName = [filePath lastPathComponent];
+        
+        // Store this path for this file name, preferring longer paths with directory structure
+        if (!fileMap[fileName] || [filePath length] > [fileMap[fileName] length]) {
+            fileMap[fileName] = filePath;
+        }
+    }
+    
+    // Add all unique paths to the filtered list
+    for (NSString *uniquePath in [fileMap allValues]) {
+        [self.filteredFileList addObject:uniquePath];
+    }
+    
+    // Sort the filtered list for consistent display
+    [self.filteredFileList sortUsingComparator:^NSComparisonResult(NSString *path1, NSString *path2) {
+        // Keep special entries at the top
+        BOOL isSpecial1 = [path1 hasPrefix:@"Extracting"] || 
+                          [path1 hasPrefix:@"Setting"] || 
+                          [path1 hasPrefix:@"Installing"] ||
+                          [path1 isEqualToString:@"Complete"];
+                          
+        BOOL isSpecial2 = [path2 hasPrefix:@"Extracting"] || 
+                          [path2 hasPrefix:@"Setting"] || 
+                          [path2 hasPrefix:@"Installing"] ||
+                          [path2 isEqualToString:@"Complete"];
+        
+        if (isSpecial1 && !isSpecial2) {
+            return NSOrderedAscending;
+        } else if (!isSpecial1 && isSpecial2) {
+            return NSOrderedDescending;
+        } else if (isSpecial1 && isSpecial2) {
+            // Sort special entries by original order
+            NSUInteger index1 = [self.task.fileList indexOfObject:path1];
+            NSUInteger index2 = [self.task.fileList indexOfObject:path2];
+            return index1 < index2 ? NSOrderedAscending : NSOrderedDescending;
+        }
+        
+        // For regular files, sort alphabetically
+        return [path1 compare:path2];
+    }];
+}
+
 - (void)reloadTableViewPreservingOffset {
     // Save current scroll position
     CGPoint contentOffset = self.tableView.contentOffset;
@@ -187,9 +253,12 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 }
 
 - (void)refreshProgressUI {
+    // Update the filtered file list
+    [self updateFilteredFileList];
+    
     // Check for any new items that were added first
-    if (self.fileListCount != self.task.fileList.count) {
-        self.fileListCount = self.task.fileList.count;
+    if (self.fileListCount != self.filteredFileList.count) {
+        self.fileListCount = self.filteredFileList.count;
         [self reloadTableViewPreservingOffset];
         return; // Don't proceed with other updates in the same refresh cycle
     }
@@ -218,9 +287,10 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     }
     
     // If complete, ensure UI reflects this
-    if (isComplete && ![self.task.fileList containsObject:@"Complete"]) {
+    if (isComplete && ![self.filteredFileList containsObject:@"Complete"] && ![self.task.fileList containsObject:@"Complete"]) {
         // Add completion marker if needed
         [self.task.fileList addObject:@"Complete"];
+        [self.filteredFileList addObject:@"Complete"];
         
         // Create completion progress
         NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
@@ -243,10 +313,15 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 - (void)updateVisibleCells {
     NSArray *visiblePaths = [self.tableView indexPathsForVisibleRows];
     for (NSIndexPath *indexPath in visiblePaths) {
-        if (indexPath.row < self.task.progressList.count) {
+        if (indexPath.row < self.filteredFileList.count) {
             UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
-            NSProgress *progress = self.task.progressList[indexPath.row];
-            [self updateCell:cell withProgress:progress forIndexPath:indexPath];
+            NSString *fileName = self.filteredFileList[indexPath.row];
+            NSUInteger originalIndex = [self.task.fileList indexOfObject:fileName];
+            
+            if (originalIndex != NSNotFound && originalIndex < self.task.progressList.count) {
+                NSProgress *progress = self.task.progressList[originalIndex];
+                [self updateCell:cell withProgress:progress forIndexPath:indexPath];
+            }
         }
     }
 }
@@ -255,7 +330,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 - (void)updateCell:(UITableViewCell *)cell withProgress:(NSProgress *)progress forIndexPath:(NSIndexPath *)indexPath {
     if (!cell || !progress) return;
     
-    NSString *fileName = self.task.fileList[indexPath.row];
+    NSString *fileName = self.filteredFileList[indexPath.row];
     DownloadTaskType taskType = DownloadTaskTypeFile;
     
     if ([fileName hasPrefix:@"Extracting"]) {
@@ -391,14 +466,33 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         
         // Handle cell progress updates on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Find the index path for this progress object
-            NSUInteger index = [self.task.progressList indexOfObject:progress];
-            if (index != NSNotFound && index < self.task.fileList.count) {
-                NSIndexPath *indexPath = [NSIndexPath indexPathForRow:index inSection:0];
+            // Find the original file name for this progress
+            NSUInteger originalIndex = [self.task.progressList indexOfObject:progress];
+            if (originalIndex != NSNotFound && originalIndex < self.task.fileList.count) {
+                NSString *originalFileName = self.task.fileList[originalIndex];
                 
-                // Only update if cell is visible to prevent wasted updates
-                if ([self.tableView.indexPathsForVisibleRows containsObject:indexPath]) {
-                    [self updateCell:cell withProgress:progress forIndexPath:indexPath];
+                // Find this file in our filtered list
+                NSUInteger filteredIndex = [self.filteredFileList indexOfObject:originalFileName];
+                
+                // If not found directly, check if this file might be represented by another path
+                if (filteredIndex == NSNotFound) {
+                    NSString *baseName = [originalFileName lastPathComponent];
+                    for (NSUInteger i = 0; i < self.filteredFileList.count; i++) {
+                        NSString *currentPath = self.filteredFileList[i];
+                        if ([[currentPath lastPathComponent] isEqualToString:baseName]) {
+                            filteredIndex = i;
+                            break;
+                        }
+                    }
+                }
+                
+                // Only update if we found the file in our filtered list and the cell is visible
+                if (filteredIndex != NSNotFound) {
+                    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:filteredIndex inSection:0];
+                    if ([self.tableView.indexPathsForVisibleRows containsObject:indexPath]) {
+                        UITableViewCell *visibleCell = [self.tableView cellForRowAtIndexPath:indexPath];
+                        [self updateCell:visibleCell withProgress:progress forIndexPath:indexPath];
+                    }
                 }
             }
         });
@@ -441,17 +535,21 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             int percentage = (int)(progress.fractionCompleted * 100);
             percentLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
             
+            // Check if we need to update the filtered list
+            [self updateFilteredFileList];
+            
             // Check if file list count changed - use our own method to maintain scroll position
-            if (self.fileListCount != self.task.fileList.count) {
+            if (self.fileListCount != self.filteredFileList.count) {
                 [self reloadTableViewPreservingOffset];
-                self.fileListCount = self.task.fileList.count;
+                self.fileListCount = self.filteredFileList.count;
             }
             
             // Check for completion
             if (progress.fractionCompleted >= 1.0) {
                 // Add a completion message if needed - without reloading table if possible
-                if (![self.task.fileList containsObject:@"Complete"]) {
+                if (![self.filteredFileList containsObject:@"Complete"] && ![self.task.fileList containsObject:@"Complete"]) {
                     [self.task.fileList addObject:@"Complete"];
+                    [self updateFilteredFileList]; // This will add Complete to filteredFileList
                     [self reloadTableViewPreservingOffset];
                 }
             }
@@ -464,7 +562,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 #pragma mark - Table View Data Source
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.task.fileList.count;
+    return self.filteredFileList.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -485,8 +583,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         cell.accessoryView = progressLabel;
     }
 
-    // Get the file name
-    NSString *fileName = self.task.fileList[indexPath.row];
+    // Get the file name from filtered list
+    NSString *fileName = self.filteredFileList[indexPath.row];
     
     // Set cell text
     cell.textLabel.text = fileName;
@@ -496,6 +594,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     if (oldProgress) {
         objc_setAssociatedObject(oldProgress, @"cell", nil, OBJC_ASSOCIATION_ASSIGN);
     }
+    
+    // Get the index of this file in the original list
+    NSUInteger originalIndex = [self.task.fileList indexOfObject:fileName];
     
     // Get the NSProgress object for this cell
     NSProgress *progress = nil;
@@ -507,8 +608,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     progress = [self.cellProgressMap objectForKey:identifier];
     
     // If no existing progress, check if available from task
-    if (!progress && indexPath.row < self.task.progressList.count) {
-        progress = self.task.progressList[indexPath.row];
+    if (!progress && originalIndex != NSNotFound && originalIndex < self.task.progressList.count) {
+        progress = self.task.progressList[originalIndex];
         
         if (progress) {
             // Store in our map to track observation
