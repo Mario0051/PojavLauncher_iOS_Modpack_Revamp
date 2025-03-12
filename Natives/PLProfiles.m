@@ -5,6 +5,7 @@
 
 static PLProfiles* current;
 static BOOL hasShownMigrationMessage = NO;
+static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
 
 @interface PLProfiles()
 @end
@@ -118,7 +119,45 @@ static BOOL hasShownMigrationMessage = NO;
     });
 }
 
++ (BOOL)needsFileMigration {
+    // Check if migration has already been performed
+    if (getPrefBool(kMigrationCompletedKey)) {
+        return NO;
+    }
+    
+    // Check if there are any Minecraft files in the instance root that need migration
+    NSString *instancePath = [NSString stringWithFormat:@"%s/instances/%@", 
+                             getenv("POJAV_HOME"), 
+                             getPrefObject(@"general.game_directory")];
+    
+    // Important Minecraft folders and files that would indicate a legacy installation
+    NSArray *importantItems = @[@"mods", @"resourcepacks", @"shaderpacks", @"saves", @"config", @"options.txt", @"servers.dat"];
+    
+    // Check if any of these items exist in the instance root
+    for (NSString *item in importantItems) {
+        NSString *itemPath = [instancePath stringByAppendingPathComponent:item];
+        if ([NSFileManager.defaultManager fileExistsAtPath:itemPath]) {
+            return YES;
+        }
+    }
+    
+    // No migration needed if no files found
+    return NO;
+}
+
 + (void)migrateAllLegacyProfiles:(NSMutableDictionary *)profiles {
+    // Check if migration has already been performed or is not needed
+    if (!self.needsFileMigration) {
+        // Mark all profiles with missing gameDir to use the new structure
+        for (NSString *profileName in profiles) {
+            NSMutableDictionary *profile = profiles[profileName];
+            if (!profile[@"gameDir"] || [profile[@"gameDir"] isEqualToString:@"."]) {
+                profile[@"gameDir"] = [self uniqueGameDirForProfileName:profileName];
+            }
+        }
+        return;
+    }
+    
     // Collect all legacy profiles that need migration
     NSMutableArray *legacyProfiles = [NSMutableArray new];
     for (NSString *profileName in profiles) {
@@ -130,6 +169,7 @@ static BOOL hasShownMigrationMessage = NO;
     
     // If no legacy profiles, nothing to do
     if (legacyProfiles.count == 0) {
+        setPrefBool(kMigrationCompletedKey, YES);
         return;
     }
     
@@ -214,7 +254,17 @@ static BOOL hasShownMigrationMessage = NO;
         [self showMigrationCompletedMessage:legacyProfiles.count];
     } else {
         NSLog(@"[PLProfiles] No game files needed migration or all migrations failed");
+        
+        // For profiles with no gameDir, set to default profile directory
+        for (NSString *profileName in legacyProfiles) {
+            NSMutableDictionary *profile = profiles[profileName];
+            profile[@"gameDir"] = [self uniqueGameDirForProfileName:profileName];
+            NSLog(@"[PLProfiles] Updated profile '%@' to use its own gameDir: %@", profileName, profile[@"gameDir"]);
+        }
     }
+    
+    // Mark migration as completed
+    setPrefBool(kMigrationCompletedKey, YES);
 }
 
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
