@@ -94,6 +94,102 @@ static PLProfiles* current;
     return YES;
 }
 
++ (void)migrateAllLegacyProfiles:(NSMutableDictionary *)profiles {
+    // Collect all legacy profiles that need migration
+    NSMutableArray *legacyProfiles = [NSMutableArray new];
+    for (NSString *profileName in profiles) {
+        NSMutableDictionary *profile = profiles[profileName];
+        if (!profile[@"gameDir"] || [profile[@"gameDir"] isEqualToString:@"."]) {
+            [legacyProfiles addObject:profileName];
+        }
+    }
+    
+    // If no legacy profiles, nothing to do
+    if (legacyProfiles.count == 0) {
+        return;
+    }
+    
+    NSLog(@"[PLProfiles] Found %ld legacy profiles that need migration", (long)legacyProfiles.count);
+    
+    // Define migration destination - using "profiles/Migrated" instead of "custom_gamedir/default"
+    NSString *migratedDir = @"./profiles/Migrated";
+    NSString *destPath = [self fullPathForProfileWithName:@"" gameDir:migratedDir];
+    
+    // Define source (old) path - the instance root
+    NSString *srcPath = [NSString stringWithFormat:@"%s/instances/%@", 
+                         getenv("POJAV_HOME"), 
+                         getPrefObject(@"general.game_directory")];
+    
+    // Create destination directory if it doesn't exist
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager fileExistsAtPath:destPath]) {
+        [NSFileManager.defaultManager createDirectoryAtPath:destPath 
+                                withIntermediateDirectories:YES 
+                                                attributes:nil 
+                                                    error:&error];
+        if (error) {
+            NSLog(@"[PLProfiles] Failed to create migration directory at %@: %@", destPath, error.localizedDescription);
+            return;
+        }
+    }
+    
+    // Define important Minecraft folders and files to migrate
+    NSArray *importantItems = @[@"mods", @"resourcepacks", @"shaderpacks", @"saves", @"config", @"options.txt", @"servers.dat"];
+    
+    // Migrate each important directory/file if it exists in source
+    BOOL migratedAnyFiles = NO;
+    for (NSString *itemName in importantItems) {
+        NSString *srcItem = [srcPath stringByAppendingPathComponent:itemName];
+        NSString *destItem = [destPath stringByAppendingPathComponent:itemName];
+        
+        // Skip if source doesn't exist
+        if (![NSFileManager.defaultManager fileExistsAtPath:srcItem]) {
+            continue;
+        }
+        
+        // Handle case where destination already exists
+        if ([NSFileManager.defaultManager fileExistsAtPath:destItem]) {
+            // Create a backup of the existing destination
+            NSString *backupPath = [NSString stringWithFormat:@"%@.bak-%@", destItem, [[NSUUID UUID] UUIDString]];
+            NSLog(@"[PLProfiles] Destination %@ already exists, creating backup at %@", destItem, backupPath);
+            
+            error = nil;
+            [NSFileManager.defaultManager moveItemAtPath:destItem toPath:backupPath error:&error];
+            if (error) {
+                NSLog(@"[PLProfiles] Failed to create backup of %@: %@", destItem, error.localizedDescription);
+                continue;  // Skip this item if we can't create a backup
+            }
+        }
+        
+        // Move the item (file or directory)
+        error = nil;
+        [NSFileManager.defaultManager moveItemAtPath:srcItem toPath:destItem error:&error];
+        
+        if (error) {
+            NSLog(@"[PLProfiles] Failed to move %@ to %@: %@", srcItem, destItem, error.localizedDescription);
+        } else {
+            NSLog(@"[PLProfiles] Successfully moved %@ to %@", srcItem, destItem);
+            migratedAnyFiles = YES;
+        }
+    }
+    
+    if (migratedAnyFiles) {
+        NSLog(@"[PLProfiles] Successfully migrated game files to the Migrated profile directory");
+    } else {
+        NSLog(@"[PLProfiles] No game files needed migration or all migrations failed");
+    }
+    
+    // Update all legacy profiles to use the migrated directory
+    for (NSString *profileName in legacyProfiles) {
+        NSMutableDictionary *profile = profiles[profileName];
+        profile[@"gameDir"] = migratedDir;
+        NSLog(@"[PLProfiles] Updated profile '%@' to use migrated gameDir: %@", profileName, migratedDir);
+    }
+    
+    NSLog(@"[PLProfiles] Migration complete: %ld legacy profiles now use the Migrated profile directory %@", 
+          (long)legacyProfiles.count, migratedDir);
+}
+
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
     NSString *value = profile[key];
     if (value.length > 0) {
@@ -131,14 +227,17 @@ static PLProfiles* current;
         [self save];
     }
     
-    // Ensure all existing profiles have a gameDir
+    // Migrate legacy profiles to a shared directory
+    [PLProfiles migrateAllLegacyProfiles:self.profiles];
+    
+    // Ensure all profile directories exist
     for (NSString *profileName in self.profiles) {
         NSMutableDictionary *profile = self.profiles[profileName];
-        if (!profile[@"gameDir"] || [profile[@"gameDir"] isEqualToString:@"."]) {
-            profile[@"gameDir"] = [PLProfiles uniqueGameDirForProfileName:profileName];
-            [PLProfiles ensureProfileDirectoryExists:profileName gameDir:profile[@"gameDir"]];
-        }
+        [PLProfiles ensureProfileDirectoryExists:profileName gameDir:profile[@"gameDir"]];
     }
+    
+    // Save the updated profiles
+    [self save];
     
     return self;
 }
