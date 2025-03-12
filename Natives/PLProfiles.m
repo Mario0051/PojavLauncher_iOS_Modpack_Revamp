@@ -1,8 +1,10 @@
 #import "LauncherPreferences.h"
 #import "PLProfiles.h"
 #import "utils.h"
+#import "ios_uikit_bridge.h"
 
 static PLProfiles* current;
+static BOOL hasShownMigrationMessage = NO;
 
 @interface PLProfiles()
 @end
@@ -94,6 +96,28 @@ static PLProfiles* current;
     return YES;
 }
 
++ (void)showMigrationCompletedMessage:(NSInteger)profileCount {
+    // Skip showing dialog if it's already been shown in this session
+    if (hasShownMigrationMessage) {
+        return;
+    }
+    
+    hasShownMigrationMessage = YES;
+    
+    NSString *title = @"Files Migrated";
+    NSString *message = [NSString stringWithFormat:
+                         @"PojavLauncher has been updated with a new filesystem layout. Your game files "
+                         @"have been moved to the \"Migrated\" profile folder, and %ld %@ been updated to use this location. "
+                         @"All your saves, mods, and resource packs are safe and will continue to work normally.",
+                         (long)profileCount,
+                         profileCount == 1 ? @"profile has" : @"profiles have"];
+    
+    // Display the message on the main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        showDialog(title, message);
+    });
+}
+
 + (void)migrateAllLegacyProfiles:(NSMutableDictionary *)profiles {
     // Collect all legacy profiles that need migration
     NSMutableArray *legacyProfiles = [NSMutableArray new];
@@ -175,19 +199,22 @@ static PLProfiles* current;
     
     if (migratedAnyFiles) {
         NSLog(@"[PLProfiles] Successfully migrated game files to the Migrated profile directory");
+        
+        // Update all legacy profiles to use the migrated directory
+        for (NSString *profileName in legacyProfiles) {
+            NSMutableDictionary *profile = profiles[profileName];
+            profile[@"gameDir"] = migratedDir;
+            NSLog(@"[PLProfiles] Updated profile '%@' to use migrated gameDir: %@", profileName, migratedDir);
+        }
+        
+        NSLog(@"[PLProfiles] Migration complete: %ld legacy profiles now use the Migrated profile directory %@", 
+              (long)legacyProfiles.count, migratedDir);
+        
+        // Show notification to the user that migration has completed
+        [self showMigrationCompletedMessage:legacyProfiles.count];
     } else {
         NSLog(@"[PLProfiles] No game files needed migration or all migrations failed");
     }
-    
-    // Update all legacy profiles to use the migrated directory
-    for (NSString *profileName in legacyProfiles) {
-        NSMutableDictionary *profile = profiles[profileName];
-        profile[@"gameDir"] = migratedDir;
-        NSLog(@"[PLProfiles] Updated profile '%@' to use migrated gameDir: %@", profileName, migratedDir);
-    }
-    
-    NSLog(@"[PLProfiles] Migration complete: %ld legacy profiles now use the Migrated profile directory %@", 
-          (long)legacyProfiles.count, migratedDir);
 }
 
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
