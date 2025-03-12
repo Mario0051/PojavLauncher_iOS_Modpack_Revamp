@@ -40,6 +40,40 @@ void uncaughtExceptionHandler(NSException *exception) {
     usleep(10000);
 }
 
+void init_setupMultiDir() {
+    NSString *multidir = getPrefObject(@"general.game_directory");
+    if (multidir.length == 0) {
+        multidir = @"default";
+        setPrefObject(@"general.game_directory", multidir);
+        NSLog(@"[Pre-init] Game directory was not set. Defaulting to %@ for future use.\n", multidir);
+    } else {
+        NSLog(@"[Pre-init] Restored game directory preference (%@)\n", multidir);
+    }
+
+    const char *home = getenv("POJAV_HOME");
+    NSString *lasmPath = [NSString stringWithFormat:@"%s/Library/Application Support/minecraft", home];
+    NSString *multidirPath = [NSString stringWithFormat:@"%s/instances/%@", home, multidir];
+    NSString *profilesPath = [NSString stringWithFormat:@"%s/instances/%@/profiles", home, multidir];
+
+    NSArray *dirsToCreate = @[
+        [NSString stringWithFormat:@"%s/.demo", home],
+        [NSString stringWithFormat:@"%s/java_runtimes", home],
+        lasmPath.stringByDeletingLastPathComponent,
+        multidirPath,
+        profilesPath  // Create the profiles directory within the instance
+    ];
+    for (NSString *dir in dirsToCreate) {
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    [fm removeItemAtPath:lasmPath error:nil];
+    [fm createSymbolicLinkAtPath:lasmPath withDestinationPath:multidirPath error:nil];
+    [fm changeCurrentDirectoryPath:lasmPath];
+    setenv("POJAV_GAME_DIR", lasmPath.UTF8String, 1);
+    
+    // Update existing profiles to use isolated directories if needed
+    [PLProfiles updateCurrent];
+}
+
 bool init_checkForsubstrated() {
     // Please kindly tell pwn20wnd that he sucks
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
