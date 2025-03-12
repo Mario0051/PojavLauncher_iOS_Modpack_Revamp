@@ -4,13 +4,23 @@
 #import "WFWorkflowProgressView.h"
 #import "utils.h"
 
+// Define static contexts for KVO
 static void *CellProgressObserverContext = &CellProgressObserverContext;
 static void *TotalProgressObserverContext = &TotalProgressObserverContext;
+
+// Task types for better UI presentation
+typedef NS_ENUM(NSInteger, DownloadTaskType) {
+    DownloadTaskTypeFile = 0,
+    DownloadTaskTypeExtraction = 1,
+    DownloadTaskTypeSetup = 2,
+    DownloadTaskTypeComplete = 3
+};
 
 @interface DownloadProgressViewController ()
 @property NSInteger fileListCount;
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UIProgressView *overallProgressView;
+@property (nonatomic, assign) BOOL isModpackInstall;
 @property (nonatomic, strong) NSMutableDictionary *cellProgressMap;
 @property (nonatomic, strong) NSTimer *refreshTimer;
 @end
@@ -28,66 +38,122 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
 
 - (void)loadView {
     [super loadView];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
-    self.tableView.allowsSelection = NO;
-
-    // Load WFWorkflowProgressView
-    dlopen("/System/Library/PrivateFrameworks/WorkflowUIServices.framework/WorkflowUIServices", RTLD_GLOBAL);
     
-    // Create header view for overall progress
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 80)];
+    // Configure navigation bar
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose 
+                                                                                          target:self 
+                                                                                          action:@selector(actionClose)];
+    
+    self.navigationItem.title = @"Download Progress";
+    
+    // Configure table view
+    self.tableView.allowsSelection = NO;
+    self.tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
+    
+    // Create a custom header view for progress tracking
+    UIView *headerContainer = [[UIView alloc] init];
+    headerContainer.translatesAutoresizingMaskIntoConstraints = NO;
     
     // Status label
-    self.statusLabel = [[UILabel alloc] init];
-    self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
-    self.statusLabel.textColor = [UIColor labelColor];
-    self.statusLabel.text = @"Downloading...";
-    [headerView addSubview:self.statusLabel];
+    _statusLabel = [[UILabel alloc] init];
+    _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _statusLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    _statusLabel.textColor = [UIColor labelColor];
+    _statusLabel.text = @"Preparing download...";
+    [headerContainer addSubview:_statusLabel];
     
-    // Progress bar
-    self.overallProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-    self.overallProgressView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.overallProgressView.progress = 0.0;
-    [headerView addSubview:self.overallProgressView];
+    // Progress view
+    _overallProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    _overallProgressView.translatesAutoresizingMaskIntoConstraints = NO;
+    _overallProgressView.progress = 0.0;
+    _overallProgressView.progressTintColor = [UIColor systemBlueColor];
+    _overallProgressView.trackTintColor = [UIColor systemFillColor];
+    _overallProgressView.layer.cornerRadius = 1.0;
+    _overallProgressView.clipsToBounds = YES;
+    [headerContainer addSubview:_overallProgressView];
     
     // Percentage label
     UILabel *percentLabel = [[UILabel alloc] init];
     percentLabel.translatesAutoresizingMaskIntoConstraints = NO;
     percentLabel.font = [UIFont systemFontOfSize:12];
     percentLabel.textColor = [UIColor secondaryLabelColor];
-    percentLabel.text = @"0%";
     percentLabel.textAlignment = NSTextAlignmentRight;
-    objc_setAssociatedObject(self.overallProgressView, @"percentLabel", percentLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    [headerView addSubview:percentLabel];
+    percentLabel.text = @"0%";
+    objc_setAssociatedObject(_overallProgressView, @"percentLabel", percentLabel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [headerContainer addSubview:percentLabel];
     
-    // Setup constraints
+    // Separator line
+    UIView *separatorLine = [[UIView alloc] init];
+    separatorLine.translatesAutoresizingMaskIntoConstraints = NO;
+    separatorLine.backgroundColor = [UIColor separatorColor];
+    [headerContainer addSubview:separatorLine];
+    
+    // Constraints
     [NSLayoutConstraint activateConstraints:@[
-        [self.statusLabel.topAnchor constraintEqualToAnchor:headerView.topAnchor constant:15],
-        [self.statusLabel.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor constant:16],
-        [self.statusLabel.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor constant:-16],
+        // Status Label
+        [_statusLabel.topAnchor constraintEqualToAnchor:headerContainer.topAnchor constant:10],
+        [_statusLabel.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor constant:16],
+        [_statusLabel.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
         
-        [self.overallProgressView.topAnchor constraintEqualToAnchor:self.statusLabel.bottomAnchor constant:10],
-        [self.overallProgressView.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor constant:16],
-        [self.overallProgressView.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor constant:-16],
+        // Progress View
+        [_overallProgressView.topAnchor constraintEqualToAnchor:_statusLabel.bottomAnchor constant:8],
+        [_overallProgressView.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor constant:16],
+        [_overallProgressView.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
+        [_overallProgressView.heightAnchor constraintEqualToConstant:4],
         
-        [percentLabel.topAnchor constraintEqualToAnchor:self.overallProgressView.bottomAnchor constant:5],
-        [percentLabel.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor constant:-16],
-        [percentLabel.bottomAnchor constraintEqualToAnchor:headerView.bottomAnchor constant:-10]
+        // Percentage Label
+        [percentLabel.topAnchor constraintEqualToAnchor:_overallProgressView.bottomAnchor constant:4],
+        [percentLabel.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor constant:16],
+        [percentLabel.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
+        
+        // Separator Line
+        [separatorLine.heightAnchor constraintEqualToConstant:0.5],
+        [separatorLine.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor],
+        [separatorLine.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor],
+        [separatorLine.bottomAnchor constraintEqualToAnchor:headerContainer.bottomAnchor],
+        
+        // Ensure the header has a specific height
+        [headerContainer.heightAnchor constraintEqualToConstant:100]
     ]];
     
-    self.tableView.tableHeaderView = headerView;
+    // Create a container view to wrap the header with proper sizing
+    UIView *headerWrapperView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 100)];
+    [headerWrapperView addSubview:headerContainer];
+    
+    // Constraints for header container
+    [NSLayoutConstraint activateConstraints:@[
+        [headerContainer.topAnchor constraintEqualToAnchor:headerWrapperView.topAnchor],
+        [headerContainer.leadingAnchor constraintEqualToAnchor:headerWrapperView.leadingAnchor],
+        [headerContainer.trailingAnchor constraintEqualToAnchor:headerWrapperView.trailingAnchor],
+        [headerContainer.bottomAnchor constraintEqualToAnchor:headerWrapperView.bottomAnchor]
+    ]];
+    
+    // Set the table header view
+    self.tableView.tableHeaderView = headerWrapperView;
+    
+    // Detect if this is a modpack install based on task properties
+    self.isModpackInstall = NO;
+    for (NSString *fileName in self.task.fileList) {
+        if ([fileName hasPrefix:@"Installing"] || 
+            [fileName hasPrefix:@"Extracting"] || 
+            [fileName hasPrefix:@"Setting"]) {
+            self.isModpackInstall = YES;
+            break;
+        }
+    }
 }
 
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     
+    // Start observing overall progress
     [self.task.textProgress addObserver:self
             forKeyPath:@"fractionCompleted"
             options:NSKeyValueObservingOptionInitial
             context:TotalProgressObserverContext];
     
-    // Setup refresh timer for UI updates
+    // Setup a refresh timer to periodically update the UI
+    // This helps with smoother updates when individual operations are taking a long time
     self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 
                                                         target:self 
                                                       selector:@selector(refreshProgressUI) 
@@ -98,27 +164,66 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
     
+    // Stop observing progress
     [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
     
-    // Invalidate timer
+    // Invalidate refresh timer
     [self.refreshTimer invalidate];
     self.refreshTimer = nil;
     
-    // Clean up observers
+    // Remove all observers from cell progress
     [self removeAllProgressObservers];
 }
 
 - (void)refreshProgressUI {
-    // Update UI to show latest progress
+    // Update the UI to show the latest progress
+    [self.tableView reloadData];
+    
+    // Check for any new items that were added
     if (self.fileListCount != self.task.fileList.count) {
-        [self.tableView reloadData];
         self.fileListCount = self.task.fileList.count;
+        [self.tableView reloadData];
     }
     
     // Check for completion
-    BOOL isComplete = self.task.progress.fractionCompleted >= 1.0 || self.task.progress.finished;
+    BOOL isComplete = NO;
+    
+    // Check if allTasksComplete flag is set
+    if (self.task.metadata[@"allTasksComplete"]) {
+        isComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
+    }
+    
+    // Also check if progress is complete
+    if (self.task.progress.fractionCompleted >= 1.0 || self.task.progress.finished) {
+        isComplete = YES;
+    }
+    
+    // Force progress completion for extraction and setup tasks that may be stuck
     if (isComplete) {
-        self.statusLabel.text = @"Download Complete";
+        for (NSInteger i = 0; i < self.task.progressList.count; i++) {
+            NSProgress *progress = self.task.progressList[i];
+            if (progress.fractionCompleted < 1.0) {
+                progress.completedUnitCount = progress.totalUnitCount;
+            }
+        }
+    }
+    
+    // If complete, ensure UI reflects this
+    if (isComplete && ![self.task.fileList containsObject:@"Complete"]) {
+        // Add completion marker if needed
+        [self.task.fileList addObject:@"Complete"];
+        
+        // Create completion progress
+        NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+        completeProgress.completedUnitCount = 1;
+        completeProgress.kind = NSProgressKindFile;
+        [self.task.progressList addObject:completeProgress];
+        [self.task.progress addChild:completeProgress withPendingUnitCount:1];
+        
+        [self.tableView reloadData];
+        
+        // Update status label
+        self.statusLabel.text = @"Installation Complete";
     }
 }
 
@@ -143,7 +248,7 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
 }
 
 - (void)removeAllProgressObservers {
-    // Clean up all KVO observers to prevent leaks
+    // Clean up KVO observers to prevent leaks
     for (id key in self.cellProgressMap) {
         NSProgress *progress = [self.cellProgressMap objectForKey:key];
         [self removeProgressObserver:progress];
@@ -157,53 +262,132 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     @try {
         [progress removeObserver:self forKeyPath:@"fractionCompleted"];
     } @catch (NSException *exception) {
-        // Observer might not exist, ignore
-        NSLog(@"Warning: Failed to remove observer: %@", exception);
+        // Ignore if not observing
+        NSLog(@"[ProgressView] Warning: Failed to remove observer: %@", exception);
     }
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
     NSProgress *progress = object;
+    
     if (context == CellProgressObserverContext) {
         UITableViewCell *cell = objc_getAssociatedObject(progress, @"cell");
         if (!cell) return;
+        
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Determine if this is a special task
+            // Determine task type
+            DownloadTaskType taskType = DownloadTaskTypeFile;
             NSString *fileName = cell.textLabel.text;
-            BOOL isExtraction = [fileName hasPrefix:@"Extracting"];
-            BOOL isSetup = [fileName hasPrefix:@"Setting"];
-            BOOL isComplete = [fileName isEqualToString:@"Complete"];
             
-            // Format file size for display
-            if (!isExtraction && !isSetup && !isComplete && progress.totalUnitCount > 0) {
+            if ([fileName hasPrefix:@"Extracting"]) {
+                taskType = DownloadTaskTypeExtraction;
+            } else if ([fileName hasPrefix:@"Setting"]) {
+                taskType = DownloadTaskTypeSetup;
+            } else if ([fileName isEqualToString:@"Complete"]) {
+                taskType = DownloadTaskTypeComplete;
+            }
+            
+            // Format size as MB/MB for file downloads
+            NSString *sizeText;
+            if (taskType == DownloadTaskTypeFile && progress.totalUnitCount > 0) {
                 double completedMB = progress.completedUnitCount / 1024.0 / 1024.0;
                 double totalMB = progress.totalUnitCount / 1024.0 / 1024.0;
                 
+                // Format with appropriate precision based on size
                 if (totalMB < 1.0) {
-                    // Show in KB for small files
+                    // Use KB for small files
                     double completedKB = progress.completedUnitCount / 1024.0;
                     double totalKB = progress.totalUnitCount / 1024.0;
-                    cell.detailTextLabel.text = [NSString stringWithFormat:@"%.0fKB/%.0fKB", completedKB, totalKB];
-                } else if (totalMB < 10) {
-                    cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
+                    sizeText = [NSString stringWithFormat:@"%.0fKB/%.0fKB", completedKB, totalKB];
+                } else if (totalMB < 10.0) {
+                    // More precision for smaller files
+                    sizeText = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
+                } else if (totalMB < 100.0) {
+                    sizeText = [NSString stringWithFormat:@"%.1fMB/%.1fMB", completedMB, totalMB];
                 } else {
-                    cell.detailTextLabel.text = [NSString stringWithFormat:@"%.1fMB/%.1fMB", completedMB, totalMB];
+                    sizeText = [NSString stringWithFormat:@"%.0fMB/%.0fMB", completedMB, totalMB];
                 }
+            } else if (taskType == DownloadTaskTypeExtraction) {
+                // Show extraction progress percentage
+                int percentage = (int)(progress.fractionCompleted * 100);
+                sizeText = [NSString stringWithFormat:@"Extracting files... %d%%", percentage];
+            } else if (taskType == DownloadTaskTypeSetup) {
+                // Show setup progress percentage
+                int percentage = (int)(progress.fractionCompleted * 100);
+                sizeText = [NSString stringWithFormat:@"Setting up profile... %d%%", percentage];
+            } else if (taskType == DownloadTaskTypeComplete) {
+                sizeText = @"Complete!";
             } else {
-                cell.detailTextLabel.text = progress.localizedAdditionalDescription;
+                sizeText = progress.totalUnitCount > 0 ? 
+                          @"Pending..." : 
+                          [NSString stringWithFormat:@"Preparing... %d%%", (int)(progress.fractionCompleted * 100)];
             }
             
-            // Update progress indicator
-            WFWorkflowProgressView *progressView = (id)cell.accessoryView;
-            progressView.fractionCompleted = progress.fractionCompleted;
+            // Update detail text
+            cell.detailTextLabel.text = sizeText;
             
-            if (progress.finished || progress.fractionCompleted >= 1.0) {
-                [progressView transitionCompletedLayerToVisible:YES animated:YES haptic:NO];
+            // For the accessory view, check if download is complete
+            if (progress.finished || progress.fractionCompleted >= 1.0 || taskType == DownloadTaskTypeComplete) {
+                // Show checkmark as accessory
+                UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+                UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                checkmarkView.image = checkmarkImage;
+                checkmarkView.tintColor = [UIColor systemGreenColor];
+                cell.accessoryView = checkmarkView;
+                
+                if (taskType == DownloadTaskTypeFile) {
+                    cell.detailTextLabel.text = @"Download complete";
+                }
+            } else if (taskType == DownloadTaskTypeExtraction || taskType == DownloadTaskTypeSetup) {
+                // Show activity indicator for extraction and setup
+                if (![cell.accessoryView isKindOfClass:[UIActivityIndicatorView class]]) {
+                    UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+                    [activityIndicator startAnimating];
+                    cell.accessoryView = activityIndicator;
+                }
+            } else {
+                // Ensure progress label is updated for downloads
+                UILabel *progressLabel = (UILabel *)cell.accessoryView;
+                if (![progressLabel isKindOfClass:[UILabel class]]) {
+                    progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+                    progressLabel.textAlignment = NSTextAlignmentRight;
+                    progressLabel.font = [UIFont systemFontOfSize:14];
+                    cell.accessoryView = progressLabel;
+                }
+                int percentage = (int)(progress.fractionCompleted * 100);
+                progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
             }
         });
     } else if (context == TotalProgressObserverContext) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.title = progress.localizedDescription;
+            // Update title with current task description
+            self.title = progress.localizedDescription ?: @"Download Progress";
+            
+            // Update status label with more descriptive text based on the progress
+            if (self.isModpackInstall) {
+                if (progress.fractionCompleted < 0.2) {
+                    self.statusLabel.text = @"Preparing modpack installation...";
+                } else if (progress.fractionCompleted < 0.5) {
+                    self.statusLabel.text = @"Downloading modpack files...";
+                } else if (progress.fractionCompleted < 0.8) {
+                    self.statusLabel.text = @"Extracting modpack contents...";
+                } else if (progress.fractionCompleted < 0.95) {
+                    self.statusLabel.text = @"Setting up modpack profile...";
+                } else {
+                    self.statusLabel.text = @"Completing installation...";
+                }
+            } else {
+                // Regular Minecraft download
+                if (progress.fractionCompleted < 0.3) {
+                    self.statusLabel.text = @"Downloading game files...";
+                } else if (progress.fractionCompleted < 0.6) {
+                    self.statusLabel.text = @"Downloading libraries...";
+                } else if (progress.fractionCompleted < 0.9) {
+                    self.statusLabel.text = @"Downloading assets...";
+                } else {
+                    self.statusLabel.text = @"Finalizing installation...";
+                }
+            }
             
             // Update overall progress bar
             self.overallProgressView.progress = progress.fractionCompleted;
@@ -213,21 +397,20 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
             int percentage = (int)(progress.fractionCompleted * 100);
             percentLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
             
-            // Update status label based on progress
-            if (progress.fractionCompleted < 0.3) {
-                self.statusLabel.text = @"Downloading files...";
-            } else if (progress.fractionCompleted < 0.7) {
-                self.statusLabel.text = @"Processing files...";
-            } else if (progress.fractionCompleted < 1.0) {
-                self.statusLabel.text = @"Finalizing...";
-            } else {
-                self.statusLabel.text = @"Download Complete";
-            }
-            
+            // Check if file list count changed
             if (self.fileListCount != self.task.fileList.count) {
                 [self.tableView reloadData];
+                self.fileListCount = self.task.fileList.count;
             }
-            self.fileListCount = self.task.fileList.count;
+            
+            // Check for completion
+            if (progress.fractionCompleted >= 1.0) {
+                // Add a completion message if needed
+                if (![self.task.fileList containsObject:@"Complete"]) {
+                    [self.task.fileList addObject:@"Complete"];
+                    [self.tableView reloadData];
+                }
+            }
         });
     } else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
@@ -241,91 +424,171 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"];
+    static NSString *cellId = @"cell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellId];
 
     if (cell == nil) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"cell"];
-        WFWorkflowProgressView *progressView = [[NSClassFromString(@"WFWorkflowProgressView") alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
-        progressView.resolvedTintColor = self.view.tintColor;
-        progressView.stopSize = 0;
-        cell.accessoryView = progressView;
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:cellId];
+        cell.textLabel.font = [UIFont systemFontOfSize:14];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
+        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+        
+        // Create progress label
+        UILabel *progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+        progressLabel.textAlignment = NSTextAlignmentRight;
+        progressLabel.font = [UIFont systemFontOfSize:14];
+        progressLabel.text = @"0%";
+        cell.accessoryView = progressLabel;
     }
 
-    // Unset the last cell displaying the progress
-    NSProgress *lastProgress = objc_getAssociatedObject(cell, @"progress");
-    if (lastProgress) {
-        objc_setAssociatedObject(lastProgress, @"cell", nil, OBJC_ASSOCIATION_ASSIGN);
-        [self removeProgressObserver:lastProgress];
+    // Get the file name and determine the type
+    NSString *fileName = self.task.fileList[indexPath.row];
+    DownloadTaskType taskType = DownloadTaskTypeFile;
+    
+    if ([fileName hasPrefix:@"Extracting"]) {
+        taskType = DownloadTaskTypeExtraction;
+    } else if ([fileName hasPrefix:@"Setting"]) {
+        taskType = DownloadTaskTypeSetup;
+    } else if ([fileName isEqualToString:@"Complete"]) {
+        taskType = DownloadTaskTypeComplete;
     }
-
-    // Set new progress
-    NSString *identifier = [NSString stringWithFormat:@"cell_%ld", (long)indexPath.row];
+    
+    // Set cell text
+    cell.textLabel.text = fileName;
+    
+    // Get the NSProgress object for this cell
     NSProgress *progress = nil;
     
-    // Check if we have the progress in our map
+    // Look for existing progress first to avoid re-observation
+    NSString *identifier = [NSString stringWithFormat:@"cell_%ld", (long)indexPath.row];
     progress = [self.cellProgressMap objectForKey:identifier];
     
-    // If not, get from task
+    // If no existing progress, check if available from task
     if (!progress && indexPath.row < self.task.progressList.count) {
         progress = self.task.progressList[indexPath.row];
         
         if (progress) {
             // Store in our map to track observation
             [self.cellProgressMap setObject:progress forKey:identifier];
+            
+            // Set up relationship between cell and progress
+            objc_setAssociatedObject(cell, @"progress", progress, OBJC_ASSOCIATION_ASSIGN);
+            objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            
+            // Start observing
+            [progress addObserver:self
+                       forKeyPath:@"fractionCompleted"
+                          options:NSKeyValueObservingOptionInitial
+                          context:CellProgressObserverContext];
         }
-    }
-    
-    if (progress) {
+    } else if (progress) {
+        // Maintain the association with the current cell
         objc_setAssociatedObject(cell, @"progress", progress, OBJC_ASSOCIATION_ASSIGN);
         objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [progress addObserver:self
-            forKeyPath:@"fractionCompleted"
-            options:NSKeyValueObservingOptionInitial
-            context:CellProgressObserverContext];
-
-        WFWorkflowProgressView *progressView = (id)cell.accessoryView;
-        if (lastProgress.finished) {
-            [progressView reset];
-        }
-        progressView.fractionCompleted = progress.fractionCompleted;
-        [progressView transitionCompletedLayerToVisible:progress.finished animated:NO haptic:NO];
-        [progressView transitionRunningLayerToVisible:!progress.finished animated:NO];
-    }
-
-    // Set cell text
-    if (indexPath.row < self.task.fileList.count) {
-        cell.textLabel.text = self.task.fileList[indexPath.row];
-        
-        // If we have progress info, set detail text
-        if (progress) {
-            NSString *fileName = cell.textLabel.text;
-            BOOL isExtraction = [fileName hasPrefix:@"Extracting"];
-            BOOL isSetup = [fileName hasPrefix:@"Setting"];
-            BOOL isComplete = [fileName isEqualToString:@"Complete"];
-            
-            // Format file size for display
-            if (!isExtraction && !isSetup && !isComplete && progress.totalUnitCount > 0) {
-                double completedMB = progress.completedUnitCount / 1024.0 / 1024.0;
-                double totalMB = progress.totalUnitCount / 1024.0 / 1024.0;
-                
-                if (totalMB < 1.0) {
-                    // Show in KB for small files
-                    double completedKB = progress.completedUnitCount / 1024.0;
-                    double totalKB = progress.totalUnitCount / 1024.0;
-                    cell.detailTextLabel.text = [NSString stringWithFormat:@"%.0fKB/%.0fKB", completedKB, totalKB];
-                } else if (totalMB < 10) {
-                    cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
-                } else {
-                    cell.detailTextLabel.text = [NSString stringWithFormat:@"%.1fMB/%.1fMB", completedMB, totalMB];
-                }
-            } else {
-                cell.detailTextLabel.text = progress.localizedAdditionalDescription;
-            }
-        } else {
-            cell.detailTextLabel.text = @"Waiting...";
-        }
     }
     
+    // Handle special case: metadata indicates all tasks complete
+    BOOL isAllComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
+    
+    // Configure cell based on task type and progress state
+    if (taskType == DownloadTaskTypeComplete || isAllComplete) {
+        // Show completion status
+        cell.detailTextLabel.text = @"Installation complete";
+        UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+        UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+        checkmarkView.image = checkmarkImage;
+        checkmarkView.tintColor = [UIColor systemGreenColor];
+        cell.accessoryView = checkmarkView;
+    } else if (taskType == DownloadTaskTypeExtraction || taskType == DownloadTaskTypeSetup) {
+        // Show activity indicator for extraction and setup
+        if (progress) {
+            // If all tasks are complete, show checkmark regardless of progress value
+            if (isAllComplete || progress.fractionCompleted >= 1.0) {
+                cell.detailTextLabel.text = (taskType == DownloadTaskTypeExtraction) ? 
+                                          @"Extraction complete" : @"Setup complete";
+                UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+                UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                checkmarkView.image = checkmarkImage;
+                checkmarkView.tintColor = [UIColor systemGreenColor];
+                cell.accessoryView = checkmarkView;
+            } else {
+                cell.detailTextLabel.text = (taskType == DownloadTaskTypeExtraction) ? 
+                                          [NSString stringWithFormat:@"Extracting files... %d%%", (int)(progress.fractionCompleted * 100)] : 
+                                          [NSString stringWithFormat:@"Setting up profile... %d%%", (int)(progress.fractionCompleted * 100)];
+                
+                UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+                [activityIndicator startAnimating];
+                cell.accessoryView = activityIndicator;
+            }
+        } else {
+            cell.detailTextLabel.text = (taskType == DownloadTaskTypeExtraction) ? 
+                                      @"Extracting files..." : @"Setting up profile...";
+            UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+            [activityIndicator startAnimating];
+            cell.accessoryView = activityIndicator;
+        }
+    } else {
+        // Regular file download
+        if (progress) {
+            // Update label with progress percentage
+            UILabel *progressLabel = (UILabel *)cell.accessoryView;
+            if (![progressLabel isKindOfClass:[UILabel class]]) {
+                progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+                progressLabel.textAlignment = NSTextAlignmentRight;
+                progressLabel.font = [UIFont systemFontOfSize:14];
+                cell.accessoryView = progressLabel;
+            }
+            
+            if (progress.finished || progress.fractionCompleted >= 1.0 || isAllComplete) {
+                // Show checkmark for completed downloads
+                UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+                UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+                checkmarkView.image = checkmarkImage;
+                checkmarkView.tintColor = [UIColor systemGreenColor];
+                cell.accessoryView = checkmarkView;
+                cell.detailTextLabel.text = @"Download complete";
+            } else {
+                // Update percentage display
+                int percentage = (int)(progress.fractionCompleted * 100);
+                progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+                
+                // Show size information if available
+                if (progress.totalUnitCount > 0) {
+                    double completedMB = progress.completedUnitCount / 1024.0 / 1024.0;
+                    double totalMB = progress.totalUnitCount / 1024.0 / 1024.0;
+                    
+                    // Format with appropriate precision based on size
+                    if (totalMB < 1.0) {
+                        // Use KB for small files
+                        double completedKB = progress.completedUnitCount / 1024.0;
+                        double totalKB = progress.totalUnitCount / 1024.0;
+                        cell.detailTextLabel.text = [NSString stringWithFormat:@"%.0fKB/%.0fKB", completedKB, totalKB];
+                    } else if (totalMB < 10.0) {
+                        // More precision for smaller files
+                        cell.detailTextLabel.text = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
+                    } else if (totalMB < 100.0) {
+                        cell.detailTextLabel.text = [NSString stringWithFormat:@"%.1fMB/%.1fMB", completedMB, totalMB];
+                    } else {
+                        cell.detailTextLabel.text = [NSString stringWithFormat:@"%.0fMB/%.0fMB", completedMB, totalMB];
+                    }
+                } else {
+                    cell.detailTextLabel.text = @"Waiting...";
+                }
+            }
+        } else {
+            // No progress yet
+            cell.detailTextLabel.text = @"Waiting...";
+            UILabel *progressLabel = (UILabel *)cell.accessoryView;
+            if (![progressLabel isKindOfClass:[UILabel class]]) {
+                progressLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 0, 80, 30)];
+                progressLabel.textAlignment = NSTextAlignmentRight;
+                progressLabel.font = [UIFont systemFontOfSize:14];
+                cell.accessoryView = progressLabel;
+            }
+            progressLabel.text = @"0%";
+        }
+    }
+
     return cell;
 }
 
