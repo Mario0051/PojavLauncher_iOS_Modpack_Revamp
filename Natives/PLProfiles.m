@@ -42,7 +42,7 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
     NSString *safeName = [profileName stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
     safeName = [safeName stringByReplacingOccurrencesOfString:@"\\" withString:@"_"];
     safeName = [safeName stringByReplacingOccurrencesOfString:@":" withString:@"_"];
-    return [NSString stringWithFormat:@"./profiles/%@", safeName];
+    return [NSString stringWithFormat:@"profiles/%@", safeName];
 }
 
 + (NSString *)fullPathForProfileWithName:(NSString *)profileName gameDir:(NSString *)gameDir {
@@ -53,10 +53,6 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
     // Handle relative paths (starting with ./) by resolving against the instance directory
     if ([gameDir hasPrefix:@"./"]) {
         gameDir = [gameDir substringFromIndex:2]; // Remove "./" prefix
-        return [NSString stringWithFormat:@"%s/instances/%@/%@", 
-                getenv("POJAV_HOME"), 
-                getPrefObject(@"general.game_directory"),
-                gameDir];
     }
     
     // If it's an absolute path, return it as is
@@ -153,6 +149,9 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
             NSMutableDictionary *profile = profiles[profileName];
             if (!profile[@"gameDir"] || [profile[@"gameDir"] isEqualToString:@"."]) {
                 profile[@"gameDir"] = [self uniqueGameDirForProfileName:profileName];
+            } else if ([profile[@"gameDir"] hasPrefix:@"./"]) {
+                // Normalize existing paths to remove ./ prefix
+                profile[@"gameDir"] = [profile[@"gameDir"] substringFromIndex:2];
             }
         }
         return;
@@ -176,7 +175,7 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
     NSLog(@"[PLProfiles] Found %ld legacy profiles that need migration", (long)legacyProfiles.count);
     
     // Define migration destination - using "profiles/Migrated" instead of "custom_gamedir/default"
-    NSString *migratedDir = @"./profiles/Migrated";
+    NSString *migratedDir = @"profiles/Migrated";
     NSString *destPath = [self fullPathForProfileWithName:@"" gameDir:migratedDir];
     
     // Define source (old) path - the instance root
@@ -270,6 +269,10 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
     NSString *value = profile[key];
     if (value.length > 0) {
+        if ([key isEqualToString:@"gameDir"] && [value hasPrefix:@"./"]) {
+            // Normalize gameDir paths by removing ./ prefix
+            return [value substringFromIndex:2];
+        }
         //NSDebugLog(@"[PLProfiles] Applying %@: \"%@\"", key, value);
         return value;
     }
@@ -302,6 +305,14 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
     if (self.profileDict[@"NSErrorObject"]) {
         self.profileDict = PLProfiles.defaultProfiles;
         [self save];
+    }
+    
+    // Normalize any existing gameDir paths that have ./ prefix
+    for (NSString *profileName in self.profiles) {
+        NSMutableDictionary *profile = self.profiles[profileName];
+        if (profile[@"gameDir"] && [profile[@"gameDir"] hasPrefix:@"./"]) {
+            profile[@"gameDir"] = [profile[@"gameDir"] substringFromIndex:2];
+        }
     }
     
     // Migrate legacy profiles to a shared directory
