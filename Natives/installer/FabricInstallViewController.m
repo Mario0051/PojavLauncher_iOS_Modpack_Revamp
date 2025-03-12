@@ -112,6 +112,43 @@
     [self fetchVersionEndpoints:0];
 }
 
+- (void)actionDone:(UIBarButtonItem *)sender {
+    sender.enabled = NO;
+
+    NSDictionary *endpoint = self.endpoints[self.localKVO[@"loaderVendor"]];
+    NSString *path = [NSString stringWithFormat:endpoint[@"json"], self.localKVO[@"gameVersion"], self.localKVO[@"loaderVersion"]];
+    NSDebugLog(@"[%@ Installer] Downloading %@", self.localKVO[@"loaderVendor"], path);
+
+    AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
+    [manager GET:path parameters:nil headers:nil progress:nil  success:^(NSURLSessionTask *task, NSDictionary *response) {
+        sender.enabled = YES;
+
+        NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), response[@"id"]];
+        [NSFileManager.defaultManager createDirectoryAtPath:jsonPath.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        NSError *error = saveJSONToFile(response, jsonPath);
+        if (error) {
+            showDialog(localize(@"Error", nil), error.localizedDescription);
+        } else {
+            [localVersionList addObject:@{
+                @"id": response[@"id"],
+                @"type": @"custom"}];
+            // Jump to the profile editor
+            LauncherProfileEditorViewController *vc = [LauncherProfileEditorViewController new];
+            vc.profile = @{
+                @"icon": endpoint[@"icon"],
+                @"name": response[@"id"],
+                @"lastVersionId": response[@"id"],
+                @"gameDir": [PLProfiles uniqueGameDirForProfileName:response[@"id"]]
+            }.mutableCopy;
+            [self.navigationController pushViewController:vc animated:YES];
+        }
+    } failure:^(NSURLSessionTask *operation, NSError *error) {
+        sender.enabled = YES;
+        NSDebugLog(@"Error: %@", error);
+        showDialog(localize(@"Error", nil), error.localizedDescription);
+    }];
+}
+
 - (void)fetchVersionEndpoints:(int)type {
     // Fetch version
     __block BOOL errorShown = NO;
