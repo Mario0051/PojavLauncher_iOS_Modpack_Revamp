@@ -206,10 +206,15 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     NSString *libjlipath11 = [NSString stringWithFormat:@"%@/lib/libjli.dylib", javaHome]; // java 11+
     BOOL isJava8Path = [fm fileExistsAtPath:libjlipath8];
     
-    // Important: Move this block up - add the Java 9+ permissions before loading the Cosmetica agent
+    // Important: Add Java 9+ permissions before loading the Cosmetica agent
     if(!isJava8Path) {
         // Required by Cosmetica to inject DNS
         margv[++margc] = "--add-opens=java.base/java.net=ALL-UNNAMED";
+        // Additional permissions for Cosmetica to access internal InetAddress classes
+        margv[++margc] = "--add-exports=java.base/sun.net.dns=ALL-UNNAMED";
+        margv[++margc] = "--add-exports=java.base/sun.net=ALL-UNNAMED";
+        margv[++margc] = "--add-opens=java.base/sun.net=ALL-UNNAMED";
+        margv[++margc] = "--add-opens=java.base/sun.net.dns=ALL-UNNAMED";
     }
     
     // Add Cosmetica agent after Java 9+ permissions are set
