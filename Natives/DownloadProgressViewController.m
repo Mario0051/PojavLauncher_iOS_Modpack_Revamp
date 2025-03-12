@@ -135,7 +135,10 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     
     // Detect if this is a modpack install based on task properties
     self.isModpackInstall = NO;
-    for (NSString *fileName in self.task.fileList) {
+    
+    // Make a defensive copy to avoid mutation during enumeration
+    NSArray *fileListCopy = [NSArray arrayWithArray:self.task.fileList];
+    for (NSString *fileName in fileListCopy) {
         if ([fileName hasPrefix:@"Installing"] || 
             [fileName hasPrefix:@"Extracting"] || 
             [fileName hasPrefix:@"Setting"]) {
@@ -184,11 +187,14 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Clear previous filtered list
     [self.filteredFileList removeAllObjects];
     
+    // Create a defensive copy of the file list to avoid mutation during enumeration
+    NSArray *fileListCopy = [NSArray arrayWithArray:self.task.fileList];
+    
     // Create a dictionary to track files by their base name
     NSMutableDictionary *fileMap = [NSMutableDictionary dictionary];
     
     // First pass: group files by base name
-    for (NSString *filePath in self.task.fileList) {
+    for (NSString *filePath in fileListCopy) {
         // Skip special entries
         if ([filePath hasPrefix:@"Extracting"] || 
             [filePath hasPrefix:@"Setting"] || 
@@ -208,7 +214,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     }
     
     // Add all unique paths to the filtered list
-    for (NSString *uniquePath in [fileMap allValues]) {
+    NSArray *uniquePaths = [fileMap allValues];
+    for (NSString *uniquePath in uniquePaths) {
         [self.filteredFileList addObject:uniquePath];
     }
     
@@ -278,8 +285,10 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     
     // Force progress completion for extraction and setup tasks that may be stuck
     if (isComplete) {
-        for (NSInteger i = 0; i < self.task.progressList.count; i++) {
-            NSProgress *progress = self.task.progressList[i];
+        // Make a defensive copy to avoid mutation issues
+        NSArray *progressListCopy = [NSArray arrayWithArray:self.task.progressList];
+        for (NSInteger i = 0; i < progressListCopy.count; i++) {
+            NSProgress *progress = progressListCopy[i];
             if (progress.fractionCompleted < 1.0) {
                 progress.completedUnitCount = progress.totalUnitCount;
             }
@@ -439,7 +448,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 
 - (void)removeAllProgressObservers {
     // Clean up KVO observers to prevent leaks
-    for (id key in self.cellProgressMap) {
+    // Make a defensive copy of keys to avoid mutation while enumerating
+    NSArray *keys = [self.cellProgressMap allKeys];
+    for (id key in keys) {
         NSProgress *progress = [self.cellProgressMap objectForKey:key];
         [self removeProgressObserver:progress];
     }
