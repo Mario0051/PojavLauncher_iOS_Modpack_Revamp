@@ -219,7 +219,13 @@
             [[NSData dataWithContentsOfFile:tmpIconPath]
             base64EncodedStringWithOptions:0]]
     }.mutableCopy;
-    PLProfiles.current.selectedProfileName = indexDict[@"name"];
+    
+    // IMPORTANT FIX: Do not automatically set this as the selected profile
+    // This prevents auto-launching after installation
+    // PLProfiles.current.selectedProfileName = indexDict[@"name"]; -- REMOVED
+    
+    // Make sure to save the profiles to persist the new modpack profile
+    [PLProfiles.current save];
     
     // Mark installation as complete
     downloader.currentPhase = DownloadPhaseComplete;
