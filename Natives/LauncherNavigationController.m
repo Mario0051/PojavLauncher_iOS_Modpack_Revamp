@@ -329,7 +329,15 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         [self.progressVC dismissModalViewControllerAnimated:NO];
 
         self.progressViewMain.observedProgress = nil;
-        if (self.task.metadata) {
+        
+        // Check if this was a modpack installation
+        BOOL isModpackInstall = NO;
+        if (self.task.metadata && self.task.metadata[@"isModpackInstall"]) {
+            isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
+        }
+        
+        // Only launch the game if it's not a modpack installation
+        if (self.task.metadata && !isModpackInstall) {
             [self invokeAfterJITEnabled:^{
                 UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
             }];
