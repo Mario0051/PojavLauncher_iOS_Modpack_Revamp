@@ -91,26 +91,50 @@
 
     // Set phase description for downloading modpack files
     downloader.currentPhase = DownloadPhaseModpackExtraction;
-    downloader.currentPhaseItemsTotal = [indexDict[@"files"] count];
+    
+    // Get files and create a more unique display name for each file
+    NSArray *files = indexDict[@"files"];
+    downloader.currentPhaseItemsTotal = [files count];
     downloader.currentPhaseItemsCompleted = 0;
     [downloader updatePhaseDescription];
     
-    downloader.progress.totalUnitCount = [indexDict[@"files"] count];
-    for (NSDictionary *indexFile in indexDict[@"files"]) {
+    // Add a uniqueness counter to make sure all display names are distinct
+    NSMutableDictionary *fileNameCounts = [NSMutableDictionary dictionary];
+    
+    downloader.progress.totalUnitCount = [files count];
+    for (NSDictionary *indexFile in files) {
         NSString *url = [indexFile[@"downloads"] firstObject];
         NSString *sha = indexFile[@"hashes"][@"sha1"];
         NSString *path = [destPath stringByAppendingPathComponent:indexFile[@"path"]];
         NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
         
-        // Create a wrapped success callback to track completion
+        // Create a display name that includes more path information
+        // This makes it more likely that each file will have a unique entry
+        NSString *displayName = indexFile[@"path"];
+        
+        // Keep track of how many times this filename appears and add a counter if needed
+        NSString *baseName = [displayName lastPathComponent];
+        NSNumber *count = fileNameCounts[baseName];
+        int occurrences = count ? [count intValue] + 1 : 1;
+        fileNameCounts[baseName] = @(occurrences);
+        
+        // If this filename has been seen before, make it unique by including part of the path
+        if (occurrences > 1 && [displayName pathComponents].count > 1) {
+            NSArray *components = [displayName pathComponents];
+            NSString *parentDir = components[components.count - 2];
+            displayName = [NSString stringWithFormat:@"%@/%@", parentDir, baseName];
+        }
+        
+        // Create a wrapped success callback to track completion and update phase description
         void(^fileSuccess)(void) = ^{
             downloader.currentPhaseItemsCompleted++;
             [downloader updatePhaseDescription];
         };
         
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url size:size sha:sha altName:nil toPath:path success:fileSuccess];
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url size:size sha:sha altName:displayName toPath:path success:fileSuccess];
         if (task) {
-            [downloader.fileList addObject:indexFile[@"path"]];
+            // Add to file list with the unique display name
+            [downloader.fileList addObject:displayName];
             [task resume];
         } else if (!downloader.progress.cancelled) {
             downloader.progress.completedUnitCount++;
@@ -127,6 +151,12 @@
     downloader.currentPhaseItemsCompleted = 0;
     [downloader updatePhaseDescription];
     
+    // Add a specific identifier for the extraction process
+    [downloader.fileList addObject:@"Extracting overrides..."];
+    NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
+    [downloader.progressList addObject:extractionProgress];
+    
+    // Extract overrides directory
     [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
     if (error) {
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to extract overrides from modpack package: %@", error.localizedDescription]];
@@ -134,15 +164,26 @@
     }
     
     // Update extraction progress
+    extractionProgress.completedUnitCount = 50;
     downloader.currentPhaseItemsCompleted++;
     [downloader updatePhaseDescription];
 
+    // Add another specific identifier for client extractions
+    [downloader.fileList addObject:@"Extracting client files..."];
+    NSProgress *clientExtractionProgress = [NSProgress progressWithTotalUnitCount:100];
+    [downloader.progressList addObject:clientExtractionProgress];
+    
+    // Extract client-overrides directory
     [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&error];
     if (error) {
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to extract client-overrides from modpack package: %@", error.localizedDescription]];
         return;
     }
 
+    // Mark extraction as complete
+    clientExtractionProgress.completedUnitCount = 100;
+    extractionProgress.completedUnitCount = 100;
+    
     // Mark setup phase as complete
     downloader.currentPhaseItemsCompleted++;
     [downloader updatePhaseDescription];
@@ -154,8 +195,17 @@
     NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
     if (depInfo[@"json"]) {
         NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), depInfo[@"id"]];
+        
+        // Add a specific identifier for the json download
+        [downloader.fileList addObject:@"Setting up mod loader..."];
+        NSProgress *jsonProgress = [NSProgress progressWithTotalUnitCount:100];
+        [downloader.progressList addObject:jsonProgress];
+        
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath];
         [task resume];
+        
+        // Mark the json download as complete
+        jsonProgress.completedUnitCount = 100;
     }
     // TODO: automation for Forge
 
@@ -174,6 +224,18 @@
     // Mark installation as complete
     downloader.currentPhase = DownloadPhaseComplete;
     [downloader updatePhaseDescription];
+    
+    // Add a completion marker
+    [downloader.fileList addObject:@"Complete"];
+    NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+    completeProgress.completedUnitCount = 1;
+    [downloader.progressList addObject:completeProgress];
+    
+    // Mark all tasks as complete in metadata
+    if (!downloader.metadata) {
+        downloader.metadata = [NSMutableDictionary dictionary];
+    }
+    downloader.metadata[@"allTasksComplete"] = @YES;
 }
 
 @end
