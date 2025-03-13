@@ -346,6 +346,12 @@
 
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     [self prepareForDownload];
+    
+    // Set flag in metadata that this is a modpack installation
+    if (!self.metadata) {
+        self.metadata = [NSMutableDictionary dictionary];
+    }
+    self.metadata[@"isModpackInstall"] = @YES;
 
     // Set phase for modpack download
     self.currentPhase = DownloadPhaseModpackDownload;
