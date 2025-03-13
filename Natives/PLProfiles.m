@@ -149,9 +149,6 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
             NSMutableDictionary *profile = profiles[profileName];
             if (!profile[@"gameDir"] || [profile[@"gameDir"] isEqualToString:@"."]) {
                 profile[@"gameDir"] = [self uniqueGameDirForProfileName:profileName];
-            } else if ([profile[@"gameDir"] hasPrefix:@"./"]) {
-                // Normalize existing paths to remove ./ prefix
-                profile[@"gameDir"] = [profile[@"gameDir"] substringFromIndex:2];
             }
         }
         return;
@@ -266,6 +263,30 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
     setPrefBool(kMigrationCompletedKey, YES);
 }
 
+- (id)initWithCurrentInstance {
+    self = [super init];
+    self.profilePath = [@(getenv("POJAV_GAME_DIR")) stringByAppendingPathComponent:@"launcher_profiles.json"];
+    self.profileDict = parseJSONFromFile(self.profilePath);
+    if (self.profileDict[@"NSErrorObject"]) {
+        self.profileDict = PLProfiles.defaultProfiles;
+        [self save];
+    }
+    
+    // Migrate legacy profiles to a shared directory
+    [PLProfiles migrateAllLegacyProfiles:self.profiles];
+    
+    // Ensure all profile directories exist
+    for (NSString *profileName in self.profiles) {
+        NSMutableDictionary *profile = self.profiles[profileName];
+        [PLProfiles ensureProfileDirectoryExists:profileName gameDir:profile[@"gameDir"]];
+    }
+    
+    // Save the updated profiles
+    [self save];
+    
+    return self;
+}
+
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
     NSString *value = profile[key];
     if (value.length > 0) {
@@ -296,38 +317,6 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
 
 + (id)resolveKeyForCurrentProfile:(id)key {
     return [self profile:self.current.selectedProfile resolveKey:key];
-}
-
-- (id)initWithCurrentInstance {
-    self = [super init];
-    self.profilePath = [@(getenv("POJAV_GAME_DIR")) stringByAppendingPathComponent:@"launcher_profiles.json"];
-    self.profileDict = parseJSONFromFile(self.profilePath);
-    if (self.profileDict[@"NSErrorObject"]) {
-        self.profileDict = PLProfiles.defaultProfiles;
-        [self save];
-    }
-    
-    // Normalize any existing gameDir paths that have ./ prefix
-    for (NSString *profileName in self.profiles) {
-        NSMutableDictionary *profile = self.profiles[profileName];
-        if (profile[@"gameDir"] && [profile[@"gameDir"] hasPrefix:@"./"]) {
-            profile[@"gameDir"] = [profile[@"gameDir"] substringFromIndex:2];
-        }
-    }
-    
-    // Migrate legacy profiles to a shared directory
-    [PLProfiles migrateAllLegacyProfiles:self.profiles];
-    
-    // Ensure all profile directories exist
-    for (NSString *profileName in self.profiles) {
-        NSMutableDictionary *profile = self.profiles[profileName];
-        [PLProfiles ensureProfileDirectoryExists:profileName gameDir:profile[@"gameDir"]];
-    }
-    
-    // Save the updated profiles
-    [self save];
-    
-    return self;
 }
 
 - (id)profiles {
