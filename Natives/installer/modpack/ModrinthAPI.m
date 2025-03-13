@@ -89,34 +89,53 @@
         return;
     }
 
+    // Set phase description for downloading modpack files
+    downloader.currentPhase = DownloadPhaseModpackExtraction;
+    downloader.currentPhaseItemsTotal = [indexDict[@"files"] count];
+    downloader.currentPhaseItemsCompleted = 0;
+    [downloader updatePhaseDescription];
+    
     downloader.progress.totalUnitCount = [indexDict[@"files"] count];
     for (NSDictionary *indexFile in indexDict[@"files"]) {
-/*
-        if ([indexFile[@"downloads"] count] > 1) {
-            [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Unhandled multiple files download %@", indexFile[@"downloads"]]];
-            return;
-        }
-*/
         NSString *url = [indexFile[@"downloads"] firstObject];
         NSString *sha = indexFile[@"hashes"][@"sha1"];
         NSString *path = [destPath stringByAppendingPathComponent:indexFile[@"path"]];
         NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url size:size sha:sha altName:nil toPath:path];
+        
+        // Create a wrapped success callback to track completion
+        void(^fileSuccess)(void) = ^{
+            downloader.currentPhaseItemsCompleted++;
+            [downloader updatePhaseDescription];
+        };
+        
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url size:size sha:sha altName:nil toPath:path success:fileSuccess];
         if (task) {
             [downloader.fileList addObject:indexFile[@"path"]];
             [task resume];
         } else if (!downloader.progress.cancelled) {
             downloader.progress.completedUnitCount++;
+            downloader.currentPhaseItemsCompleted++;
+            [downloader updatePhaseDescription];
         } else {
             return; // cancelled
         }
     }
 
+    // Transition to setup phase for extraction
+    downloader.currentPhase = DownloadPhaseModpackSetup;
+    downloader.currentPhaseItemsTotal = 2; // Two extraction operations
+    downloader.currentPhaseItemsCompleted = 0;
+    [downloader updatePhaseDescription];
+    
     [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
     if (error) {
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to extract overrides from modpack package: %@", error.localizedDescription]];
         return;
     }
+    
+    // Update extraction progress
+    downloader.currentPhaseItemsCompleted++;
+    [downloader updatePhaseDescription];
 
     [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&error];
     if (error) {
@@ -124,6 +143,10 @@
         return;
     }
 
+    // Mark setup phase as complete
+    downloader.currentPhaseItemsCompleted++;
+    [downloader updatePhaseDescription];
+    
     // Delete package cache
     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
 
@@ -147,6 +170,10 @@
             base64EncodedStringWithOptions:0]]
     }.mutableCopy;
     PLProfiles.current.selectedProfileName = indexDict[@"name"];
+    
+    // Mark installation as complete
+    downloader.currentPhase = DownloadPhaseComplete;
+    [downloader updatePhaseDescription];
 }
 
 @end
