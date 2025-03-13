@@ -173,7 +173,7 @@
             
             // If all downloads are complete, proceed to extraction
             if (pendingDownloads == 0) {
-                [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath];
+                [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
             }
         };
         
@@ -190,7 +190,7 @@
             
             // If all downloads are complete, proceed to extraction
             if (pendingDownloads == 0) {
-                [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath];
+                [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
             }
         } else {
             return; // cancelled
@@ -199,7 +199,7 @@
     
     // If there were no downloads to process, proceed directly to extraction
     if (pendingDownloads == 0) {
-        [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath];
+        [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
     }
 }
 
@@ -207,7 +207,8 @@
 - (void)performExtractionAndFinalization:(MinecraftResourceDownloadTask *)downloader
                                  archive:(UZKArchive *)archive
                                indexDict:(NSDictionary *)indexDict
-                                destPath:(NSString *)destPath {
+                                destPath:(NSString *)destPath
+                             packagePath:(NSString *)packagePath {
     NSError *error;
     
     // Transition to setup phase for extraction
