@@ -38,6 +38,20 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     return self;
 }
 
+- (void)dealloc {
+    // Make sure we remove all observers when the view controller is deallocated
+    [self.refreshTimer invalidate];
+    self.refreshTimer = nil;
+    
+    @try {
+        [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+    } @catch (NSException *exception) {
+        NSLog(@"[ProgressView] Warning: Failed to remove textProgress observer: %@", exception);
+    }
+    
+    [self removeAllProgressObservers];
+}
+
 - (void)loadView {
     [super loadView];
     
@@ -173,7 +187,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     [super viewDidDisappear:animated];
     
     // Stop observing progress
-    [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+    @try {
+        [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+    } @catch (NSException *exception) {
+        NSLog(@"[ProgressView] Warning: Failed to remove textProgress observer: %@", exception);
+    }
     
     // Invalidate refresh timer
     [self.refreshTimer invalidate];
@@ -448,23 +466,30 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 
 - (void)removeAllProgressObservers {
     // Clean up KVO observers to prevent leaks
-    // Make a defensive copy of keys to avoid mutation while enumerating
-    NSArray *keys = [self.cellProgressMap allKeys];
-    for (id key in keys) {
-        NSProgress *progress = [self.cellProgressMap objectForKey:key];
-        [self removeProgressObserver:progress];
+    @synchronized(self) {
+        // Make a defensive copy of keys to avoid mutation while enumerating
+        NSArray *keys = [self.cellProgressMap allKeys];
+        for (id key in keys) {
+            NSProgress *progress = [self.cellProgressMap objectForKey:key];
+            [self removeProgressObserver:progress];
+        }
+        [self.cellProgressMap removeAllObjects];
     }
-    [self.cellProgressMap removeAllObjects];
 }
 
 - (void)removeProgressObserver:(NSProgress *)progress {
     if (!progress) return;
     
-    @try {
-        [progress removeObserver:self forKeyPath:@"fractionCompleted"];
-    } @catch (NSException *exception) {
-        // Ignore if not observing
-        NSLog(@"[ProgressView] Warning: Failed to remove observer: %@", exception);
+    @synchronized(self) {
+        @try {
+            [progress removeObserver:self forKeyPath:@"fractionCompleted"];
+        } @catch (NSException *exception) {
+            // Ignore if not observing
+            NSLog(@"[ProgressView] Warning: Failed to remove observer: %@", exception);
+        }
+        
+        // Also clear the association to avoid dangling references
+        objc_setAssociatedObject(progress, @"cell", nil, OBJC_ASSOCIATION_ASSIGN);
     }
 }
 
@@ -477,6 +502,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         
         // Handle cell progress updates on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
+            // Check if view controller is still active - guard against accessing deallocated objects
+            if (!self.view.window) return;
+            
             // Find the original file name for this progress
             NSUInteger originalIndex = [self.task.progressList indexOfObject:progress];
             if (originalIndex != NSNotFound && originalIndex < self.task.fileList.count) {
@@ -509,6 +537,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         });
     } else if (context == TotalProgressObserverContext) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            // Check if view controller is still active - guard against accessing deallocated objects
+            if (!self.view.window) return;
+            
             // Update title with current task description
             self.title = progress.localizedDescription ?: @"Download Progress";
             
@@ -603,7 +634,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Remove any previous associations when cell is reused
     NSProgress *oldProgress = objc_getAssociatedObject(cell, @"progress");
     if (oldProgress) {
+        // Remove the association from the progress to the cell
         objc_setAssociatedObject(oldProgress, @"cell", nil, OBJC_ASSOCIATION_ASSIGN);
+        
+        // Also make sure we're not observing this progress anymore
+        [self removeProgressObserver:oldProgress];
     }
     
     // Get the index of this file in the original list
@@ -628,7 +663,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             
             // Set up relationship between cell and progress
             objc_setAssociatedObject(cell, @"progress", progress, OBJC_ASSOCIATION_ASSIGN);
-            objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            // Use ASSIGN instead of RETAIN to avoid the progress retaining the cell
+            objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_ASSIGN);
             
             // Avoid re-observing if already observing
             @try {
@@ -638,15 +674,19 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             }
             
             // Start observing
-            [progress addObserver:self
-                       forKeyPath:@"fractionCompleted"
-                          options:NSKeyValueObservingOptionInitial
-                          context:CellProgressObserverContext];
+            @try {
+                [progress addObserver:self
+                           forKeyPath:@"fractionCompleted"
+                              options:NSKeyValueObservingOptionInitial
+                              context:CellProgressObserverContext];
+            } @catch (NSException *exception) {
+                NSLog(@"[ProgressView] Warning: Failed to add observer: %@", exception);
+            }
         }
     } else if (progress) {
         // Maintain the association with the current cell
         objc_setAssociatedObject(cell, @"progress", progress, OBJC_ASSOCIATION_ASSIGN);
-        objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_ASSIGN);
     }
     
     // Update the cell with the latest progress information
