@@ -193,6 +193,9 @@
 
     // Download dependency client json (if available)
     NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
+    
+    // MAJOR FIX: Use completion handlers properly to ensure we only mark as complete
+    // after ALL downloads have finished
     if (depInfo[@"json"]) {
         NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), depInfo[@"id"]];
         
@@ -201,14 +204,29 @@
         NSProgress *jsonProgress = [NSProgress progressWithTotalUnitCount:100];
         [downloader.progressList addObject:jsonProgress];
         
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath];
-        [task resume];
+        // Create a success callback that will run after JSON download completes
+        void(^jsonSuccess)(void) = ^{
+            // JSON download is complete
+            jsonProgress.completedUnitCount = 100;
+            
+            // Only create profile and mark as complete after JSON download
+            [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
+        };
         
-        // Mark the json download as complete
-        jsonProgress.completedUnitCount = 100;
+        // Use the version with success callback to wait for completion
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath success:jsonSuccess];
+        [task resume];
+    } else {
+        // No JSON to download, so we can finalize immediately
+        [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
     }
-    // TODO: automation for Forge
+}
 
+// Helper method to finalize the modpack installation
+- (void)finalizeModpackInstallation:(MinecraftResourceDownloadTask *)downloader 
+                          indexDict:(NSDictionary *)indexDict
+                            depInfo:(NSDictionary *)depInfo
+                           destPath:(NSString *)destPath {
     // Create profile
     NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
     PLProfiles.current.profiles[indexDict[@"name"]] = @{
@@ -220,14 +238,14 @@
             base64EncodedStringWithOptions:0]]
     }.mutableCopy;
     
-    // IMPORTANT FIX: Do not automatically set this as the selected profile
+    // IMPORTANT FIX #1: Do not automatically set this as the selected profile
     // This prevents auto-launching after installation
     // PLProfiles.current.selectedProfileName = indexDict[@"name"]; -- REMOVED
     
     // Make sure to save the profiles to persist the new modpack profile
     [PLProfiles.current save];
     
-    // Mark installation as complete
+    // Now mark installation as complete
     downloader.currentPhase = DownloadPhaseComplete;
     [downloader updatePhaseDescription];
     
