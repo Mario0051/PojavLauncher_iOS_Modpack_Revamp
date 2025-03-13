@@ -25,13 +25,27 @@ typedef NS_ENUM(NSInteger, DownloadPhase) {
 @property(nonatomic, assign) NSInteger currentPhaseItemsTotal;
 @property(nonatomic, assign) NSInteger currentPhaseItemsCompleted;
 
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path;
+// Basic download task method without success callback
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path;
+
+// Extended download task method with success callback
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path 
+                                        success:(void (^)(void))success;
+
 - (void)finishDownloadWithErrorString:(NSString *)error;
 
 - (void)downloadVersion:(NSDictionary *)version;
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
 
-// method to update phase description based on current state
+// Phase handling
 - (void)updatePhaseDescription;
 
 @end
