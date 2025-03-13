@@ -272,6 +272,9 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
         [self save];
     }
     
+    // Ensure all profiles have a gameDir set before migration
+    [self ensureProfilesHaveGameDir];
+    
     // Migrate legacy profiles to a shared directory
     [PLProfiles migrateAllLegacyProfiles:self.profiles];
     
@@ -287,13 +290,20 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
     return self;
 }
 
+// Ensure all profiles have a gameDir property
+- (void)ensureProfilesHaveGameDir {
+    for (NSString *profileName in self.profiles) {
+        NSMutableDictionary *profile = self.profiles[profileName];
+        if (!profile[@"gameDir"]) {
+            profile[@"gameDir"] = [PLProfiles uniqueGameDirForProfileName:profileName];
+            NSLog(@"[PLProfiles] Setting missing gameDir for profile '%@': %@", profileName, profile[@"gameDir"]);
+        }
+    }
+}
+
 + (id)profile:(NSMutableDictionary *)profile resolveKey:(id)key {
     NSString *value = profile[key];
     if (value.length > 0) {
-        if ([key isEqualToString:@"gameDir"] && [value hasPrefix:@"./"]) {
-            // Normalize gameDir paths by removing ./ prefix
-            return [value substringFromIndex:2];
-        }
         //NSDebugLog(@"[PLProfiles] Applying %@: \"%@\"", key, value);
         return value;
     }
@@ -337,6 +347,9 @@ static NSString *const kMigrationCompletedKey = @"profiles.migration_completed";
 }
 
 - (void)save {
+    // Ensure all profiles have a gameDir before saving
+    [self ensureProfilesHaveGameDir];
+    
     saveJSONToFile(self.profileDict, self.profilePath);
 }
 
