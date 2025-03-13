@@ -227,35 +227,41 @@
                           indexDict:(NSDictionary *)indexDict
                             depInfo:(NSDictionary *)depInfo
                            destPath:(NSString *)destPath {
-    // Create profile
-    NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
-    PLProfiles.current.profiles[indexDict[@"name"]] = @{
+    // Create a mutable dictionary for the new profile
+    NSMutableDictionary *newProfile = [@{
         @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent],
         @"name": indexDict[@"name"],
-        @"lastVersionId": depInfo[@"id"],
-        @"icon": [NSString stringWithFormat:@"data:image/png;base64,%@",
-            [[NSData dataWithContentsOfFile:tmpIconPath]
-            base64EncodedStringWithOptions:0]]
-    }.mutableCopy;
+        @"lastVersionId": depInfo[@"id"]
+    } mutableCopy];
     
-    // IMPORTANT FIX #1: Do not automatically set this as the selected profile
-    // This prevents auto-launching after installation
-    // PLProfiles.current.selectedProfileName = indexDict[@"name"]; -- REMOVED
+    // Safely handle the icon data
+    NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
+    NSData *iconData = [NSData dataWithContentsOfFile:tmpIconPath];
+    if (iconData && iconData.length > 0) {
+        // Only add icon if valid data exists
+        newProfile[@"icon"] = [NSString stringWithFormat:@"data:image/png;base64,%@",
+                              [iconData base64EncodedStringWithOptions:0]];
+    }
     
-    // Make sure to save the profiles to persist the new modpack profile
+    // Add the profile to the profiles list
+    PLProfiles.current.profiles[indexDict[@"name"]] = newProfile;
+    
+    PLProfiles.current.selectedProfileName = indexDict[@"name"];
+    
+    // Save the profile changes to disk
     [PLProfiles.current save];
     
-    // Now mark installation as complete
+    // Mark installation as complete
     downloader.currentPhase = DownloadPhaseComplete;
     [downloader updatePhaseDescription];
     
-    // Add a completion marker
+    // Add a completion marker to the UI
     [downloader.fileList addObject:@"Complete"];
     NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
     completeProgress.completedUnitCount = 1;
     [downloader.progressList addObject:completeProgress];
     
-    // Mark all tasks as complete in metadata
+    // Ensure metadata reflects completion
     if (!downloader.metadata) {
         downloader.metadata = [NSMutableDictionary dictionary];
     }
