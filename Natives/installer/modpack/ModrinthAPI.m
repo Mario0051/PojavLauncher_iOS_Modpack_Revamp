@@ -261,11 +261,15 @@
     completeProgress.completedUnitCount = 1;
     [downloader.progressList addObject:completeProgress];
     
-    // Ensure metadata reflects completion
+    // Ensure metadata reflects completion and marks this as a modpack install
     if (!downloader.metadata) {
         downloader.metadata = [NSMutableDictionary dictionary];
     }
+    downloader.metadata[@"isModpackInstall"] = @YES;
     downloader.metadata[@"allTasksComplete"] = @YES;
+    
+    // Ensure progress is marked as complete
+    downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
 }
 
 @end
