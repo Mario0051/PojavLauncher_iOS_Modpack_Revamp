@@ -83,9 +83,22 @@
     }
 
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
+    if (!indexData) {
+        // Try mrpack format (newer Modrinth format)
+        indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
+        if (!indexData) {
+            indexData = [archive extractDataFromFile:@"index.json" error:&error];
+        }
+    }
+    
+    if (!indexData) {
+        [downloader finishDownloadWithErrorString:@"Failed to find index.json in modpack"];
+        return;
+    }
+    
     NSDictionary* indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:kNilOptions error:&error];
     if (error) {
-        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to parse modrinth.index.json: %@", error.localizedDescription]];
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to parse modpack index: %@", error.localizedDescription]];
         return;
     }
 
@@ -94,6 +107,11 @@
     
     // Get files and create a more unique display name for each file
     NSArray *files = indexDict[@"files"];
+    if (!files || ![files isKindOfClass:[NSArray class]] || files.count == 0) {
+        [downloader finishDownloadWithErrorString:@"No mod files found in modpack index"];
+        return;
+    }
+    
     downloader.currentPhaseItemsTotal = [files count];
     downloader.currentPhaseItemsCompleted = 0;
     [downloader updatePhaseDescription];
@@ -101,15 +119,36 @@
     // Add a uniqueness counter to make sure all display names are distinct
     NSMutableDictionary *fileNameCounts = [NSMutableDictionary dictionary];
     
+    // Track pending downloads to ensure we complete properly
+    __block NSInteger pendingDownloads = files.count;
+    
     downloader.progress.totalUnitCount = [files count];
     for (NSDictionary *indexFile in files) {
-        NSString *url = [indexFile[@"downloads"] firstObject];
+        if (![indexFile isKindOfClass:[NSDictionary class]]) {
+            NSLog(@"[ModrinthAPI] Skipping invalid file entry");
+            pendingDownloads--;
+            downloader.progress.completedUnitCount++;
+            downloader.currentPhaseItemsCompleted++;
+            [downloader updatePhaseDescription];
+            continue;
+        }
+        
+        NSArray *downloadURLs = indexFile[@"downloads"];
+        if (!downloadURLs || ![downloadURLs isKindOfClass:[NSArray class]] || downloadURLs.count == 0) {
+            NSLog(@"[ModrinthAPI] File has no download URLs: %@", indexFile[@"path"]);
+            pendingDownloads--;
+            downloader.progress.completedUnitCount++;
+            downloader.currentPhaseItemsCompleted++;
+            [downloader updatePhaseDescription];
+            continue;
+        }
+        
+        NSString *url = [downloadURLs firstObject];
         NSString *sha = indexFile[@"hashes"][@"sha1"];
         NSString *path = [destPath stringByAppendingPathComponent:indexFile[@"path"]];
         NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
         
         // Create a display name that includes more path information
-        // This makes it more likely that each file will have a unique entry
         NSString *displayName = indexFile[@"path"];
         
         // Keep track of how many times this filename appears and add a counter if needed
@@ -125,10 +164,17 @@
             displayName = [NSString stringWithFormat:@"%@/%@", parentDir, baseName];
         }
         
-        // Create a wrapped success callback to track completion and update phase description
+        // Create success callback that decrements pending downloads and checks for completion
         void(^fileSuccess)(void) = ^{
             downloader.currentPhaseItemsCompleted++;
             [downloader updatePhaseDescription];
+            
+            pendingDownloads--;
+            
+            // If all downloads are complete, proceed to extraction
+            if (pendingDownloads == 0) {
+                [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath];
+            }
         };
         
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:url size:size sha:sha altName:displayName toPath:path success:fileSuccess];
@@ -137,14 +183,33 @@
             [downloader.fileList addObject:displayName];
             [task resume];
         } else if (!downloader.progress.cancelled) {
+            pendingDownloads--;
             downloader.progress.completedUnitCount++;
             downloader.currentPhaseItemsCompleted++;
             [downloader updatePhaseDescription];
+            
+            // If all downloads are complete, proceed to extraction
+            if (pendingDownloads == 0) {
+                [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath];
+            }
         } else {
             return; // cancelled
         }
     }
+    
+    // If there were no downloads to process, proceed directly to extraction
+    if (pendingDownloads == 0) {
+        [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath];
+    }
+}
 
+// Helper method to handle extraction and finalization
+- (void)performExtractionAndFinalization:(MinecraftResourceDownloadTask *)downloader
+                                 archive:(UZKArchive *)archive
+                               indexDict:(NSDictionary *)indexDict
+                                destPath:(NSString *)destPath {
+    NSError *error;
+    
     // Transition to setup phase for extraction
     downloader.currentPhase = DownloadPhaseModpackSetup;
     downloader.currentPhaseItemsTotal = 2; // Two extraction operations
@@ -159,8 +224,8 @@
     // Extract overrides directory
     [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
     if (error) {
-        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to extract overrides from modpack package: %@", error.localizedDescription]];
-        return;
+        NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", error.localizedDescription);
+        // Continue anyway, as overrides might not exist
     }
     
     // Update extraction progress
@@ -176,8 +241,8 @@
     // Extract client-overrides directory
     [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&error];
     if (error) {
-        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to extract client-overrides from modpack package: %@", error.localizedDescription]];
-        return;
+        NSLog(@"[ModrinthAPI] Failed to extract client-overrides: %@", error.localizedDescription);
+        // Continue anyway, as client-overrides might not exist
     }
 
     // Mark extraction as complete
@@ -194,10 +259,14 @@
     // Download dependency client json (if available)
     NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
     
-    // MAJOR FIX: Use completion handlers properly to ensure we only mark as complete
-    // after ALL downloads have finished
     if (depInfo[@"json"]) {
         NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), depInfo[@"id"]];
+        
+        // Create directories for JSON
+        [[NSFileManager defaultManager] createDirectoryAtPath:[jsonPath stringByDeletingLastPathComponent] 
+                                withIntermediateDirectories:YES 
+                                                 attributes:nil 
+                                                      error:nil];
         
         // Add a specific identifier for the json download
         [downloader.fileList addObject:@"Setting up mod loader..."];
@@ -215,23 +284,32 @@
         
         // Use the version with success callback to wait for completion
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath success:jsonSuccess];
-        [task resume];
+        if (task) {
+            [task resume];
+        } else {
+            // If task couldn't be created but file exists, still finalize
+            [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
+        }
     } else {
         // No JSON to download, so we can finalize immediately
         [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
     }
 }
 
-// Helper method to finalize the modpack installation
 - (void)finalizeModpackInstallation:(MinecraftResourceDownloadTask *)downloader 
                           indexDict:(NSDictionary *)indexDict
                             depInfo:(NSDictionary *)depInfo
                            destPath:(NSString *)destPath {
     // Create a mutable dictionary for the new profile
+    NSString *profileName = indexDict[@"name"];
+    if (!profileName || [profileName length] == 0) {
+        profileName = [destPath lastPathComponent];
+    }
+    
     NSMutableDictionary *newProfile = [@{
         @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent],
-        @"name": indexDict[@"name"],
-        @"lastVersionId": depInfo[@"id"]
+        @"name": profileName,
+        @"lastVersionId": depInfo[@"id"] ?: @"latest-release"
     } mutableCopy];
     
     // Safely handle the icon data
@@ -244,9 +322,10 @@
     }
     
     // Add the profile to the profiles list
-    PLProfiles.current.profiles[indexDict[@"name"]] = newProfile;
+    PLProfiles.current.profiles[profileName] = newProfile;
     
-    PLProfiles.current.selectedProfileName = indexDict[@"name"];
+    // Set this as the selected profile
+    PLProfiles.current.selectedProfileName = profileName;
     
     // Save the profile changes to disk
     [PLProfiles.current save];
@@ -270,6 +349,9 @@
     
     // Ensure progress is marked as complete
     downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+    
+    // Log completion
+    NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
 }
 
 @end
