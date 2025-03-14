@@ -157,11 +157,16 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     
-    // Start observing overall progress
-    [self.task.textProgress addObserver:self
-            forKeyPath:@"fractionCompleted"
-            options:NSKeyValueObservingOptionInitial
-            context:TotalProgressObserverContext];
+    // Start observing overall progress - observe textProgress for smoother updates
+    if (self.task.textProgress) {
+        [self.task.textProgress addObserver:self
+                forKeyPath:@"fractionCompleted"
+                options:NSKeyValueObservingOptionInitial
+                context:TotalProgressObserverContext];
+                
+        // Update overall progress view with current progress
+        self.overallProgressView.observedProgress = self.task.textProgress;
+    }
     
     // Setup a refresh timer to periodically update the UI
     // This helps with smoother updates when individual operations are taking a long time
@@ -188,6 +193,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     
     // Remove all observers from cell progress
     [self removeAllProgressObservers];
+    
+    // Clear observed progress to avoid dangling references
+    self.overallProgressView.observedProgress = nil;
 }
 
 - (void)updateFilteredFileList {
@@ -257,6 +265,20 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 }
 
 - (void)refreshProgressUI {
+    // Update overall progress for the header
+    if (self.task.progress && self.task.progress.totalUnitCount > 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Update overall progress
+            float fraction = self.task.progress.fractionCompleted;
+            self.overallProgressView.progress = fraction;
+            
+            // Update percentage label
+            UILabel *percentLabel = objc_getAssociatedObject(self.overallProgressView, @"percentLabel");
+            int percentage = (int)(fraction * 100);
+            percentLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+        });
+    }
+    
     // Update the filtered file list
     [self updateFilteredFileList];
     
@@ -540,10 +562,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             // Check if view controller is still active - guard against accessing deallocated objects
             if (!self.view.window) return;
             
-            // Update overall progress bar
-            self.overallProgressView.progress = progress.fractionCompleted;
-            
-            // Update percentage label
+            // Update overall progress bar (handled by observed progress now)
+            // and percentage label
             UILabel *percentLabel = objc_getAssociatedObject(self.overallProgressView, @"percentLabel");
             int percentage = (int)(progress.fractionCompleted * 100);
             percentLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
