@@ -200,13 +200,18 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Create a dictionary to track files by their base name
     NSMutableDictionary *fileMap = [NSMutableDictionary dictionary];
     
-    // First pass: group files by base name
+    // First pass: group files by base name and filter out extraction entries
     for (NSString *filePath in fileListCopy) {
-        // Skip special entries
+        // Skip extraction entries completely
         if ([filePath hasPrefix:@"Extracting"] || 
             [filePath hasPrefix:@"Setting"] || 
-            [filePath hasPrefix:@"Installing"] || 
-            [filePath isEqualToString:@"Complete"]) {
+            [filePath hasPrefix:@"Installing"]) {
+            // Don't add these to the filtered list
+            continue;
+        }
+        
+        // Include completion indicator
+        if ([filePath isEqualToString:@"Complete"]) {
             [self.filteredFileList addObject:filePath];
             continue;
         }
@@ -228,26 +233,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     
     // Sort the filtered list for consistent display
     [self.filteredFileList sortUsingComparator:^NSComparisonResult(NSString *path1, NSString *path2) {
-        // Keep special entries at the top
-        BOOL isSpecial1 = [path1 hasPrefix:@"Extracting"] || 
-                          [path1 hasPrefix:@"Setting"] || 
-                          [path1 hasPrefix:@"Installing"] ||
-                          [path1 isEqualToString:@"Complete"];
-                          
-        BOOL isSpecial2 = [path2 hasPrefix:@"Extracting"] || 
-                          [path2 hasPrefix:@"Setting"] || 
-                          [path2 hasPrefix:@"Installing"] ||
-                          [path2 isEqualToString:@"Complete"];
-        
-        if (isSpecial1 && !isSpecial2) {
+        // Keep the Complete entry at the top
+        if ([path1 isEqualToString:@"Complete"]) {
             return NSOrderedAscending;
-        } else if (!isSpecial1 && isSpecial2) {
+        } else if ([path2 isEqualToString:@"Complete"]) {
             return NSOrderedDescending;
-        } else if (isSpecial1 && isSpecial2) {
-            // Sort special entries by original order
-            NSUInteger index1 = [self.task.fileList indexOfObject:path1];
-            NSUInteger index2 = [self.task.fileList indexOfObject:path2];
-            return index1 < index2 ? NSOrderedAscending : NSOrderedDescending;
         }
         
         // For regular files, sort alphabetically
@@ -282,7 +272,14 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         self.statusLabel.text = self.lastCompletedFile;
     } else if (self.filteredFileList.count > 0) {
         // Show the name of the current file at the top of the list if no completed file
-        self.statusLabel.text = self.filteredFileList[0];
+        // Only if it's not an extraction notification
+        NSString *currentFile = self.filteredFileList[0];
+        if (![currentFile hasPrefix:@"Extracting"] && 
+            ![currentFile hasPrefix:@"Setting"]) {
+            self.statusLabel.text = currentFile;
+        } else {
+            self.statusLabel.text = @"Processing...";
+        }
     } else {
         self.statusLabel.text = @"Preparing download...";
     }
