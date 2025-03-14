@@ -23,6 +23,15 @@
                                          toPath:(NSString *)path 
                                         success:(void (^)(void))success;
 
+// Extended download task method with success and failure callbacks for retry support
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path 
+                                        success:(void (^)(void))success
+                                        failure:(void (^)(NSError *error))failure;
+
 - (void)finishDownloadWithErrorString:(NSString *)error;
 
 - (void)downloadVersion:(NSDictionary *)version;
