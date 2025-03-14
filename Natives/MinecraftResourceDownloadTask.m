@@ -333,11 +333,14 @@
     NSString *name = [[modDetail[@"title"] lowercaseString] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
     name = [name stringByReplacingOccurrencesOfString:@" " withString:@"_"];
     NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", name];
+    
+    // Create a destination path for the modpack
+    NSString *destPath = [NSString stringWithFormat:@"%s/instances/%@", getenv("POJAV_HOME"), name];
 
     // Create a wrapped success callback that transitions to extraction phase
     void(^modpackSuccess)(void) = ^{
         // Use the API to handle extraction and installation
-        [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:path];
+        [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:destPath];
     };
     
     // Failure callback to handle retries for modpack download
