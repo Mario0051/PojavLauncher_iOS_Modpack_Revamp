@@ -340,7 +340,7 @@
     }
     
     NSMutableDictionary *newProfile = [@{
-        @"gameDir": [NSString stringWithFormat:@"./custom_gamedir/%@", destPath.lastPathComponent],
+        @"gameDir": [PLProfiles uniqueGameDirForProfileName:profileName],
         @"name": profileName,
         @"lastVersionId": depInfo[@"id"] ?: @"latest-release"
     } mutableCopy];
