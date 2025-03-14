@@ -102,11 +102,6 @@
         return;
     }
 
-    // Add extraction filename to show in progress window
-    [downloader.fileList addObject:@"Extracting modpack..."];
-    NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
-    [downloader.progressList addObject:extractionProgress];
-    
     // Get files and create a more unique display name for each file
     NSArray *files = indexDict[@"files"];
     if (!files || ![files isKindOfClass:[NSArray class]] || files.count == 0) {
@@ -177,7 +172,6 @@
     }
 }
 
-// Helper method to handle extraction and finalization
 - (void)extractAndFinalizeModpack:(MinecraftResourceDownloadTask *)downloader 
                           archive:(UZKArchive *)archive
                         indexDict:(NSDictionary *)indexDict
@@ -185,25 +179,12 @@
                       packagePath:(NSString *)packagePath {
     NSError *error;
     
-    // Add a specific identifier for the extraction process
-    [downloader.fileList addObject:@"Extracting overrides..."];
-    NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
-    [downloader.progressList addObject:extractionProgress];
-    
-    // Extract overrides directory
+    // Extract overrides directory (still perform the extraction, just don't show it in the UI)
     [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
     if (error) {
         NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", error.localizedDescription);
         // Continue anyway, as overrides might not exist
     }
-    
-    // Update extraction progress
-    extractionProgress.completedUnitCount = 50;
-
-    // Add another specific identifier for client extractions
-    [downloader.fileList addObject:@"Extracting client files..."];
-    NSProgress *clientExtractionProgress = [NSProgress progressWithTotalUnitCount:100];
-    [downloader.progressList addObject:clientExtractionProgress];
     
     // Extract client-overrides directory
     [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&error];
@@ -211,10 +192,6 @@
         NSLog(@"[ModrinthAPI] Failed to extract client-overrides: %@", error.localizedDescription);
         // Continue anyway, as client-overrides might not exist
     }
-
-    // Mark extraction as complete
-    clientExtractionProgress.completedUnitCount = 100;
-    extractionProgress.completedUnitCount = 100;
     
     // Delete package cache
     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
@@ -231,16 +208,8 @@
                                                  attributes:nil 
                                                       error:nil];
         
-        // Add a specific identifier for the json download
-        [downloader.fileList addObject:@"Setting up mod loader..."];
-        NSProgress *jsonProgress = [NSProgress progressWithTotalUnitCount:100];
-        [downloader.progressList addObject:jsonProgress];
-        
         // Create a success callback that will run after JSON download completes
         void(^jsonSuccess)(void) = ^{
-            // JSON download is complete
-            jsonProgress.completedUnitCount = 100;
-            
             // Only create profile and mark as complete after JSON download
             [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
         };
@@ -292,12 +261,6 @@
     
     // Save the profile changes to disk
     [PLProfiles.current save];
-    
-    // Add a completion marker to the UI
-    [downloader.fileList addObject:@"Complete"];
-    NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
-    completeProgress.completedUnitCount = 1;
-    [downloader.progressList addObject:completeProgress];
     
     // Ensure metadata reflects completion and marks this as a modpack install
     if (!downloader.metadata) {
