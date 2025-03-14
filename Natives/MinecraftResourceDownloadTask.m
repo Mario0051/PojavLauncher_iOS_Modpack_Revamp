@@ -26,12 +26,6 @@
     self.fileList = [NSMutableArray new];
     self.progressList = [NSMutableArray new];
     
-    // Initialize phase tracking
-    self.currentPhase = DownloadPhaseNone;
-    self.phaseDescription = @"Downloading...";
-    self.currentPhaseItemsTotal = 0;
-    self.currentPhaseItemsCompleted = 0;
-    
     return self;
 }
 
@@ -113,12 +107,6 @@
 }
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
-    // Set phase before starting download
-    self.currentPhase = DownloadPhaseVersionMetadata;
-    self.currentPhaseItemsTotal = 1;
-    self.currentPhaseItemsCompleted = 0;
-    [self updatePhaseDescription];
-    
     // Download base json
     NSString *versionStr = version[@"id"];
     if ([versionStr isEqualToString:@"latest-release"]) {
@@ -131,11 +119,8 @@
     // Find it again to resolve latest-*
     version = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
 
-    // Create a wrapped success callback to update phase
+    // Create a wrapped success callback
     void(^wrappedSuccess)(void) = ^{
-        self.currentPhaseItemsCompleted = 1;
-        [self updatePhaseDescription];
-        
         self.metadata = parseJSONFromFile(path);
         if (self.metadata[@"NSErrorObject"]) {
             [self finishDownloadWithErrorString:[self.metadata[@"NSErrorObject"] localizedDescription]];
@@ -172,21 +157,13 @@
     NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
     NSUInteger size = [version[@"size"] unsignedLongLongValue];
 
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:path success:wrappedSuccess];
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:versionStr toPath:path success:wrappedSuccess];
     [task resume];
 }
 
 - (void)downloadAssetMetadataWithSuccess:(void (^)())success {
-    // Set phase before starting download
-    self.currentPhase = DownloadPhaseAssetMetadata;
-    self.currentPhaseItemsTotal = 1;
-    self.currentPhaseItemsCompleted = 0;
-    [self updatePhaseDescription];
-    
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
     if (!assetIndex) {
-        self.currentPhaseItemsCompleted = 1;
-        [self updatePhaseDescription];
         success();
         return;
     }
@@ -199,9 +176,6 @@
     
     // Create a wrapped success callback to update phase
     void(^wrappedSuccess)(void) = ^{
-        self.currentPhaseItemsCompleted = 1;
-        [self updatePhaseDescription];
-        
         self.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
         success();
     };
@@ -211,13 +185,8 @@
 }
 
 - (NSArray *)downloadClientLibraries {
-    // Set phase before starting download
-    self.currentPhase = DownloadPhaseLibraries;
-    self.currentPhaseItemsTotal = self.metadata[@"libraries"] ? [self.metadata[@"libraries"] count] : 0;
-    self.currentPhaseItemsCompleted = 0;
-    [self updatePhaseDescription];
-    
     NSMutableArray *tasks = [NSMutableArray new];
+    
     for (NSDictionary *library in self.metadata[@"libraries"]) {
         NSString *name = library[@"name"];
 
@@ -241,35 +210,20 @@
             continue;
         }
 
-        // Create a wrapped success callback to update phase
-        void(^librarySuccess)(void) = ^{
-            self.currentPhaseItemsCompleted++;
-            [self updatePhaseDescription];
-        };
-
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:librarySuccess];
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil];
         if (task) {
             [tasks addObject:task];
         } else if (self.progress.cancelled) {
             return nil;
-        } else {
-            // If task is nil but not cancelled, it means the file already exists - count it as completed
-            self.currentPhaseItemsCompleted++;
-            [self updatePhaseDescription];
         }
     }
     return tasks;
 }
 
 - (NSArray *)downloadClientAssets {
-    // Set phase before starting download
-    self.currentPhase = DownloadPhaseAssets;
-    NSDictionary *assets = self.metadata[@"assetIndexObj"];
-    self.currentPhaseItemsTotal = assets && assets[@"objects"] ? [assets[@"objects"] count] : 0;
-    self.currentPhaseItemsCompleted = 0;
-    [self updatePhaseDescription];
-    
     NSMutableArray *tasks = [NSMutableArray new];
+    NSDictionary *assets = self.metadata[@"assetIndexObj"];
+    
     if (!assets) {
         return @[];
     }
@@ -296,22 +250,12 @@
             continue;
         }
 
-        // Create a wrapped success callback to update phase
-        void(^assetSuccess)(void) = ^{
-            self.currentPhaseItemsCompleted++;
-            [self updatePhaseDescription];
-        };
-
         NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:assetSuccess];
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil];
         if (task) {
             [tasks addObject:task];
         } else if (self.progress.cancelled) {
             return nil;
-        } else {
-            // If task is nil but not cancelled, it means the file already exists - count it as completed
-            self.currentPhaseItemsCompleted++;
-            [self updatePhaseDescription];
         }
     }
     return tasks;
@@ -335,9 +279,11 @@
                 self.textProgress.totalUnitCount = 1;
                 self.textProgress.completedUnitCount = 1;
                 
-                // Set phase to complete
-                self.currentPhase = DownloadPhaseComplete;
-                [self updatePhaseDescription];
+                // Add completion marker
+                [self.fileList addObject:@"Complete"];
+                NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+                completeProgress.completedUnitCount = 1;
+                [self.progressList addObject:completeProgress];
                 return;
             }
             [libTasks makeObjectsPerformSelector:@selector(resume)];
@@ -358,12 +304,6 @@
     }
     self.metadata[@"isModpackInstall"] = @YES;
 
-    // Set phase for modpack download
-    self.currentPhase = DownloadPhaseModpackDownload;
-    self.currentPhaseItemsTotal = 1;
-    self.currentPhaseItemsCompleted = 0;
-    [self updatePhaseDescription];
-
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
     NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
     NSString *sha = modDetail[@"versionHashes"][selectedVersion];
@@ -373,20 +313,16 @@
 
     // Create a wrapped success callback that transitions to extraction phase
     void(^modpackSuccess)(void) = ^{
-        self.currentPhaseItemsCompleted = 1;
-        [self updatePhaseDescription];
-        
-        // Transition to extraction phase
-        self.currentPhase = DownloadPhaseModpackExtraction;
-        self.currentPhaseItemsTotal = 1;
-        self.currentPhaseItemsCompleted = 0;
-        [self updatePhaseDescription];
+        // Add extraction filename
+        [self.fileList addObject:@"Extracting modpack..."];
+        NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
+        [self.progressList addObject:extractionProgress];
         
         NSString *path = [NSString stringWithFormat:@"%s/custom_gamedir/%@", getenv("POJAV_GAME_DIR"), name];
         [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:path];
     };
 
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:packagePath success:modpackSuccess];
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:[NSString stringWithFormat:@"Downloading %@", name] toPath:packagePath success:modpackSuccess];
     [task resume];
 }
 
@@ -399,15 +335,9 @@
 
     self.progress = [NSProgress new];
     // Push 1 byte so it won't accidentally finish after downloading assets index
-    self.progress.totalUnitCount = a1;
+    self.progress.totalUnitCount = 1;
     [self.fileList removeAllObjects];
     [self.progressList removeAllObjects];
-    
-    // Set initial phase
-    self.currentPhase = DownloadPhasePreparation;
-    self.currentPhaseItemsTotal = 0;
-    self.currentPhaseItemsCompleted = 0;
-    [self updatePhaseDescription];
 }
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
@@ -480,44 +410,6 @@
 
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
     return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
-}
-
-#pragma mark - Phase Handling
-
-- (void)updatePhaseDescription {
-    // Simplified phase descriptions
-    switch (self.currentPhase) {
-        case DownloadPhasePreparation:
-            self.phaseDescription = @"Preparing download...";
-            break;
-        case DownloadPhaseVersionMetadata:
-            self.phaseDescription = @"Downloading metadata...";
-            break;
-        case DownloadPhaseAssetMetadata:
-            self.phaseDescription = @"Downloading asset metadata...";
-            break;
-        case DownloadPhaseLibraries:
-            self.phaseDescription = @"Downloading libraries...";
-            break;
-        case DownloadPhaseAssets:
-            self.phaseDescription = @"Downloading assets...";
-            break;
-        case DownloadPhaseModpackDownload:
-            self.phaseDescription = @"Downloading modpack...";
-            break;
-        case DownloadPhaseModpackExtraction:
-            self.phaseDescription = @"Extracting modpack...";
-            break;
-        case DownloadPhaseModpackSetup:
-            self.phaseDescription = @"Setting up modpack...";
-            break;
-        case DownloadPhaseComplete:
-            self.phaseDescription = @"Download complete!";
-            break;
-        default:
-            self.phaseDescription = @"Downloading...";
-            break;
-    }
 }
 
 @end
