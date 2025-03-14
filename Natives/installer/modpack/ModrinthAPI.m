@@ -109,6 +109,12 @@
         return;
     }
     
+    // Set up tracking for retries
+    if (!downloader.metadata) {
+        downloader.metadata = [NSMutableDictionary dictionary];
+    }
+    downloader.metadata[@"retryMap"] = [NSMutableDictionary dictionary];
+    
     downloader.progress.totalUnitCount = [files count];
     
     // Track pending downloads to ensure we complete properly
@@ -138,6 +144,9 @@
         // Create a display name that includes more path information
         NSString *displayName = indexFile[@"path"];
         
+        // Create unique ID for tracking retries
+        NSString *downloadID = [NSString stringWithFormat:@"%@_%@", path.lastPathComponent, sha ?: @"nohash"];
+        
         // Create success callback that decrements pending downloads and checks for completion
         void(^fileSuccess)(void) = ^{
             pendingDownloads--;
@@ -148,7 +157,67 @@
             }
         };
         
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url size:size sha:sha altName:displayName toPath:path success:fileSuccess];
+        // Create failure callback that will retry the download once
+        void(^fileFailure)(NSError *error) = ^(NSError *error) {
+            // Check if this file has already been retried
+            NSMutableDictionary *retryMap = downloader.metadata[@"retryMap"];
+            NSNumber *retryCount = retryMap[downloadID];
+            
+            if (!retryCount || retryCount.intValue < 1) {
+                // Log retry attempt
+                NSLog(@"[ModrinthAPI] Retrying download for %@ after failure: %@", displayName, error.localizedDescription);
+                
+                // Mark this file as retried
+                retryMap[downloadID] = @(retryCount ? retryCount.intValue + 1 : 1);
+                
+                // Create a new download task with the same parameters
+                NSURLSessionDownloadTask *retryTask = [downloader createDownloadTask:url 
+                                                                               size:size 
+                                                                                sha:sha 
+                                                                            altName:[NSString stringWithFormat:@"%@ (retry)", displayName]
+                                                                             toPath:path 
+                                                                            success:fileSuccess
+                                                                            failure:^(NSError *retryError) {
+                    // If retry also fails, decrement pending count
+                    NSLog(@"[ModrinthAPI] Retry failed for %@: %@", displayName, retryError.localizedDescription);
+                    pendingDownloads--;
+                    
+                    // If all downloads are complete (including failures), proceed
+                    if (pendingDownloads == 0) {
+                        [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+                    }
+                }];
+                
+                if (retryTask) {
+                    [retryTask resume];
+                } else {
+                    // If task creation fails, decrement pending count
+                    pendingDownloads--;
+                    
+                    // If all downloads are complete, proceed to extraction
+                    if (pendingDownloads == 0) {
+                        [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+                    }
+                }
+            } else {
+                // Already retried, decrement pending count
+                pendingDownloads--;
+                
+                // If all downloads are complete, proceed to extraction
+                if (pendingDownloads == 0) {
+                    [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+                }
+            }
+        };
+        
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
+                                                                   size:size 
+                                                                    sha:sha 
+                                                                altName:displayName 
+                                                                 toPath:path 
+                                                                success:fileSuccess
+                                                                failure:fileFailure];
+        
         if (task) {
             // Add to file list with the unique display name
             [downloader.fileList addObject:displayName];
@@ -179,12 +248,20 @@
                       packagePath:(NSString *)packagePath {
     NSError *error;
     
-    // Extract overrides directory (still perform the extraction, just don't show it in the UI)
+    // Add extraction filename to track progress
+    [downloader.fileList addObject:@"Extracting modpack..."];
+    NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
+    [downloader.progressList addObject:extractionProgress];
+    
+    // Extract overrides directory
     [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
     if (error) {
         NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", error.localizedDescription);
         // Continue anyway, as overrides might not exist
     }
+    
+    // Update extraction progress
+    extractionProgress.completedUnitCount = 50;
     
     // Extract client-overrides directory
     [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&error];
@@ -193,8 +270,14 @@
         // Continue anyway, as client-overrides might not exist
     }
     
+    // Update extraction progress
+    extractionProgress.completedUnitCount = 75;
+    
     // Delete package cache
     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
+
+    // Update extraction progress
+    extractionProgress.completedUnitCount = 90;
 
     // Download dependency client json (if available)
     NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
@@ -210,20 +293,38 @@
         
         // Create a success callback that will run after JSON download completes
         void(^jsonSuccess)(void) = ^{
+            // Mark extraction as complete
+            extractionProgress.completedUnitCount = 100;
+            
             // Only create profile and mark as complete after JSON download
             [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
         };
         
         // Use the version with success callback to wait for completion
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] size:0 sha:nil altName:nil toPath:jsonPath success:jsonSuccess];
+        NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] 
+                                                                   size:0 
+                                                                    sha:nil 
+                                                                altName:nil 
+                                                                 toPath:jsonPath 
+                                                                success:jsonSuccess
+                                                                failure:^(NSError *jsonError) {
+            NSLog(@"[ModrinthAPI] Failed to download JSON: %@", jsonError.localizedDescription);
+            
+            // Still mark extraction as complete and finalize
+            extractionProgress.completedUnitCount = 100;
+            [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
+        }];
+        
         if (task) {
             [task resume];
         } else {
             // If task couldn't be created but file exists, still finalize
+            extractionProgress.completedUnitCount = 100;
             [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
         }
     } else {
         // No JSON to download, so we can finalize immediately
+        extractionProgress.completedUnitCount = 100;
         [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
     }
 }
@@ -271,6 +372,12 @@
     
     // Ensure progress is marked as complete
     downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+    
+    // Add completion marker
+    [downloader.fileList addObject:@"Complete"];
+    NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+    completeProgress.completedUnitCount = 1;
+    [downloader.progressList addObject:completeProgress];
     
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
