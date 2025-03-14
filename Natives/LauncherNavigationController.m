@@ -316,7 +316,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             if (fileProgress.finished || fileProgress.fractionCompleted >= 1.0) {
                 if (i < self.task.fileList.count) {
                     NSString *fileName = self.task.fileList[i];
-                    if (fileName && ![fileName hasPrefix:@"Extracting"]) {
+                    if (fileName) {
                         lastCompletedFile = [fileName lastPathComponent];
                         break;
                     }
@@ -337,19 +337,30 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
         if (!self.task.progress.finished && self.task.progress.fractionCompleted < 1.0) return;
         
-        // The download is finished, so dismiss the progress view
-        [self.progressVC dismissViewControllerAnimated:NO completion:nil];
+        // The download is finished, make sure to dismiss the progress view if present
+        if (self.progressVC) {
+            [self.progressVC dismissViewControllerAnimated:NO completion:nil];
+            self.progressVC = nil;
+        }
+        
+        // Clear progress UI
         self.progressViewMain.observedProgress = nil;
-        self.progressVC = nil;
+        self.progressViewMain.hidden = YES;
+        self.progressText.text = nil;
         
-        // Always reset the UI state after completion, regardless of task type
-        BOOL isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
+        // Check if this was a modpack installation
+        BOOL isModpackInstall = NO;
+        if (self.task.metadata && self.task.metadata[@"isModpackInstall"]) {
+            isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
+        }
         
+        // Only launch the game if it's NOT a modpack installation
         if (self.task.metadata && !isModpackInstall) {
             [self invokeAfterJITEnabled:^{
                 UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
             }];
         } else {
+            // Always make sure UI is re-enabled
             [self setInteractionEnabled:YES forDownloading:YES];
             [self reloadProfileList];
         }
