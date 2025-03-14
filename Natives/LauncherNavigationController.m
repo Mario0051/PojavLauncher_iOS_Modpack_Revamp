@@ -326,13 +326,37 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Just show the filename of the last completed file or simple percentage
-        if (lastCompletedFile) {
-            self.progressText.text = lastCompletedFile;
+        // Compute total downloaded and expected sizes
+        long long completedBytes = self.task.progress.completedUnitCount;
+        long long totalBytes = self.task.progress.totalUnitCount;
+        
+        // Format sizes with appropriate precision
+        NSString *sizeText;
+        double completedMB = completedBytes / 1024.0 / 1024.0;
+        double totalMB = totalBytes / 1024.0 / 1024.0;
+        
+        if (totalMB < 1.0) {
+            // Use KB for small files
+            double completedKB = completedBytes / 1024.0;
+            double totalKB = totalBytes / 1024.0;
+            sizeText = [NSString stringWithFormat:@"%.0fKB/%.0fKB", completedKB, totalKB];
+        } else if (totalMB < 10.0) {
+            // More precision for smaller files
+            sizeText = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
+        } else if (totalMB < 100.0) {
+            sizeText = [NSString stringWithFormat:@"%.1fMB/%.1fMB", completedMB, totalMB];
         } else {
-            // Just show percentage
-            int percentage = (int)(self.task.progress.fractionCompleted * 100);
-            self.progressText.text = [NSString stringWithFormat:@"%d%%", percentage];
+            sizeText = [NSString stringWithFormat:@"%.0fMB/%.0fMB", completedMB, totalMB];
+        }
+        
+        // Compute percentage
+        int percentage = (int)(self.task.progress.fractionCompleted * 100);
+        
+        // Update progress text with size and percentage
+        if (lastCompletedFile) {
+            self.progressText.text = [NSString stringWithFormat:@"%@ - %@ (%d%%)", lastCompletedFile, sizeText, percentage];
+        } else {
+            self.progressText.text = [NSString stringWithFormat:@"%@ (%d%%)", sizeText, percentage];
         }
 
         if (!self.task.progress.finished && self.task.progress.fractionCompleted < 1.0) return;
