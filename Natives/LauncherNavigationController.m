@@ -304,31 +304,40 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         return;
     }
 
-    // Calculate download speed and ETA
-    static CGFloat lastMsTime;
-    static NSUInteger lastSecTime, lastCompletedUnitCount;
-    NSProgress *progress = self.task.textProgress;
-    struct timeval tv;
-    gettimeofday(&tv, NULL); 
+    // Only track simple progress percentage
     NSInteger completedUnitCount = self.task.progress.totalUnitCount * self.task.progress.fractionCompleted;
-    progress.completedUnitCount = completedUnitCount;
-    if (lastSecTime < tv.tv_sec) {
-        CGFloat currentTime = tv.tv_sec + tv.tv_usec / 1000000.0;
-        NSInteger throughput = (completedUnitCount - lastCompletedUnitCount) / (currentTime - lastMsTime);
-        progress.throughput = @(throughput);
-        progress.estimatedTimeRemaining = @((progress.totalUnitCount - completedUnitCount) / throughput);
-        lastCompletedUnitCount = completedUnitCount;
-        lastSecTime = tv.tv_sec;
-        lastMsTime = currentTime;
+    
+    // Find the most recently completed file (if any)
+    NSString *lastCompletedFile = nil;
+    if (self.task && self.task.fileList.count > 0) {
+        NSArray *progressListCopy = [NSArray arrayWithArray:self.task.progressList];
+        for (NSInteger i = progressListCopy.count - 1; i >= 0; i--) {
+            NSProgress *fileProgress = progressListCopy[i];
+            if (fileProgress.finished || fileProgress.fractionCompleted >= 1.0) {
+                if (i < self.task.fileList.count) {
+                    NSString *fileName = self.task.fileList[i];
+                    if (fileName) {
+                        lastCompletedFile = [fileName lastPathComponent];
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.progressText.text = progress.localizedAdditionalDescription;
+        // Just show the filename of the last completed file or simple percentage
+        if (lastCompletedFile) {
+            self.progressText.text = lastCompletedFile;
+        } else {
+            // Just show percentage
+            int percentage = (int)(self.task.progress.fractionCompleted * 100);
+            self.progressText.text = [NSString stringWithFormat:@"%d%%", percentage];
+        }
 
-        if (!progress.finished) return;
+        if (!self.task.progress.finished && self.task.progress.fractionCompleted < 1.0) return;
         
         [self.progressVC dismissViewControllerAnimated:NO completion:nil];
-
         self.progressViewMain.observedProgress = nil;
         
         // Check if this was a modpack installation - ensure it's a robust check
