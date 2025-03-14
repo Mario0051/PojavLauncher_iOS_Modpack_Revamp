@@ -334,8 +334,9 @@
     name = [name stringByReplacingOccurrencesOfString:@" " withString:@"_"];
     NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", name];
     
-    // Create a destination path for the modpack
-    NSString *destPath = [NSString stringWithFormat:@"%s/instances/%@", getenv("POJAV_HOME"), name];
+    // Create a destination path for the modpack - use PLProfiles to get the correct path
+    NSString *gameDir = [PLProfiles uniqueGameDirForProfileName:name];
+    NSString *destPath = [PLProfiles fullPathForProfileWithName:name gameDir:gameDir];
 
     // Create a wrapped success callback that transitions to extraction phase
     void(^modpackSuccess)(void) = ^{
