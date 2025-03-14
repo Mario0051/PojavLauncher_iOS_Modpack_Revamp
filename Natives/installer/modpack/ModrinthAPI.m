@@ -102,8 +102,10 @@
         return;
     }
 
-    // Set phase description for downloading modpack files
-    downloader.currentPhase = DownloadPhaseModpackExtraction;
+    // Add extraction filename to show in progress window
+    [downloader.fileList addObject:@"Extracting modpack..."];
+    NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
+    [downloader.progressList addObject:extractionProgress];
     
     // Get files and create a more unique display name for each file
     NSArray *files = indexDict[@"files"];
@@ -112,24 +114,16 @@
         return;
     }
     
-    downloader.currentPhaseItemsTotal = [files count];
-    downloader.currentPhaseItemsCompleted = 0;
-    [downloader updatePhaseDescription];
-    
-    // Add a uniqueness counter to make sure all display names are distinct
-    NSMutableDictionary *fileNameCounts = [NSMutableDictionary dictionary];
+    downloader.progress.totalUnitCount = [files count];
     
     // Track pending downloads to ensure we complete properly
     __block NSInteger pendingDownloads = files.count;
     
-    downloader.progress.totalUnitCount = [files count];
     for (NSDictionary *indexFile in files) {
         if (![indexFile isKindOfClass:[NSDictionary class]]) {
             NSLog(@"[ModrinthAPI] Skipping invalid file entry");
             pendingDownloads--;
             downloader.progress.completedUnitCount++;
-            downloader.currentPhaseItemsCompleted++;
-            [downloader updatePhaseDescription];
             continue;
         }
         
@@ -138,8 +132,6 @@
             NSLog(@"[ModrinthAPI] File has no download URLs: %@", indexFile[@"path"]);
             pendingDownloads--;
             downloader.progress.completedUnitCount++;
-            downloader.currentPhaseItemsCompleted++;
-            [downloader updatePhaseDescription];
             continue;
         }
         
@@ -151,29 +143,13 @@
         // Create a display name that includes more path information
         NSString *displayName = indexFile[@"path"];
         
-        // Keep track of how many times this filename appears and add a counter if needed
-        NSString *baseName = [displayName lastPathComponent];
-        NSNumber *count = fileNameCounts[baseName];
-        int occurrences = count ? [count intValue] + 1 : 1;
-        fileNameCounts[baseName] = @(occurrences);
-        
-        // If this filename has been seen before, make it unique by including part of the path
-        if (occurrences > 1 && [displayName pathComponents].count > 1) {
-            NSArray *components = [displayName pathComponents];
-            NSString *parentDir = components[components.count - 2];
-            displayName = [NSString stringWithFormat:@"%@/%@", parentDir, baseName];
-        }
-        
         // Create success callback that decrements pending downloads and checks for completion
         void(^fileSuccess)(void) = ^{
-            downloader.currentPhaseItemsCompleted++;
-            [downloader updatePhaseDescription];
-            
             pendingDownloads--;
             
             // If all downloads are complete, proceed to extraction
             if (pendingDownloads == 0) {
-                [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+                [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
             }
         };
         
@@ -185,12 +161,10 @@
         } else if (!downloader.progress.cancelled) {
             pendingDownloads--;
             downloader.progress.completedUnitCount++;
-            downloader.currentPhaseItemsCompleted++;
-            [downloader updatePhaseDescription];
             
             // If all downloads are complete, proceed to extraction
             if (pendingDownloads == 0) {
-                [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+                [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
             }
         } else {
             return; // cancelled
@@ -199,23 +173,17 @@
     
     // If there were no downloads to process, proceed directly to extraction
     if (pendingDownloads == 0) {
-        [self performExtractionAndFinalization:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+        [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
     }
 }
 
 // Helper method to handle extraction and finalization
-- (void)performExtractionAndFinalization:(MinecraftResourceDownloadTask *)downloader
-                                 archive:(UZKArchive *)archive
-                               indexDict:(NSDictionary *)indexDict
-                                destPath:(NSString *)destPath
-                             packagePath:(NSString *)packagePath {
+- (void)extractAndFinalizeModpack:(MinecraftResourceDownloadTask *)downloader 
+                          archive:(UZKArchive *)archive
+                        indexDict:(NSDictionary *)indexDict
+                         destPath:(NSString *)destPath
+                      packagePath:(NSString *)packagePath {
     NSError *error;
-    
-    // Transition to setup phase for extraction
-    downloader.currentPhase = DownloadPhaseModpackSetup;
-    downloader.currentPhaseItemsTotal = 2; // Two extraction operations
-    downloader.currentPhaseItemsCompleted = 0;
-    [downloader updatePhaseDescription];
     
     // Add a specific identifier for the extraction process
     [downloader.fileList addObject:@"Extracting overrides..."];
@@ -231,8 +199,6 @@
     
     // Update extraction progress
     extractionProgress.completedUnitCount = 50;
-    downloader.currentPhaseItemsCompleted++;
-    [downloader updatePhaseDescription];
 
     // Add another specific identifier for client extractions
     [downloader.fileList addObject:@"Extracting client files..."];
@@ -249,10 +215,6 @@
     // Mark extraction as complete
     clientExtractionProgress.completedUnitCount = 100;
     extractionProgress.completedUnitCount = 100;
-    
-    // Mark setup phase as complete
-    downloader.currentPhaseItemsCompleted++;
-    [downloader updatePhaseDescription];
     
     // Delete package cache
     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
@@ -330,10 +292,6 @@
     
     // Save the profile changes to disk
     [PLProfiles.current save];
-    
-    // Mark installation as complete
-    downloader.currentPhase = DownloadPhaseComplete;
-    [downloader updatePhaseDescription];
     
     // Add a completion marker to the UI
     [downloader.fileList addObject:@"Complete"];
