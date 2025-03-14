@@ -20,10 +20,10 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 @property NSInteger fileListCount;
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UIProgressView *overallProgressView;
-@property (nonatomic, assign) BOOL isModpackInstall;
 @property (nonatomic, strong) NSMutableDictionary *cellProgressMap;
 @property (nonatomic, strong) NSTimer *refreshTimer;
 @property (nonatomic, strong) NSMutableArray *filteredFileList;
+@property (nonatomic, strong) NSString *lastCompletedFile; // Track the most recently completed file
 @end
 
 @implementation DownloadProgressViewController
@@ -34,6 +34,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         self.task = task;
         self.cellProgressMap = [NSMutableDictionary dictionary];
         self.filteredFileList = [NSMutableArray array];
+        self.lastCompletedFile = nil; // Initialize last completed file to nil
     }
     return self;
 }
@@ -70,12 +71,14 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     UIView *headerContainer = [[UIView alloc] init];
     headerContainer.translatesAutoresizingMaskIntoConstraints = NO;
     
-    // Status label
+    // Status label - this will show just the filename
     _statusLabel = [[UILabel alloc] init];
     _statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
     _statusLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
     _statusLabel.textColor = [UIColor labelColor];
     _statusLabel.text = @"Preparing download...";
+    _statusLabel.numberOfLines = 1;
+    _statusLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
     [headerContainer addSubview:_statusLabel];
     
     // Progress view
@@ -146,20 +149,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     
     // Set the table header view
     self.tableView.tableHeaderView = headerWrapperView;
-    
-    // Detect if this is a modpack install based on task properties
-    self.isModpackInstall = NO;
-    
-    // Make a defensive copy to avoid mutation during enumeration
-    NSArray *fileListCopy = [NSArray arrayWithArray:self.task.fileList];
-    for (NSString *fileName in fileListCopy) {
-        if ([fileName hasPrefix:@"Installing"] || 
-            [fileName hasPrefix:@"Extracting"] || 
-            [fileName hasPrefix:@"Setting"]) {
-            self.isModpackInstall = YES;
-            break;
-        }
-    }
     
     // Initialize filtered file list
     [self updateFilteredFileList];
@@ -288,6 +277,16 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         return; // Don't proceed with other updates in the same refresh cycle
     }
     
+    // Update status label with most recently completed file
+    if (self.lastCompletedFile) {
+        self.statusLabel.text = self.lastCompletedFile;
+    } else if (self.filteredFileList.count > 0) {
+        // Show the name of the current file at the top of the list if no completed file
+        self.statusLabel.text = self.filteredFileList[0];
+    } else {
+        self.statusLabel.text = @"Preparing download...";
+    }
+    
     // Check for completion
     BOOL isComplete = NO;
     
@@ -328,8 +327,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         
         [self reloadTableViewPreservingOffset];
         
-        // Update status label
-        self.statusLabel.text = @"Installation Complete";
+        // Update status label for completion
+        self.statusLabel.text = @"Download complete";
     } else {
         // Instead of reloading the entire table, update visible cells
         [self updateVisibleCells];
@@ -391,17 +390,17 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     } else if (taskType == DownloadTaskTypeExtraction) {
         // Show extraction progress percentage
         int percentage = (int)(progress.fractionCompleted * 100);
-        sizeText = [NSString stringWithFormat:@"Extracting files... %d%%", percentage];
+        sizeText = [NSString stringWithFormat:@"Extracting... %d%%", percentage];
     } else if (taskType == DownloadTaskTypeSetup) {
         // Show setup progress percentage
         int percentage = (int)(progress.fractionCompleted * 100);
-        sizeText = [NSString stringWithFormat:@"Setting up profile... %d%%", percentage];
+        sizeText = [NSString stringWithFormat:@"Setting up... %d%%", percentage];
     } else if (taskType == DownloadTaskTypeComplete) {
         sizeText = @"Complete!";
     } else {
         sizeText = progress.totalUnitCount > 0 ? 
-                  @"Pending..." : 
-                  [NSString stringWithFormat:@"Preparing... %d%%", (int)(progress.fractionCompleted * 100)];
+                  @"Waiting..." : 
+                  [NSString stringWithFormat:@"%d%%", (int)(progress.fractionCompleted * 100)];
     }
     
     // Update detail text
@@ -420,7 +419,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             cell.accessoryView = checkmarkView;
             
             if (taskType == DownloadTaskTypeFile) {
-                cell.detailTextLabel.text = @"Download complete";
+                cell.detailTextLabel.text = @"Complete";
+                // Update the last completed file when a file is completed
+                self.lastCompletedFile = fileName;
+                // Update the status label immediately
+                self.statusLabel.text = fileName;
             }
         }
     } else if (taskType == DownloadTaskTypeExtraction || taskType == DownloadTaskTypeSetup) {
@@ -540,35 +543,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             // Check if view controller is still active - guard against accessing deallocated objects
             if (!self.view.window) return;
             
-            // Update title with current task description
-            self.title = progress.localizedDescription ?: @"Download Progress";
-            
-            // Update status label with more descriptive text based on the progress
-            if (self.isModpackInstall) {
-                if (progress.fractionCompleted < 0.2) {
-                    self.statusLabel.text = @"Preparing modpack installation...";
-                } else if (progress.fractionCompleted < 0.5) {
-                    self.statusLabel.text = @"Downloading modpack files...";
-                } else if (progress.fractionCompleted < 0.8) {
-                    self.statusLabel.text = @"Extracting modpack contents...";
-                } else if (progress.fractionCompleted < 0.95) {
-                    self.statusLabel.text = @"Setting up modpack profile...";
-                } else {
-                    self.statusLabel.text = @"Completing installation...";
-                }
-            } else {
-                // Regular Minecraft download
-                if (progress.fractionCompleted < 0.3) {
-                    self.statusLabel.text = @"Downloading game files...";
-                } else if (progress.fractionCompleted < 0.6) {
-                    self.statusLabel.text = @"Downloading libraries...";
-                } else if (progress.fractionCompleted < 0.9) {
-                    self.statusLabel.text = @"Downloading assets...";
-                } else {
-                    self.statusLabel.text = @"Finalizing installation...";
-                }
-            }
-            
             // Update overall progress bar
             self.overallProgressView.progress = progress.fractionCompleted;
             
@@ -594,6 +568,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                     [self updateFilteredFileList]; // This will add Complete to filteredFileList
                     [self reloadTableViewPreservingOffset];
                 }
+                self.statusLabel.text = @"Download complete";
             }
         });
     } else {
@@ -628,8 +603,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Get the file name from filtered list
     NSString *fileName = self.filteredFileList[indexPath.row];
     
-    // Set cell text
-    cell.textLabel.text = fileName;
+    // Set cell text to just the filename (not the full path)
+    cell.textLabel.text = [fileName lastPathComponent];
     
     // Remove any previous associations when cell is reused
     NSProgress *oldProgress = objc_getAssociatedObject(cell, @"progress");
@@ -698,21 +673,21 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         
         if ([fileName hasPrefix:@"Extracting"]) {
             taskType = DownloadTaskTypeExtraction;
-            cell.detailTextLabel.text = @"Extracting files...";
+            cell.detailTextLabel.text = @"Extracting...";
             
             UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
             [activityIndicator startAnimating];
             cell.accessoryView = activityIndicator;
         } else if ([fileName hasPrefix:@"Setting"]) {
             taskType = DownloadTaskTypeSetup;
-            cell.detailTextLabel.text = @"Setting up profile...";
+            cell.detailTextLabel.text = @"Setting up...";
             
             UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
             [activityIndicator startAnimating];
             cell.accessoryView = activityIndicator;
         } else if ([fileName isEqualToString:@"Complete"]) {
             taskType = DownloadTaskTypeComplete;
-            cell.detailTextLabel.text = @"Installation complete";
+            cell.detailTextLabel.text = @"Complete";
             
             UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
             UIImage *checkmarkImage = [UIImage systemImageNamed:@"checkmark.circle.fill"];
