@@ -316,7 +316,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             if (fileProgress.finished || fileProgress.fractionCompleted >= 1.0) {
                 if (i < self.task.fileList.count) {
                     NSString *fileName = self.task.fileList[i];
-                    if (fileName) {
+                    if (fileName && ![fileName hasPrefix:@"Extracting"]) {
                         lastCompletedFile = [fileName lastPathComponent];
                         break;
                     }
@@ -337,25 +337,25 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
         if (!self.task.progress.finished && self.task.progress.fractionCompleted < 1.0) return;
         
+        // The download is finished, so dismiss the progress view
         [self.progressVC dismissViewControllerAnimated:NO completion:nil];
         self.progressViewMain.observedProgress = nil;
+        self.progressVC = nil;
         
-        // Check if this was a modpack installation - ensure it's a robust check
-        BOOL isModpackInstall = NO;
-        if (self.task.metadata && self.task.metadata[@"isModpackInstall"]) {
-            isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
-        }
+        // Always reset the UI state after completion, regardless of task type
+        BOOL isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
         
-        // Only launch the game if it's NOT a modpack installation
         if (self.task.metadata && !isModpackInstall) {
             [self invokeAfterJITEnabled:^{
                 UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
             }];
         } else {
-            self.task = nil;
             [self setInteractionEnabled:YES forDownloading:YES];
             [self reloadProfileList];
         }
+        
+        // Clear the task reference
+        self.task = nil;
     });
 }
 
