@@ -29,13 +29,14 @@
     return self;
 }
 
-// Add file to the queue
+// Add file to the queue with failure callback for retry support
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
                                            size:(NSUInteger)size 
                                             sha:(NSString *)sha 
                                         altName:(NSString *)altName 
                                          toPath:(NSString *)path 
-                                        success:(void (^)(void))success {
+                                        success:(void (^)(void))success
+                                        failure:(void (^)(NSError *error))failure {
     BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
     // logSuccess?
     if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
@@ -63,9 +64,20 @@
         if (self.progress.cancelled) {
             // Ignore any further errors
         } else if (error != nil) {
-            [self finishDownloadWithError:error file:name];
+            if (failure) {
+                failure(error);
+            } else {
+                [self finishDownloadWithError:error file:name];
+            }
         } else if (![self checkSHA:sha forFile:path altName:altName]) {
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+            NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
+                                                    code:1000 
+                                                userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
+            if (failure) {
+                failure(shaError);
+            } else {
+                [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+            }
         } else {
             progress.totalUnitCount = progress.completedUnitCount;
             if (success) success();
@@ -80,12 +92,23 @@
     return task;
 }
 
+// Compatibility method that calls the full version without failure callback
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path 
+                                        success:(void (^)(void))success {
+    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:success failure:nil];
+}
+
+// Compatibility method for older code
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
                                            size:(NSUInteger)size 
                                             sha:(NSString *)sha 
                                         altName:(NSString *)altName 
                                          toPath:(NSString *)path {
-    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil];
+    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
 }
 
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSInteger)size {
@@ -313,16 +336,40 @@
 
     // Create a wrapped success callback that transitions to extraction phase
     void(^modpackSuccess)(void) = ^{
-        // Add extraction filename
-        [self.fileList addObject:@"Extracting modpack..."];
-        NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
-        [self.progressList addObject:extractionProgress];
-        
-        NSString *path = [NSString stringWithFormat:@"%s/custom_gamedir/%@", getenv("POJAV_GAME_DIR"), name];
+        // Use the API to handle extraction and installation
         [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:path];
     };
+    
+    // Failure callback to handle retries for modpack download
+    void(^modpackFailure)(NSError *error) = ^(NSError *error) {
+        NSLog(@"[MCDL] Failed to download modpack: %@. Retrying...", error.localizedDescription);
+        
+        // Create a retry task
+        NSURLSessionDownloadTask *retryTask = [self createDownloadTask:url 
+                                                                 size:size 
+                                                                  sha:sha 
+                                                              altName:[NSString stringWithFormat:@"Downloading %@ (retry)", name]
+                                                               toPath:packagePath 
+                                                              success:modpackSuccess
+                                                              failure:^(NSError *retryError) {
+            // If retry also fails, show error
+            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to download modpack after retry: %@", retryError.localizedDescription]];
+        }];
+        
+        if (retryTask) {
+            [retryTask resume];
+        } else {
+            [self finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
+        }
+    };
 
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:[NSString stringWithFormat:@"Downloading %@", name] toPath:packagePath success:modpackSuccess];
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url 
+                                                        size:size 
+                                                         sha:sha 
+                                                     altName:[NSString stringWithFormat:@"Downloading %@", name]
+                                                      toPath:packagePath 
+                                                     success:modpackSuccess
+                                                     failure:modpackFailure];
     [task resume];
 }
 
