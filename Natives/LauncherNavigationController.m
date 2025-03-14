@@ -229,7 +229,11 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         }
     }
     self.progressViewMain.hidden = enabled;
+    
+    // Make sure to properly handle the progress text visibility
     self.progressText.text = nil;
+    self.progressText.hidden = enabled; // Hide when enabled (not downloading), show when disabled (downloading)
+    
     if (downloading) {
         [self.buttonInstall setTitle:localize(enabled ? @"Play" : @"Details", nil) forState:UIControlStateNormal];
         self.buttonInstall.alpha = 1;
