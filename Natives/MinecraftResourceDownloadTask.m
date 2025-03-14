@@ -8,7 +8,7 @@
 #import "MinecraftResourceDownloadTask.h"
 #import "MinecraftResourceUtils.h"
 #import "ios_uikit_bridge.h"
-#import "PLProfiles.m"
+#import "PLProfiles.h"
 #import "utils.h"
 
 @interface MinecraftResourceDownloadTask ()
