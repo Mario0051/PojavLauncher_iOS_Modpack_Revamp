@@ -4,31 +4,73 @@
 @implementation ModpackUtils
 
 + (void)archive:(UZKArchive *)archive extractDirectory:(NSString *)dir toPath:(NSString *)path error:(NSError *__autoreleasing*)error {
+    // Save the original path length to use for path calculation - critical for proper extraction
+    NSUInteger dirPrefixLength = dir.length + 1; // +1 for the trailing slash
+    
+    NSLog(@"[ModpackUtils] Extracting directory '%@' to '%@'", dir, path);
+    
     [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
+        // Only process files that are in the specified directory
         if (![fileInfo.filename hasPrefix:dir] ||
             fileInfo.filename.length <= dir.length) {
             return;
         }
-        NSString *fileName = [fileInfo.filename substringFromIndex:dir.length+1];
-        NSString *destItemPath = [path stringByAppendingPathComponent:fileName];
-        NSString *destDirPath = fileInfo.isDirectory ? destItemPath : destItemPath.stringByDeletingLastPathComponent;
+        
+        // Calculate the relative path by removing the directory prefix
+        NSString *relativePath;
+        if (fileInfo.filename.length > dirPrefixLength) {
+            relativePath = [fileInfo.filename substringFromIndex:dirPrefixLength];
+        } else {
+            // Edge case: the file is exactly at the directory level
+            relativePath = @"";
+        }
+        
+        // Construct the destination path
+        NSString *destItemPath = [path stringByAppendingPathComponent:relativePath];
+        
+        // For directories, just create them
+        if (fileInfo.isDirectory) {
+            BOOL createdDir = [NSFileManager.defaultManager createDirectoryAtPath:destItemPath
+                withIntermediateDirectories:YES
+                attributes:nil error:error];
+            if (!createdDir) {
+                *stop = YES;
+                return;
+            }
+            return;
+        }
+        
+        // For files, make sure the parent directory exists
+        NSString *destDirPath = [destItemPath stringByDeletingLastPathComponent];
         BOOL createdDir = [NSFileManager.defaultManager createDirectoryAtPath:destDirPath
             withIntermediateDirectories:YES
             attributes:nil error:error];
         if (!createdDir) {
             *stop = YES;
             return;
-        } else if (fileInfo.isDirectory) {
-            return;
         }
 
+        // Extract the file data
         NSData *data = [archive extractData:fileInfo error:error];
+        if (!data) {
+            *stop = YES;
+            return;
+        }
+        
+        // Write the file to its destination
         BOOL written = [data writeToFile:destItemPath options:NSDataWritingAtomic error:error];
-        *stop = !data || !written;
+        *stop = !written;
         if (!*stop) {
-            NSLog(@"[ModpackDL] Extracted %@", fileInfo.filename);
+            NSLog(@"[ModpackUtils] Extracted %@ to %@", fileInfo.filename, destItemPath);
         }
     } error:error];
+    
+    // Log the result
+    if (*error) {
+        NSLog(@"[ModpackUtils] Error extracting directory: %@", [*error localizedDescription]);
+    } else {
+        NSLog(@"[ModpackUtils] Successfully extracted directory '%@' to '%@'", dir, path);
+    }
 }
 
 + (NSDictionary *)infoForDependencies:(NSDictionary *)dependency {
