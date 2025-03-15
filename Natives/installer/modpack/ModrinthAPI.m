@@ -460,7 +460,7 @@ extern void showDialog(NSString *title, NSString *message);
         // Show alert to user
         UIAlertController *alert = [UIAlertController 
             alertControllerWithTitle:[NSString stringWithFormat:@"%@ Installation Required", vendor]
-            message:[NSString stringWithFormat:@"This modpack requires %@ %@, which is not yet installed. Installing it will require you to restart the app after it is finished. Would you like to install it now?", vendor, fullVersion]
+            message:[NSString stringWithFormat:@"This modpack requires %@ %@, which is not yet installed. Would you like to install it now?", vendor, fullVersion]
             preferredStyle:UIAlertControllerStyleAlert];
             
         [alert addAction:[UIAlertAction 
@@ -488,34 +488,41 @@ extern void showDialog(NSString *title, NSString *message);
                 NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
                 AFURLSessionManager *manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
                 
-                // Setup UI for download - find the root view controller without using keyWindow
+                // Setup UI for download
                 UIViewController *currentVC = nil;
+                UISplitViewController *splitVC = nil;
+                
+                // Find the root view controller - proper way to get the current UI
+                NSArray<UIWindow *> *windows = nil;
                 if (@available(iOS 13.0, *)) {
-                    NSSet<UIScene *> *connectedScenes = UIApplication.sharedApplication.connectedScenes;
-                    for (UIScene *scene in connectedScenes) {
-                        if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                            UIWindowScene *windowScene = (UIWindowScene *)scene;
-                            currentVC = windowScene.windows.firstObject.rootViewController;
-                            break;
-                        }
-                    }
+                    windows = [UIApplication.sharedApplication.connectedScenes.allObjects filteredArrayUsingPredicate:
+                      [NSPredicate predicateWithBlock:^BOOL(UIScene *scene, NSDictionary *bindings) {
+                        return [scene isKindOfClass:[UIWindowScene class]] && 
+                               ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive;
+                    }]].firstObject.windows;
                 } else {
-                    // Fallback for iOS 12 and earlier
-                    #pragma clang diagnostic push
-                    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-                    currentVC = UIApplication.sharedApplication.keyWindow.rootViewController;
-                    #pragma clang diagnostic pop
+                    windows = UIApplication.sharedApplication.windows;
                 }
                 
-                // Find the topmost presented view controller
-                while (currentVC.presentedViewController) {
-                    currentVC = currentVC.presentedViewController;
+                UIWindow *mainWindow = nil;
+                for (UIWindow *window in windows) {
+                    if (window.isKeyWindow) {
+                        mainWindow = window;
+                        break;
+                    }
                 }
                 
-                // Add progress indicator
+                if (mainWindow) {
+                    currentVC = mainWindow.rootViewController;
+                    if ([currentVC isKindOfClass:[UISplitViewController class]]) {
+                        splitVC = (UISplitViewController *)currentVC;
+                    }
+                }
+                
+                // Get the navigation controller for progress updates
                 LauncherNavigationController *navVC = nil;
-                if ([currentVC isKindOfClass:UISplitViewController.class]) {
-                    navVC = (LauncherNavigationController *)((UISplitViewController *)currentVC).viewControllers[1];
+                if (splitVC && splitVC.viewControllers.count > 1) {
+                    navVC = (LauncherNavigationController *)splitVC.viewControllers[1];
                     [navVC setInteractionEnabled:NO forDownloading:YES];
                     navVC.progressText.text = [NSString stringWithFormat:@"Downloading %@ installer...", vendor];
                     navVC.progressViewMain.hidden = NO;
@@ -525,7 +532,9 @@ extern void showDialog(NSString *title, NSString *message);
                 NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:installerUrl]];
                 NSURLSessionDownloadTask *downloadTask = [manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull progress) {
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        navVC.progressViewMain.progress = progress.fractionCompleted;
+                        if (navVC) {
+                            navVC.progressViewMain.progress = progress.fractionCompleted;
+                        }
                     });
                 } destination:^NSURL *(NSURL *targetPath, NSURLResponse *response) {
                     [NSFileManager.defaultManager removeItemAtPath:outPath error:nil];
@@ -540,31 +549,19 @@ extern void showDialog(NSString *title, NSString *message);
                             return;
                         }
                         
-                        // Launch the installer - no need to create JavaGUIViewController directly
-                        // We'll use the navigation controller's method instead
-                        
-                        // Hide navigation UI
+                        // Reset UI 
                         if (navVC) {
                             [navVC setInteractionEnabled:YES forDownloading:NO];
                             navVC.progressViewMain.hidden = YES;
                             navVC.progressText.text = nil;
                             
-                            // Show a message that the app will need to be restarted
-                            UIAlertController *restartAlert = [UIAlertController 
-                                alertControllerWithTitle:@"Restart Required"
-                                message:[NSString stringWithFormat:@"After %@ installation completes, please restart the app to finalize the installation.", vendor]
-                                preferredStyle:UIAlertControllerStyleAlert];
+                            // Show a simple notification and launch the installer
+                            showDialog(@"Installing Forge", 
+                                      [NSString stringWithFormat:@"%@ installer will now run. After installation completes, please restart the app.", vendor]);
                             
-                            [restartAlert addAction:[UIAlertAction 
-                                actionWithTitle:@"OK" 
-                                style:UIAlertActionStyleDefault 
-                                handler:^(UIAlertAction * _Nonnull action) {
-                                    // Use the LauncherNavigationController's method to launch the JAR file
-                                    // This ensures proper JIT enablement and Java environment setup
-                                    [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
-                                }]];
-                            
-                            [currentVC presentViewController:restartAlert animated:YES completion:nil];
+                            // Use the exact same method as ForgeInstallViewController
+                            // This is the critical line that launches the JAR
+                            [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
                         } else {
                             // Fallback if we couldn't get the navigation controller
                             showDialog(@"Error", @"Could not locate navigation controller for installer launch");
@@ -580,30 +577,37 @@ extern void showDialog(NSString *title, NSString *message);
             style:UIAlertActionStyleCancel 
             handler:nil]];
         
-        // Present the alert - find the root view controller without using keyWindow
+        // Present the alert - find the current view controller
         UIViewController *currentVC = nil;
+        
+        // Find the root view controller - proper way to get the current UI
+        NSArray<UIWindow *> *windows = nil;
         if (@available(iOS 13.0, *)) {
-            NSSet<UIScene *> *connectedScenes = UIApplication.sharedApplication.connectedScenes;
-            for (UIScene *scene in connectedScenes) {
-                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
-                    UIWindowScene *windowScene = (UIWindowScene *)scene;
-                    currentVC = windowScene.windows.firstObject.rootViewController;
-                    break;
-                }
-            }
+            windows = [UIApplication.sharedApplication.connectedScenes.allObjects filteredArrayUsingPredicate:
+              [NSPredicate predicateWithBlock:^BOOL(UIScene *scene, NSDictionary *bindings) {
+                return [scene isKindOfClass:[UIWindowScene class]] && 
+                       ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive;
+            }]].firstObject.windows;
         } else {
-            // Fallback for iOS 12 and earlier
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            currentVC = UIApplication.sharedApplication.keyWindow.rootViewController;
-            #pragma clang diagnostic pop
+            windows = UIApplication.sharedApplication.windows;
         }
         
-        // Find the topmost presented view controller
-        while (currentVC.presentedViewController) {
-            currentVC = currentVC.presentedViewController;
+        UIWindow *mainWindow = nil;
+        for (UIWindow *window in windows) {
+            if (window.isKeyWindow) {
+                mainWindow = window;
+                break;
+            }
         }
-        [currentVC presentViewController:alert animated:YES completion:nil];
+        
+        if (mainWindow) {
+            currentVC = mainWindow.rootViewController;
+            // Find the topmost presented view controller
+            while (currentVC.presentedViewController) {
+                currentVC = currentVC.presentedViewController;
+            }
+            [currentVC presentViewController:alert animated:YES completion:nil];
+        }
     });
 }
 
