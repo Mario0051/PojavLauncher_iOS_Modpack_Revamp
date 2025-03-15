@@ -189,17 +189,77 @@
 
 - (void)addVersionToList:(NSString *)version {
     if (![version containsString:@"-"]) {
+        return; // Skip if no hyphen
+    }
+    
+    UISegmentedControl *segment = (id)self.navigationItem.titleView;
+    NSString *vendor = [segment titleForSegmentAtIndex:segment.selectedSegmentIndex];
+    
+    NSString *gameVersion = nil;
+    
+    if ([vendor isEqualToString:@"NeoForge"]) {
+        // NeoForge version parsing
+        NSArray *components = [version componentsSeparatedByString:@"-"];
+        
+        // Handle NeoForge format where the first component omits the "1." prefix
+        // Format example: "21.4.94-something" for Minecraft 1.21.4
+        if (components.count > 0) {
+            NSString *firstComponent = components[0];
+            NSArray *versionParts = [firstComponent componentsSeparatedByString:@"."];
+            
+            // Check if it matches the pattern XX.X.YY where XX.X could be a Minecraft version without "1."
+            if (versionParts.count >= 2) {
+                NSString *majorMinor = [NSString stringWithFormat:@"%@.%@", versionParts[0], versionParts[1]];
+                
+                // Check if it looks like a version number (digits.digits)
+                NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"^\\d+\\.\\d+" options:0 error:nil];
+                NSUInteger matches = [regex numberOfMatchesInString:majorMinor options:0 range:NSMakeRange(0, majorMinor.length)];
+                
+                if (matches > 0) {
+                    // Add back the "1." prefix to form the proper Minecraft version
+                    gameVersion = [NSString stringWithFormat:@"1.%@", majorMinor];
+                    NSLog(@"[ForgeInstall] Identified NeoForge version: %@ as Minecraft %@", version, gameVersion);
+                }
+            }
+        }
+        
+        // Fallback to legacy detection methods if needed
+        if (!gameVersion) {
+            // Try to find standard version format (with 1.xx.x) anywhere in the string
+            NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"1\\.[0-9]+\\.[0-9]+" options:0 error:nil];
+            NSTextCheckingResult *match = [regex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
+            
+            if (match) {
+                gameVersion = [version substringWithRange:match.range];
+            } else {
+                // Unable to determine Minecraft version clearly
+                gameVersion = @"Other";
+                NSLog(@"[ForgeInstall] Could not determine Minecraft version for: %@", version);
+            }
+        }
+    } else {
+        // Standard Forge format: "1.16.5-36.2.39"
+        NSRange range = [version rangeOfString:@"-"];
+        gameVersion = [version substringToIndex:range.location];
+    }
+    
+    // Skip if we couldn't determine a game version
+    if (!gameVersion || gameVersion.length == 0) {
         return;
     }
-    NSRange range = [version rangeOfString:@"-"];
-    NSString *gameVersion = [version substringToIndex:range.location];
-    //NSString *forgeVersion = [version substringFromIndex:range.location + 1];
-    if (![self.versionList containsObject:gameVersion]) {
+    
+    // Find or create the appropriate section
+    NSUInteger index = [self.versionList indexOfObject:gameVersion];
+    if (index == NSNotFound) {
+        // Add a new section
         [self.visibilityList addObject:@(NO)];
         [self.versionList addObject:gameVersion];
         [self.forgeList addObject:[NSMutableArray new]];
+        index = self.versionList.count - 1;
     }
-    [self.forgeList.lastObject addObject:version];
+    
+    // Add the version to the correct section
+    [self.forgeList[index] addObject:version];
 }
 
 #pragma mark NSXMLParser
@@ -229,7 +289,10 @@
 - (void)parser:(NSXMLParser *)parser didEndElement:(NSString *)elementName namespaceURI:(NSString *)namespaceURI qualifiedName:(NSString *)qName {
     if ([elementName isEqualToString:@"version"]) {
         // Process the complete version string when the element ends
-        [self addVersionToList:[self.currentVersionValue copy]];
+        NSString *versionString = [self.currentVersionValue stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (versionString.length > 0) {
+            [self addVersionToList:versionString];
+        }
         self.isVersionElement = NO;
     }
 }
