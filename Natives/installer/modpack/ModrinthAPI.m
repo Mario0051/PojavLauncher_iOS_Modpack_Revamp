@@ -468,20 +468,23 @@ extern void showDialog(NSString *title, NSString *message);
             actionWithTitle:@"Yes" 
             style:UIAlertActionStyleDefault 
             handler:^(UIAlertAction * _Nonnull action) {
-                // Get the correct endpoint info
-                NSDictionary *endpoints = @{
-                    @"Forge": @{
+                // Get the correct endpoint info based on vendor type
+                NSDictionary *endpoints;
+                
+                if ([vendor isEqualToString:@"Forge"]) {
+                    endpoints = @{
                         @"installer": @"https://maven.minecraftforge.net/net/minecraftforge/forge/%1$@/forge-%1$@-installer.jar",
                         @"metadata": @"https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
-                    },
-                    @"NeoForge": @{
-                        @"installer": @"https://maven.neoforged.net/net/neoforged/forge/%1$@/forge-%1$@-installer.jar",
-                        @"metadata": @"https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml"
-                    }
-                };
+                    };
+                } else { // NeoForge
+                    endpoints = @{
+                        @"installer": @"https://maven.neoforged.net/releases/net/neoforged/neoforge/%1$@/neoforge-%1$@-installer.jar",
+                        @"metadata": @"https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
+                    };
+                }
                 
                 // Download the installer
-                NSString *installerUrl = [NSString stringWithFormat:endpoints[vendor][@"installer"], fullVersion];
+                NSString *installerUrl = [NSString stringWithFormat:endpoints[@"installer"], fullVersion];
                 NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"forge-installer.jar"];
                 NSLog(@"[ModrinthAPI] Downloading %@ installer from: %@", vendor, installerUrl);
                 
