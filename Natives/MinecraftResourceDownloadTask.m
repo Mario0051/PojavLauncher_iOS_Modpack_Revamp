@@ -8,7 +8,7 @@
 #import "MinecraftResourceDownloadTask.h"
 #import "MinecraftResourceUtils.h"
 #import "ios_uikit_bridge.h"
-#import "PLProfiles.h"
+#import "PLProfiles.h" // Updated import to use header file instead of implementation file
 #import "utils.h"
 
 @interface MinecraftResourceDownloadTask ()
@@ -331,9 +331,11 @@
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
     NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
     NSString *sha = modDetail[@"versionHashes"][selectedVersion];
-    NSString *name = [[modDetail[@"title"] lowercaseString] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-    name = [name stringByReplacingOccurrencesOfString:@" " withString:@"_"];
-    NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", name];
+    // Use the original title without converting to lowercase or replacing spaces with underscores
+    NSString *name = [modDetail[@"title"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    // For the filesystem paths, create a sanitized version of the name (for the zip file only)
+    NSString *sanitizedName = [[name lowercaseString] stringByReplacingOccurrencesOfString:@" " withString:@"_"];
+    NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", sanitizedName];
     
     // Create a destination path for the modpack - use PLProfiles to get the correct path
     NSString *gameDir = [PLProfiles uniqueGameDirForProfileName:name];
