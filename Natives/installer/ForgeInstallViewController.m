@@ -123,21 +123,191 @@
 
 #pragma mark - Version Parsing and Management
 
-- (NSString *)extractMinecraftVersionFromForgeVersion:(NSString *)version {
-    // Handle Forge versions in format "1.X.Y-Z.W.V" or "1.X-Z.W.V"
-    NSRange hyphenRange = [version rangeOfString:@"-"];
-    if (hyphenRange.location != NSNotFound) {
-        return [version substringToIndex:hyphenRange.location];
+// Custom structure to represent a semantic version
+typedef struct {
+    NSInteger major;
+    NSInteger minor;
+    NSInteger patch;
+    NSString *preRelease; // alpha, beta, rc, etc.
+    NSInteger preReleaseVersion;
+    BOOL isValid;
+} SemanticVersion;
+
+// Parse a version string into components following semantic versioning principles
+- (SemanticVersion)parseSemanticVersion:(NSString *)versionString {
+    SemanticVersion result = {-1, -1, -1, nil, -1, NO};
+    
+    if (!versionString || versionString.length == 0) {
+        return result;
     }
     
-    // For older Forge versions that don't follow the standard format
-    NSRange dotRange = [version rangeOfString:@"."];
-    if (dotRange.location != NSNotFound) {
-        NSString *majorPart = [version substringToIndex:dotRange.location];
-        if ([self isNumeric:majorPart]) {
-            if (majorPart.intValue < 2) {  // Likely a Minecraft version starting with 1.X
-                return version;
+    // First, separate the pre-release part if any
+    NSString *versionPart = versionString;
+    NSString *preReleasePart = nil;
+    
+    NSRange hyphenRange = [versionString rangeOfString:@"-"];
+    if (hyphenRange.location != NSNotFound) {
+        versionPart = [versionString substringToIndex:hyphenRange.location];
+        if (hyphenRange.location + 1 < versionString.length) {
+            preReleasePart = [versionString substringFromIndex:hyphenRange.location + 1];
+        }
+    }
+    
+    // Parse version components
+    NSArray *components = [versionPart componentsSeparatedByString:@"."];
+    
+    // Need at least one component
+    if (components.count == 0) {
+        return result;
+    }
+    
+    // Parse major
+    if (components.count > 0 && [self isNumeric:components[0]]) {
+        result.major = [components[0] integerValue];
+    } else {
+        return result; // Invalid version
+    }
+    
+    // Parse minor if available
+    if (components.count > 1 && [self isNumeric:components[1]]) {
+        result.minor = [components[1] integerValue];
+    } else {
+        result.minor = 0; // Default to 0
+    }
+    
+    // Parse patch if available
+    if (components.count > 2 && [self isNumeric:components[2]]) {
+        result.patch = [components[2] integerValue];
+    } else {
+        result.patch = 0; // Default to 0
+    }
+    
+    // Parse pre-release identifier
+    if (preReleasePart) {
+        // Extract pre-release type (alpha, beta, rc)
+        NSRegularExpression *preReleaseTypeRegex = [NSRegularExpression 
+            regularExpressionWithPattern:@"^(alpha|beta|rc|pre|snapshot)" 
+            options:NSRegularExpressionCaseInsensitive 
+            error:nil];
+        
+        NSTextCheckingResult *typeMatch = [preReleaseTypeRegex 
+            firstMatchInString:preReleasePart 
+            options:0 
+            range:NSMakeRange(0, preReleasePart.length)];
+        
+        if (typeMatch) {
+            result.preRelease = [[preReleasePart substringWithRange:typeMatch.range] lowercaseString];
+            
+            // Try to extract a version number after the type
+            NSString *remaining = [preReleasePart substringFromIndex:typeMatch.range.length];
+            NSRegularExpression *numberRegex = [NSRegularExpression 
+                regularExpressionWithPattern:@"\\d+" 
+                options:0 
+                error:nil];
+            
+            NSTextCheckingResult *numberMatch = [numberRegex 
+                firstMatchInString:remaining 
+                options:0 
+                range:NSMakeRange(0, remaining.length)];
+            
+            if (numberMatch) {
+                result.preReleaseVersion = [[remaining substringWithRange:numberMatch.range] integerValue];
+            } else {
+                result.preReleaseVersion = 0;
             }
+        } else {
+            // If no recognized pre-release type, just use the whole string
+            result.preRelease = preReleasePart;
+            result.preReleaseVersion = 0;
+        }
+    }
+    
+    result.isValid = YES;
+    return result;
+}
+
+// Compare two semantic versions
+- (NSComparisonResult)compareSemanticVersion:(SemanticVersion)ver1 to:(SemanticVersion)ver2 {
+    // Handle invalid versions
+    if (!ver1.isValid && !ver2.isValid) return NSOrderedSame;
+    if (!ver1.isValid) return NSOrderedAscending;
+    if (!ver2.isValid) return NSOrderedDescending;
+    
+    // Compare major versions
+    if (ver1.major != ver2.major) {
+        return ver1.major > ver2.major ? NSOrderedDescending : NSOrderedAscending;
+    }
+    
+    // Compare minor versions
+    if (ver1.minor != ver2.minor) {
+        return ver1.minor > ver2.minor ? NSOrderedDescending : NSOrderedAscending;
+    }
+    
+    // Compare patch versions
+    if (ver1.patch != ver2.patch) {
+        return ver1.patch > ver2.patch ? NSOrderedDescending : NSOrderedAscending;
+    }
+    
+    // If one has a pre-release and the other doesn't, the one without is greater
+    if (ver1.preRelease && !ver2.preRelease) return NSOrderedAscending;
+    if (!ver1.preRelease && ver2.preRelease) return NSOrderedDescending;
+    
+    // If both have pre-releases, compare them
+    if (ver1.preRelease && ver2.preRelease) {
+        // Compare pre-release types first
+        NSArray *preReleaseOrder = @[@"snapshot", @"alpha", @"beta", @"pre", @"rc"];
+        NSInteger index1 = [preReleaseOrder indexOfObject:ver1.preRelease];
+        NSInteger index2 = [preReleaseOrder indexOfObject:ver2.preRelease];
+        
+        // Handle unknown pre-release types
+        if (index1 == NSNotFound && index2 == NSNotFound) {
+            // If both unknown, compare lexicographically
+            NSComparisonResult result = [ver1.preRelease compare:ver2.preRelease];
+            if (result != NSOrderedSame) return result;
+        } else if (index1 == NSNotFound) {
+            return NSOrderedAscending;  // Unknown types are considered lower
+        } else if (index2 == NSNotFound) {
+            return NSOrderedDescending;
+        } else if (index1 != index2) {
+            return index1 > index2 ? NSOrderedDescending : NSOrderedAscending;
+        }
+        
+        // Same pre-release type, compare versions
+        if (ver1.preReleaseVersion != ver2.preReleaseVersion) {
+            return ver1.preReleaseVersion > ver2.preReleaseVersion ? 
+                NSOrderedDescending : NSOrderedAscending;
+        }
+    }
+    
+    // Versions are equal
+    return NSOrderedSame;
+}
+
+- (NSString *)extractMinecraftVersionFromForgeVersion:(NSString *)version {
+    // Regular expression to match a Minecraft version at the beginning
+    NSRegularExpression *regex = [NSRegularExpression 
+        regularExpressionWithPattern:@"^(1\\.[0-9]+(?:\\.[0-9]+)?)" 
+        options:0 error:nil];
+    
+    NSTextCheckingResult *match = [regex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
+    
+    if (match) {
+        return [version substringWithRange:match.range];
+    }
+    
+    // Fallback: Look for a version separator
+    NSRange hyphenRange = [version rangeOfString:@"-"];
+    if (hyphenRange.location != NSNotFound) {
+        NSString *possibleMcVersion = [version substringToIndex:hyphenRange.location];
+        
+        // Validate if this looks like a Minecraft version
+        NSRegularExpression *mcRegex = [NSRegularExpression 
+            regularExpressionWithPattern:@"^\\d+(?:\\.\\d+)+$" 
+            options:0 error:nil];
+        
+        if ([mcRegex firstMatchInString:possibleMcVersion options:0 
+                 range:NSMakeRange(0, possibleMcVersion.length)]) {
+            return possibleMcVersion;
         }
     }
     
@@ -145,29 +315,56 @@
 }
 
 - (NSString *)extractMinecraftVersionFromNeoForgeVersion:(NSString *)version {
-    // First try to extract a standard Minecraft version like "1.X.Y" from the string
-    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"1\\.[0-9]+(?:\\.[0-9]+)?" options:0 error:nil];
-    NSTextCheckingResult *match = [regex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
+    // First try to find an embedded Minecraft version (pattern: 1.X.Y)
+    NSRegularExpression *mcRegex = [NSRegularExpression 
+        regularExpressionWithPattern:@"(1\\.[0-9]+(?:\\.[0-9]+)?)" 
+        options:0 error:nil];
+    
+    NSTextCheckingResult *match = [mcRegex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
     
     if (match) {
         return [version substringWithRange:match.range];
     }
     
-    // For NeoForge's new versioning scheme (e.g., "20.4.72-beta" for MC 1.20.4)
-    NSArray *components = [version componentsSeparatedByString:@"."];
+    // Fallback for the newer NeoForge versioning scheme (e.g., 20.4.x for Minecraft 1.20.4)
+    // Strip any pre-release suffix first
+    NSString *cleanVersion = version;
+    NSRange hyphenRange = [version rangeOfString:@"-"];
+    if (hyphenRange.location != NSNotFound) {
+        cleanVersion = [version substringToIndex:hyphenRange.location];
+    }
+    
+    NSArray *components = [cleanVersion componentsSeparatedByString:@"."];
+    
+    // Need at least major.minor components
     if (components.count >= 2) {
         NSString *majorComponent = components[0];
+        NSString *minorComponent = components[1];
         
-        // Check if this is likely a major version number (below 30)
-        if ([self isNumeric:majorComponent] && [majorComponent intValue] < 30) {
-            NSString *minorComponent = components[1];
+        // Validate components
+        if ([self isNumeric:majorComponent] && [self isNumeric:minorComponent]) {
+            NSInteger majorValue = [majorComponent integerValue];
             
-            // Format as proper Minecraft version: "20.4" -> "1.20.4"
-            if ([self isNumeric:minorComponent]) {
-                return [NSString stringWithFormat:@"1.%@.%@", majorComponent, minorComponent];
-            } else {
-                return [NSString stringWithFormat:@"1.%@", majorComponent];
+            // Is this likely a new-style NeoForge version? (e.g. 20.4.x for MC 1.20.4)
+            if (majorValue >= 19 && majorValue <= 30) { // Reasonable range for Minecraft versions
+                NSString *mcVersion = [NSString stringWithFormat:@"1.%@.%@", majorComponent, minorComponent];
+                return mcVersion;
             }
+        }
+    }
+    
+    // Look for version pattern at the end that might indicate Minecraft version
+    NSRegularExpression *versionRegex = [NSRegularExpression 
+        regularExpressionWithPattern:@"-(?:mc)?(1\\.[0-9]+(?:\\.[0-9]+)?)" 
+        options:0 error:nil];
+    
+    match = [versionRegex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
+    
+    if (match) {
+        // Extract just the version part, not the "mc" prefix if present
+        NSRange versionRange = [match rangeAtIndex:1];
+        if (versionRange.location != NSNotFound) {
+            return [version substringWithRange:versionRange];
         }
     }
     
@@ -175,41 +372,77 @@
 }
 
 - (BOOL)isNumeric:(NSString *)string {
-    NSScanner *scanner = [NSScanner scannerWithString:string];
-    return [scanner scanInteger:NULL] && [scanner isAtEnd];
+    if (!string || string.length == 0) return NO;
+    
+    NSCharacterSet *nonNumbers = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    return [string rangeOfCharacterFromSet:nonNumbers].location == NSNotFound;
 }
 
 - (NSArray *)extractVersionComponents:(NSString *)version {
     NSMutableArray *components = [NSMutableArray new];
     
     if ([self.currentVendor isEqualToString:@"NeoForge"]) {
-        // For NeoForge, get the version part (before any qualifier like "beta")
-        NSString *versionBase = version;
-        NSRange qualifierRange = [version rangeOfString:@"-"];
+        // For NeoForge, handle specialized format
+        
+        // First, remove any Minecraft version references
+        NSString *cleanVersion = version;
+        NSRegularExpression *mcRegex = [NSRegularExpression 
+            regularExpressionWithPattern:@"(1\\.[0-9]+(?:\\.[0-9]+)?)" 
+            options:0 error:nil];
+        
+        cleanVersion = [mcRegex stringByReplacingMatchesInString:cleanVersion 
+                                               options:0 
+                                                 range:NSMakeRange(0, cleanVersion.length) 
+                                          withTemplate:@""];
+        
+        // Parse modloader version part (before any qualifier)
+        NSString *versionBase = cleanVersion;
+        NSRange qualifierRange = [cleanVersion rangeOfString:@"-"];
         if (qualifierRange.location != NSNotFound) {
-            versionBase = [version substringToIndex:qualifierRange.location];
+            versionBase = [cleanVersion substringToIndex:qualifierRange.location];
+            
+            // Add the qualifier to the components array
+            if (qualifierRange.location + 1 < cleanVersion.length) {
+                NSString *qualifier = [cleanVersion substringFromIndex:qualifierRange.location + 1];
+                [components addObject:qualifier]; // Keep qualifier for comparison
+            }
         }
         
+        // Extract numeric components
         NSArray *parts = [versionBase componentsSeparatedByString:@"."];
         for (NSString *part in parts) {
             if ([self isNumeric:part]) {
                 [components addObject:@([part intValue])];
-            } else {
+            } else if (part.length > 0) {
                 [components addObject:part];
             }
         }
     } else {
-        // For Forge, handle the format "1.X.Y-Z.W.V"
+        // For Forge, extract the version part after the Minecraft version
         NSRange hyphenRange = [version rangeOfString:@"-"];
-        if (hyphenRange.location != NSNotFound && hyphenRange.location < version.length - 1) {
-            // Get everything after the hyphen (forge version number)
+        if (hyphenRange.location != NSNotFound && hyphenRange.location + 1 < version.length) {
             NSString *forgeVersion = [version substringFromIndex:hyphenRange.location + 1];
-            NSArray *parts = [forgeVersion componentsSeparatedByString:@"."];
             
+            // Check for additional qualifiers
+            NSRange secondHyphenRange = [forgeVersion rangeOfString:@"-"];
+            NSString *versionPart = forgeVersion;
+            
+            if (secondHyphenRange.location != NSNotFound) {
+                versionPart = [forgeVersion substringToIndex:secondHyphenRange.location];
+                
+                // Add the qualifier to components
+                if (secondHyphenRange.location + 1 < forgeVersion.length) {
+                    NSString *qualifier = [forgeVersion substringFromIndex:secondHyphenRange.location + 1];
+                    [components addObject:qualifier];
+                }
+            }
+            
+            // Parse the numeric parts
+            NSArray *parts = [versionPart componentsSeparatedByString:@"."];
             for (NSString *part in parts) {
                 if ([self isNumeric:part]) {
                     [components addObject:@([part intValue])];
-                } else {
+                } else if (part.length > 0) {
                     [components addObject:part];
                 }
             }
@@ -263,25 +496,44 @@
 }
 
 - (NSString *)getVersionQualifier:(NSString *)version {
-    // Extract qualifiers like "beta", "alpha", "recommended", etc.
-    NSRange betaRange = [version rangeOfString:@"-beta" options:NSCaseInsensitiveSearch];
-    if (betaRange.location != NSNotFound) {
-        return @"beta";
+    // More comprehensive pattern matching for pre-release identifiers
+    NSArray *patterns = @[
+        @[@"-beta", @"beta"],
+        @[@"beta", @"beta"],
+        @[@"-alpha", @"alpha"],
+        @[@"alpha", @"alpha"],
+        @[@"-rc", @"rc"],
+        @[@"rc", @"rc"],
+        @[@"-pre", @"pre"],
+        @[@"pre", @"pre"],
+        @[@"-snapshot", @"snapshot"],
+        @[@"snapshot", @"snapshot"],
+        @[@"experimental", @"alpha"],
+        @[@"dev", @"alpha"]
+    ];
+    
+    // Check each pattern
+    for (NSArray *patternPair in patterns) {
+        NSRange range = [version rangeOfString:patternPair[0] options:NSCaseInsensitiveSearch];
+        if (range.location != NSNotFound) {
+            return patternPair[1];
+        }
     }
     
-    NSRange alphaRange = [version rangeOfString:@"-alpha" options:NSCaseInsensitiveSearch];
-    if (alphaRange.location != NSNotFound) {
-        return @"alpha";
-    }
-    
-    NSRange rcRange = [version rangeOfString:@"-rc" options:NSCaseInsensitiveSearch];
-    if (rcRange.location != NSNotFound) {
-        return @"rc";
-    }
-    
-    // Check for "recommended" or "latest" by examining the full version string
-    if ([version containsString:@"recommended"] || [version containsString:@"latest"]) {
+    // Check for "recommended" or "latest" in special versions
+    if ([version containsString:@"recommended"] || 
+        [version containsString:@"latest"] || 
+        [version containsString:@"promoted"]) {
         return @"recommended";
+    }
+    
+    // Check for special NeoForge qualifiers
+    if ([self.currentVendor isEqualToString:@"NeoForge"]) {
+        // NeoForge "release" versions might have specific formats
+        if ([version containsString:@"-release"] || 
+            [version hasSuffix:@"release"]) {
+            return @"release";
+        }
     }
     
     return @"release"; // Default is release
@@ -291,6 +543,27 @@
     // Skip invalid versions
     if (version.length == 0) {
         return;
+    }
+    
+    // Skip known problematic versions for NeoForge/Forge that cause issues
+    if ([self.currentVendor isEqualToString:@"NeoForge"]) {
+        // Skip NeoForge versions with these patterns
+        NSArray *skipPatterns = @[@"sources", @"userdev", @"javadoc", @"universal", @"slim"];
+        for (NSString *pattern in skipPatterns) {
+            if ([version containsString:pattern]) {
+                NSLog(@"[ForgeInstall] Skipping problematic NeoForge version: %@", version);
+                return;
+            }
+        }
+    } else {
+        // Skip Forge versions with these patterns
+        NSArray *skipPatterns = @[@"mdk", @"userdev", @"javadoc", @"src", @"sources", @"universal"];
+        for (NSString *pattern in skipPatterns) {
+            if ([version containsString:pattern]) {
+                NSLog(@"[ForgeInstall] Skipping problematic Forge version: %@", version);
+                return;
+            }
+        }
     }
     
     // Extract minecraft version based on vendor
@@ -307,6 +580,35 @@
         minecraftVersion = @"Unknown";
     }
     
+    // Skip unreasonable Minecraft versions (validation step)
+    if (![minecraftVersion isEqualToString:@"Unknown"]) {
+        SemanticVersion semVer = [self parseSemanticVersion:minecraftVersion];
+        
+        // Validate reasonable Minecraft version ranges
+        if (semVer.isValid) {
+            // Minecraft major should always be 1
+            if (semVer.major != 1) {
+                // Special case for NeoForge's new versioning
+                if ([self.currentVendor isEqualToString:@"NeoForge"] && 
+                    semVer.major >= 19 && semVer.major <= 30) {
+                    // This is likely a valid new-style NeoForge version (e.g. 20.4.x)
+                    // Convert to proper Minecraft format
+                    minecraftVersion = [NSString stringWithFormat:@"1.%ld.%ld", 
+                                      (long)semVer.major, (long)semVer.minor];
+                } else {
+                    // Not a valid Minecraft version
+                    NSLog(@"[ForgeInstall] Invalid Minecraft version in %@, using Unknown", version);
+                    minecraftVersion = @"Unknown";
+                }
+            }
+            // Minor should be in reasonable range (9-30 for modern versions)
+            else if (semVer.minor < 2 || semVer.minor > 30) {
+                NSLog(@"[ForgeInstall] Suspicious Minecraft version in %@, using Unknown", version);
+                minecraftVersion = @"Unknown";
+            }
+        }
+    }
+    
     // Find or create section for this Minecraft version
     NSUInteger sectionIndex = [self.versionList indexOfObject:minecraftVersion];
     if (sectionIndex == NSNotFound) {
@@ -319,6 +621,7 @@
     // Add version to this section if not already present
     if (![self.forgeList[sectionIndex] containsObject:version]) {
         [self.forgeList[sectionIndex] addObject:version];
+        NSLog(@"[ForgeInstall] Added %@ to %@ section", version, minecraftVersion);
     }
 }
 
