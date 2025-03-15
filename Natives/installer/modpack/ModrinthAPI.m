@@ -82,13 +82,23 @@
         return;
     }
 
+    NSLog(@"[ModrinthAPI] Opening modpack archive: %@", packagePath);
+    NSLog(@"[ModrinthAPI] Destination path: %@", destPath);
+
+    // Make sure the destination directory exists
+    [[NSFileManager defaultManager] createDirectoryAtPath:destPath 
+                             withIntermediateDirectories:YES 
+                                              attributes:nil 
+                                                   error:&error];
+    if (error) {
+        [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create destination directory: %@", error.localizedDescription]];
+        return;
+    }
+
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
     if (!indexData) {
         // Try mrpack format (newer Modrinth format)
-        indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
-        if (!indexData) {
-            indexData = [archive extractDataFromFile:@"index.json" error:&error];
-        }
+        indexData = [archive extractDataFromFile:@"index.json" error:&error];
     }
     
     if (!indexData) {
@@ -101,6 +111,8 @@
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to parse modpack index: %@", error.localizedDescription]];
         return;
     }
+
+    NSLog(@"[ModrinthAPI] Modpack index parsed successfully");
 
     // Get files and create a more unique display name for each file
     NSArray *files = indexDict[@"files"];
@@ -141,8 +153,16 @@
         NSString *path = [destPath stringByAppendingPathComponent:indexFile[@"path"]];
         NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
         
+        // Create directory structure if needed
+        NSString *dirPath = [path stringByDeletingLastPathComponent];
+        [[NSFileManager defaultManager] createDirectoryAtPath:dirPath 
+                                 withIntermediateDirectories:YES 
+                                                  attributes:nil 
+                                                       error:nil];
+        
         // Create a display name that includes more path information
         NSString *displayName = indexFile[@"path"];
+        NSLog(@"[ModrinthAPI] Preparing to download: %@ to %@", displayName, path);
         
         // Create unique ID for tracking retries
         NSString *downloadID = [NSString stringWithFormat:@"%@_%@", path.lastPathComponent, sha ?: @"nohash"];
@@ -150,6 +170,7 @@
         // Create success callback that decrements pending downloads and checks for completion
         void(^fileSuccess)(void) = ^{
             pendingDownloads--;
+            NSLog(@"[ModrinthAPI] Download completed: %@", displayName);
             
             // If all downloads are complete, proceed to extraction
             if (pendingDownloads == 0) {
@@ -253,24 +274,14 @@
     NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
     [downloader.progressList addObject:extractionProgress];
     
-    // Extract overrides directory
-    [ModpackUtils archive:archive extractDirectory:@"overrides" toPath:destPath error:&error];
-    if (error) {
-        NSLog(@"[ModrinthAPI] Failed to extract overrides: %@", error.localizedDescription);
-        // Continue anyway, as overrides might not exist
-    }
+    NSLog(@"[ModrinthAPI] Beginning extraction of modpack");
     
-    // Update extraction progress
+    // Extract overrides directory
+    [self extractDirectoryFromArchive:archive directory:@"overrides" toPath:destPath progress:extractionProgress];
     extractionProgress.completedUnitCount = 50;
     
     // Extract client-overrides directory
-    [ModpackUtils archive:archive extractDirectory:@"client-overrides" toPath:destPath error:&error];
-    if (error) {
-        NSLog(@"[ModrinthAPI] Failed to extract client-overrides: %@", error.localizedDescription);
-        // Continue anyway, as client-overrides might not exist
-    }
-    
-    // Update extraction progress
+    [self extractDirectoryFromArchive:archive directory:@"client-overrides" toPath:destPath progress:extractionProgress];
     extractionProgress.completedUnitCount = 75;
     
     // Delete package cache
@@ -329,6 +340,68 @@
     }
 }
 
+- (void)extractDirectoryFromArchive:(UZKArchive *)archive directory:(NSString *)directoryName toPath:(NSString *)destPath progress:(NSProgress *)progress {
+    NSError *error;
+    NSLog(@"[ModrinthAPI] Attempting to extract %@ directory", directoryName);
+    
+    // Get list of files in the archive
+    NSArray<NSString *> *fileList = [archive listFilenames:&error];
+    if (error) {
+        NSLog(@"[ModrinthAPI] Error listing files in archive: %@", error.localizedDescription);
+        return;
+    }
+    
+    // Filter list to only include files in the specified directory
+    NSString *directoryPrefix = [directoryName stringByAppendingString:@"/"];
+    NSMutableArray<NSString *> *filesToExtract = [NSMutableArray array];
+    
+    for (NSString *filename in fileList) {
+        if ([filename hasPrefix:directoryPrefix]) {
+            [filesToExtract addObject:filename];
+        }
+    }
+    
+    if (filesToExtract.count == 0) {
+        NSLog(@"[ModrinthAPI] No files found in %@ directory", directoryName);
+        return;
+    }
+    
+    NSLog(@"[ModrinthAPI] Found %lu files in %@ directory", (unsigned long)filesToExtract.count, directoryName);
+    
+    // Extract each file
+    for (NSString *filename in filesToExtract) {
+        NSString *relativePath = [filename substringFromIndex:directoryPrefix.length];
+        NSString *targetPath = [destPath stringByAppendingPathComponent:relativePath];
+        
+        // Create target directory if needed
+        NSString *targetDir = [targetPath stringByDeletingLastPathComponent];
+        [[NSFileManager defaultManager] createDirectoryAtPath:targetDir
+                                 withIntermediateDirectories:YES
+                                                  attributes:nil
+                                                       error:&error];
+        if (error) {
+            NSLog(@"[ModrinthAPI] Error creating directory %@: %@", targetDir, error.localizedDescription);
+            continue;
+        }
+        
+        // Extract file
+        NSData *fileData = [archive extractDataFromFile:filename error:&error];
+        if (error) {
+            NSLog(@"[ModrinthAPI] Error extracting %@: %@", filename, error.localizedDescription);
+            continue;
+        }
+        
+        // Write file
+        [fileData writeToFile:targetPath options:NSDataWritingAtomic error:&error];
+        if (error) {
+            NSLog(@"[ModrinthAPI] Error writing %@: %@", targetPath, error.localizedDescription);
+            continue;
+        }
+        
+        NSLog(@"[ModrinthAPI] Extracted %@ to %@", filename, targetPath);
+    }
+}
+
 - (void)finalizeModpackInstallation:(MinecraftResourceDownloadTask *)downloader 
                           indexDict:(NSDictionary *)indexDict
                             depInfo:(NSDictionary *)depInfo
@@ -353,6 +426,8 @@
         newProfile[@"icon"] = [NSString stringWithFormat:@"data:image/png;base64,%@",
                               [iconData base64EncodedStringWithOptions:0]];
     }
+    
+    NSLog(@"[ModrinthAPI] Creating profile: %@ with gameDir: %@", profileName, newProfile[@"gameDir"]);
     
     // Add the profile to the profiles list
     PLProfiles.current.profiles[profileName] = newProfile;
