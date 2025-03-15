@@ -1,5 +1,5 @@
 #import "AFNetworking.h"
-#import "ForgeInstallViewController.h"
+#import "installer/ForgeInstallViewController.h"
 #import "JavaGUIViewController.h"
 #import "LauncherNavigationController.h"
 #import "MinecraftResourceDownloadTask.h"
