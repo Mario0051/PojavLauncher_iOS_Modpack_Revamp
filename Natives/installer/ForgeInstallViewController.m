@@ -188,8 +188,8 @@
 }
 
 - (void)addVersionToList:(NSString *)version {
-    if (![version containsString:@"-"]) {
-        return; // Skip if no hyphen
+    if (![version containsString:@"-"] && ![vendor isEqualToString:@"NeoForge"]) {
+        return; // Skip if no hyphen (except for NeoForge which may not have one)
     }
     
     UISegmentedControl *segment = (id)self.navigationItem.titleView;
@@ -198,47 +198,35 @@
     NSString *gameVersion = nil;
     
     if ([vendor isEqualToString:@"NeoForge"]) {
-        // NeoForge version parsing
-        NSArray *components = [version componentsSeparatedByString:@"-"];
+        // Extract the first part before any hyphen for NeoForge
+        NSString *versionBase = version;
+        NSRange hyphenRange = [version rangeOfString:@"-"];
+        if (hyphenRange.location != NSNotFound) {
+            versionBase = [version substringToIndex:hyphenRange.location];
+        }
         
-        if (components.count > 0) {
-            // Check if this is the format without "1." prefix (e.g., "21.4.94-something")
-            NSString *firstComponent = components[0];
-            NSArray *versionParts = [firstComponent componentsSeparatedByString:@"."];
+        // Split the version parts
+        NSArray *versionParts = [versionBase componentsSeparatedByString:@"."];
+        
+        // NeoForge format: XX.Y.ZZZ where XX.Y corresponds to Minecraft 1.XX.Y
+        if (versionParts.count >= 2) {
+            // Extract just the first two components (XX.Y)
+            NSString *majorMinor = [NSString stringWithFormat:@"%@.%@", versionParts[0], versionParts[1]];
             
-            // Only process if it has multiple parts and first part is numeric
-            if (versionParts.count >= 2 && 
-                [[NSScanner scannerWithString:versionParts[0]] scanInt:NULL] && 
+            // Verify these are valid numbers
+            if ([[NSScanner scannerWithString:versionParts[0]] scanInt:NULL] && 
                 [[NSScanner scannerWithString:versionParts[1]] scanInt:NULL]) {
                 
-                // Check if first component could be a Minecraft version without "1."
-                // Typically major versions will be under 30 (we don't expect MC 1.31+)
-                if ([versionParts[0] intValue] < 30) {
-                    NSString *majorMinor = [NSString stringWithFormat:@"%@.%@", versionParts[0], versionParts[1]];
-                    gameVersion = [NSString stringWithFormat:@"1.%@", majorMinor];
-                    NSLog(@"[ForgeInstall] NeoForge version: %@ ➝ Minecraft %@", version, gameVersion);
-                }
-            }
-            
-            // Also check if the components after the first hyphen contain a MC version
-            if (!gameVersion && components.count > 1) {
-                for (NSInteger i = 1; i < components.count; i++) {
-                    NSString *component = components[i];
-                    if ([component hasPrefix:@"1."] && 
-                        [component componentsSeparatedByString:@"."].count >= 3) {
-                        gameVersion = component;
-                        NSLog(@"[ForgeInstall] Found MC version in NeoForge suffix: %@", gameVersion);
-                        break;
-                    }
-                }
+                // Add the "1." prefix to get proper Minecraft version
+                gameVersion = [NSString stringWithFormat:@"1.%@", majorMinor];
+                NSLog(@"[ForgeInstall] NeoForge version: %@ → Minecraft %@", version, gameVersion);
             }
         }
         
-        // Final fallback
+        // Fallback if we couldn't determine the version
         if (!gameVersion) {
-            // Unable to determine Minecraft version clearly
             gameVersion = @"Other";
-            NSLog(@"[ForgeInstall] Could not determine MC version for: %@", version);
+            NSLog(@"[ForgeInstall] Could not determine MC version for NeoForge: %@", version);
         }
     } else {
         // Standard Forge format: "1.16.5-36.2.39"
