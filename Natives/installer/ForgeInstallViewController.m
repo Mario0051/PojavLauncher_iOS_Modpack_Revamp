@@ -188,12 +188,12 @@
 }
 
 - (void)addVersionToList:(NSString *)version {
+    UISegmentedControl *segment = (id)self.navigationItem.titleView;
+    NSString *vendor = [segment titleForSegmentAtIndex:segment.selectedSegmentIndex];
+    
     if (![version containsString:@"-"] && ![vendor isEqualToString:@"NeoForge"]) {
         return; // Skip if no hyphen (except for NeoForge which may not have one)
     }
-    
-    UISegmentedControl *segment = (id)self.navigationItem.titleView;
-    NSString *vendor = [segment titleForSegmentAtIndex:segment.selectedSegmentIndex];
     
     NSString *gameVersion = nil;
     
