@@ -1,5 +1,5 @@
 #import "AFNetworking.h"
-#import "installer/ForgeInstallViewController.h"
+#import "ForgeInstallViewController.h"
 #import "JavaGUIViewController.h"
 #import "LauncherNavigationController.h"
 #import "MinecraftResourceDownloadTask.h"
@@ -7,6 +7,9 @@
 #import "PLProfiles.h"
 #import "UIKit+hook.h"
 #import "utils.h"
+
+// External functions from utils.h
+extern void showDialog(NSString *title, NSString *message);
 
 @implementation ModrinthAPI
 
@@ -529,8 +532,26 @@
                 NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
                 AFURLSessionManager *manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
                 
-                // Setup UI for download
-                UIViewController *currentVC = UIApplication.sharedApplication.keyWindow.rootViewController;
+                // Setup UI for download - find the root view controller without using keyWindow
+                UIViewController *currentVC = nil;
+                if (@available(iOS 13.0, *)) {
+                    NSSet<UIScene *> *connectedScenes = UIApplication.sharedApplication.connectedScenes;
+                    for (UIScene *scene in connectedScenes) {
+                        if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                            UIWindowScene *windowScene = (UIWindowScene *)scene;
+                            currentVC = windowScene.windows.firstObject.rootViewController;
+                            break;
+                        }
+                    }
+                } else {
+                    // Fallback for iOS 12 and earlier
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                    currentVC = UIApplication.sharedApplication.keyWindow.rootViewController;
+                    #pragma clang diagnostic pop
+                }
+                
+                // Find the topmost presented view controller
                 while (currentVC.presentedViewController) {
                     currentVC = currentVC.presentedViewController;
                 }
@@ -612,8 +633,26 @@
             style:UIAlertActionStyleCancel 
             handler:nil]];
         
-        // Present the alert
-        UIViewController *currentVC = UIApplication.sharedApplication.keyWindow.rootViewController;
+        // Present the alert - find the root view controller without using keyWindow
+        UIViewController *currentVC = nil;
+        if (@available(iOS 13.0, *)) {
+            NSSet<UIScene *> *connectedScenes = UIApplication.sharedApplication.connectedScenes;
+            for (UIScene *scene in connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                    UIWindowScene *windowScene = (UIWindowScene *)scene;
+                    currentVC = windowScene.windows.firstObject.rootViewController;
+                    break;
+                }
+            }
+        } else {
+            // Fallback for iOS 12 and earlier
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+            currentVC = UIApplication.sharedApplication.keyWindow.rootViewController;
+            #pragma clang diagnostic pop
+        }
+        
+        // Find the topmost presented view controller
         while (currentVC.presentedViewController) {
             currentVC = currentVC.presentedViewController;
         }
