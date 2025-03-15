@@ -98,6 +98,42 @@
     [self loadMetadataFromVendor:vendor];
 }
 
+// Helper methods for version parsing and comparison
+- (NSArray<NSString *> *)parseVersionComponents:(NSString *)version {
+    NSString *versionString = version;
+    UISegmentedControl *segment = (id)self.navigationItem.titleView;
+    NSString *vendor = [segment titleForSegmentAtIndex:segment.selectedSegmentIndex];
+    
+    // Get version numbers only
+    if ([vendor isEqualToString:@"NeoForge"]) {
+        // For NeoForge: extract the numeric parts XX.Y.ZZZ from XX.Y.ZZZ-suffix
+        NSRange hyphenRange = [version rangeOfString:@"-"];
+        if (hyphenRange.location != NSNotFound) {
+            versionString = [version substringToIndex:hyphenRange.location];
+        }
+    } else {
+        // For Forge: extract the numeric parts after the hyphen ("1.16.5-36.2.39" -> "36.2.39")
+        NSRange hyphenRange = [version rangeOfString:@"-"];
+        if (hyphenRange.location != NSNotFound) {
+            versionString = [version substringFromIndex:hyphenRange.location + 1];
+        }
+    }
+    
+    // Split into numeric components
+    NSArray<NSString *> *components = [versionString componentsSeparatedByString:@"."];
+    
+    // Return array of numeric components
+    return components;
+}
+
+- (NSString *)extractVersionSuffix:(NSString *)version {
+    NSRange hyphenRange = [version rangeOfString:@"-"];
+    if (hyphenRange.location != NSNotFound && hyphenRange.location < version.length - 1) {
+        return [version substringFromIndex:hyphenRange.location + 1];
+    }
+    return @"";
+}
+
 #pragma mark UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -198,35 +234,47 @@
     NSString *gameVersion = nil;
     
     if ([vendor isEqualToString:@"NeoForge"]) {
-        // Extract the first part before any hyphen for NeoForge
-        NSString *versionBase = version;
-        NSRange hyphenRange = [version rangeOfString:@"-"];
-        if (hyphenRange.location != NSNotFound) {
-            versionBase = [version substringToIndex:hyphenRange.location];
-        }
+        // NeoForge version parsing
+        NSArray *components = [version componentsSeparatedByString:@"-"];
         
-        // Split the version parts
-        NSArray *versionParts = [versionBase componentsSeparatedByString:@"."];
-        
-        // NeoForge format: XX.Y.ZZZ where XX.Y corresponds to Minecraft 1.XX.Y
-        if (versionParts.count >= 2) {
-            // Extract just the first two components (XX.Y)
-            NSString *majorMinor = [NSString stringWithFormat:@"%@.%@", versionParts[0], versionParts[1]];
+        if (components.count > 0) {
+            // Check if this is the format without "1." prefix (e.g., "21.4.94-something")
+            NSString *firstComponent = components[0];
+            NSArray *versionParts = [firstComponent componentsSeparatedByString:@"."];
             
-            // Verify these are valid numbers
-            if ([[NSScanner scannerWithString:versionParts[0]] scanInt:NULL] && 
+            // Only process if it has multiple parts and first part is numeric
+            if (versionParts.count >= 2 && 
+                [[NSScanner scannerWithString:versionParts[0]] scanInt:NULL] && 
                 [[NSScanner scannerWithString:versionParts[1]] scanInt:NULL]) {
                 
-                // Add the "1." prefix to get proper Minecraft version
-                gameVersion = [NSString stringWithFormat:@"1.%@", majorMinor];
-                NSLog(@"[ForgeInstall] NeoForge version: %@ → Minecraft %@", version, gameVersion);
+                // Check if first component could be a Minecraft version without "1."
+                // Typically major versions will be under 30 (we don't expect MC 1.31+)
+                if ([versionParts[0] intValue] < 30) {
+                    NSString *majorMinor = [NSString stringWithFormat:@"%@.%@", versionParts[0], versionParts[1]];
+                    gameVersion = [NSString stringWithFormat:@"1.%@", majorMinor];
+                    NSLog(@"[ForgeInstall] NeoForge version: %@ → Minecraft %@", version, gameVersion);
+                }
+            }
+            
+            // Also check if the components after the first hyphen contain a MC version
+            if (!gameVersion && components.count > 1) {
+                for (NSInteger i = 1; i < components.count; i++) {
+                    NSString *component = components[i];
+                    if ([component hasPrefix:@"1."] && 
+                        [component componentsSeparatedByString:@"."].count >= 3) {
+                        gameVersion = component;
+                        NSLog(@"[ForgeInstall] Found MC version in NeoForge suffix: %@", gameVersion);
+                        break;
+                    }
+                }
             }
         }
         
-        // Fallback if we couldn't determine the version
+        // Final fallback
         if (!gameVersion) {
+            // Unable to determine Minecraft version clearly
             gameVersion = @"Other";
-            NSLog(@"[ForgeInstall] Could not determine MC version for NeoForge: %@", version);
+            NSLog(@"[ForgeInstall] Could not determine MC version for: %@", version);
         }
     } else {
         // Standard Forge format: "1.16.5-36.2.39"
@@ -309,61 +357,38 @@
         for (NSUInteger i = 0; i < self.forgeList.count; i++) {
             NSMutableArray *sectionVersions = self.forgeList[i];
             
-            if ([vendor isEqualToString:@"NeoForge"]) {
-                // Sort NeoForge versions by comparing their numeric components
-                [sectionVersions sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
-                    // Extract build numbers for comparison
-                    NSArray *parts1 = [version1 componentsSeparatedByString:@"-"];
-                    NSArray *parts2 = [version2 componentsSeparatedByString:@"-"];
+            // Universal version sorting that works for both Forge and NeoForge
+            [sectionVersions sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
+                // Parse version components from the version strings
+                NSArray *versionComponents1 = [self parseVersionComponents:version1];
+                NSArray *versionComponents2 = [self parseVersionComponents:version2];
+                
+                // Compare each component numerically
+                NSInteger minLength = MIN(versionComponents1.count, versionComponents2.count);
+                for (NSInteger j = 0; j < minLength; j++) {
+                    NSInteger num1 = [versionComponents1[j] integerValue];
+                    NSInteger num2 = [versionComponents2[j] integerValue];
                     
-                    if (parts1.count > 0 && parts2.count > 0) {
-                        NSArray *buildParts1 = [parts1[0] componentsSeparatedByString:@"."];
-                        NSArray *buildParts2 = [parts2[0] componentsSeparatedByString:@"."];
-                        
-                        // Compare build numbers starting from highest significance
-                        for (NSInteger j = 0; j < MIN(buildParts1.count, buildParts2.count); j++) {
-                            NSInteger num1 = [buildParts1[j] integerValue];
-                            NSInteger num2 = [buildParts2[j] integerValue];
-                            if (num1 != num2) {
-                                return num2 - num1; // Higher numbers first (descending)
-                            }
-                        }
-                        
-                        // If one has more components than the other
-                        return buildParts2.count - buildParts1.count;
+                    if (num1 != num2) {
+                        return num2 - num1; // Higher values first (newer versions)
                     }
-                    
-                    return [version2 compare:version1]; // Fallback to string comparison
-                }];
-            } else {
-                // Traditional Forge version sorting
-                [sectionVersions sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
-                    NSRange range1 = [version1 rangeOfString:@"-"];
-                    NSRange range2 = [version2 rangeOfString:@"-"];
-                    
-                    if (range1.location != NSNotFound && range2.location != NSNotFound) {
-                        NSString *forgeVersion1 = [version1 substringFromIndex:range1.location + 1];
-                        NSString *forgeVersion2 = [version2 substringFromIndex:range2.location + 1];
-                        
-                        NSArray *parts1 = [forgeVersion1 componentsSeparatedByString:@"."];
-                        NSArray *parts2 = [forgeVersion2 componentsSeparatedByString:@"."];
-                        
-                        // Compare each component
-                        for (NSInteger j = 0; j < MIN(parts1.count, parts2.count); j++) {
-                            NSInteger num1 = [parts1[j] integerValue];
-                            NSInteger num2 = [parts2[j] integerValue];
-                            if (num1 != num2) {
-                                return num2 - num1; // Higher numbers first (descending)
-                            }
-                        }
-                        
-                        // If one has more components than the other
-                        return parts2.count - parts1.count;
-                    }
-                    
-                    return [version2 compare:version1]; // Fallback to string comparison
-                }];
-            }
+                }
+                
+                // If they match up to this point, longer version is usually newer
+                if (versionComponents1.count != versionComponents2.count) {
+                    return versionComponents2.count - versionComponents1.count;
+                }
+                
+                // Final fallback - handle any suffix sorting (e.g., beta, alpha)
+                NSString *suffix1 = [self extractVersionSuffix:version1];
+                NSString *suffix2 = [self extractVersionSuffix:version2];
+                
+                if (suffix1.length == 0 && suffix2.length > 0) return NSOrderedAscending; // Release before beta/etc
+                if (suffix1.length > 0 && suffix2.length == 0) return NSOrderedDescending;
+                
+                // Both have suffixes or neither has - compare normally
+                return [version2 compare:version1];
+            }];
         }
         
         // No automatic expansion of any section
