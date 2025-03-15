@@ -1,5 +1,5 @@
 #import "AFNetworking.h"
-#import "installer/ForgeInstallViewController.h"
+#import "ForgeInstallViewController.h"
 #import "JavaGUIViewController.h"
 #import "LauncherNavigationController.h"
 #import "MinecraftResourceDownloadTask.h"
@@ -584,44 +584,35 @@ extern void showDialog(NSString *title, NSString *message);
                             return;
                         }
                         
-                        // Launch the installer
-                        JavaGUIViewController *vc = [[JavaGUIViewController alloc] init];
-                        vc.filepath = outPath;
-                        [vc setHitEnterAfterWindowShown:YES];
-                        
-                        if (!vc.requiredJavaVersion) {
-                            if (navVC) {
-                                [navVC setInteractionEnabled:YES forDownloading:NO];
-                            }
-                            showDialog(@"Error", @"Could not determine required Java version for installer");
-                            return;
-                        }
-                        
-                        // Configure the view controller
-                        vc.modalPresentationStyle = UIModalPresentationFullScreen;
+                        // Launch the installer - no need to create JavaGUIViewController directly
+                        // We'll use the navigation controller's method instead
                         
                         // Hide navigation UI
                         if (navVC) {
                             [navVC setInteractionEnabled:YES forDownloading:NO];
                             navVC.progressViewMain.hidden = YES;
                             navVC.progressText.text = nil;
+                            
+                            // Show a message that the app will need to be restarted
+                            UIAlertController *restartAlert = [UIAlertController 
+                                alertControllerWithTitle:@"Restart Required"
+                                message:[NSString stringWithFormat:@"After %@ installation completes, please restart the app to finalize the installation.", vendor]
+                                preferredStyle:UIAlertControllerStyleAlert];
+                            
+                            [restartAlert addAction:[UIAlertAction 
+                                actionWithTitle:@"OK" 
+                                style:UIAlertActionStyleDefault 
+                                handler:^(UIAlertAction * _Nonnull action) {
+                                    // Use the LauncherNavigationController's method to launch the JAR file
+                                    // This ensures proper JIT enablement and Java environment setup
+                                    [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
+                                }]];
+                            
+                            [currentVC presentViewController:restartAlert animated:YES completion:nil];
+                        } else {
+                            // Fallback if we couldn't get the navigation controller
+                            showDialog(@"Error", @"Could not locate navigation controller for installer launch");
                         }
-                        
-                        // Show a message that the app will need to be restarted
-                        UIAlertController *restartAlert = [UIAlertController 
-                            alertControllerWithTitle:@"Restart Required"
-                            message:[NSString stringWithFormat:@"After %@ installation completes, please restart the app to finalize the installation.", vendor]
-                            preferredStyle:UIAlertControllerStyleAlert];
-                        
-                        [restartAlert addAction:[UIAlertAction 
-                            actionWithTitle:@"OK" 
-                            style:UIAlertActionStyleDefault 
-                            handler:^(UIAlertAction * _Nonnull action) {
-                                // Present the installer
-                                [currentVC presentViewController:vc animated:YES completion:nil];
-                            }]];
-                        
-                        [currentVC presentViewController:restartAlert animated:YES completion:nil];
                     });
                 }];
                 
