@@ -1,6 +1,12 @@
+#import "AFNetworking.h"
+#import "ForgeInstallViewController.h"
+#import "JavaGUIViewController.h"
+#import "LauncherNavigationController.h"
 #import "MinecraftResourceDownloadTask.h"
 #import "ModrinthAPI.h"
 #import "PLProfiles.h"
+#import "UIKit+hook.h"
+#import "utils.h"
 
 @implementation ModrinthAPI
 
@@ -444,6 +450,8 @@
     }
     downloader.metadata[@"isModpackInstall"] = @YES;
     downloader.metadata[@"allTasksComplete"] = @YES;
+    downloader.metadata[@"forgeDependencies"] = indexDict[@"dependencies"]; // Store for later use
+    downloader.metadata[@"profileName"] = profileName;
     
     // Ensure progress is marked as complete
     downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
@@ -456,6 +464,161 @@
     
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
+    
+    // Check for Forge after a short delay to ensure the UI has updated
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Now check if Forge is required and needs to be installed
+        [self checkAndInstallForge:downloader withDependencies:indexDict[@"dependencies"] profileName:profileName];
+    });
+}
+
+- (void)checkAndInstallForge:(MinecraftResourceDownloadTask *)downloader 
+            withDependencies:(NSDictionary *)dependencies 
+                 profileName:(NSString *)profileName {
+    // Check if the modpack requires Forge/NeoForge
+    NSString *forgeVersion = dependencies[@"forge"];
+    NSString *neoForgeVersion = dependencies[@"neoforge"];
+    NSString *minecraftVersion = dependencies[@"minecraft"];
+    
+    if (!forgeVersion && !neoForgeVersion) {
+        // No Forge dependency, nothing to install
+        return;
+    }
+    
+    NSString *vendor = forgeVersion ? @"Forge" : @"NeoForge";
+    NSString *version = forgeVersion ?: neoForgeVersion;
+    NSString *fullVersion = [NSString stringWithFormat:@"%@-%@", minecraftVersion, version];
+    
+    // Check if this Forge version is already installed
+    NSString *versionPath = [NSString stringWithFormat:@"%s/versions/%@", getenv("POJAV_GAME_DIR"), fullVersion];
+    if ([NSFileManager.defaultManager fileExistsAtPath:versionPath]) {
+        NSLog(@"[ModrinthAPI] %@ version %@ is already installed", vendor, fullVersion);
+        return;
+    }
+    
+    // Need to present this on the main thread after the download is complete
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Show alert to user
+        UIAlertController *alert = [UIAlertController 
+            alertControllerWithTitle:[NSString stringWithFormat:@"%@ Installation Required", vendor]
+            message:[NSString stringWithFormat:@"This modpack requires %@ %@, which is not yet installed. Installing it will require you to restart the app after it is finished. Would you like to install it now?", vendor, fullVersion]
+            preferredStyle:UIAlertControllerStyleAlert];
+            
+        [alert addAction:[UIAlertAction 
+            actionWithTitle:@"Yes" 
+            style:UIAlertActionStyleDefault 
+            handler:^(UIAlertAction * _Nonnull action) {
+                // Get the correct endpoint info
+                NSDictionary *endpoints = @{
+                    @"Forge": @{
+                        @"installer": @"https://maven.minecraftforge.net/net/minecraftforge/forge/%1$@/forge-%1$@-installer.jar",
+                        @"metadata": @"https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
+                    },
+                    @"NeoForge": @{
+                        @"installer": @"https://maven.neoforged.net/net/neoforged/forge/%1$@/forge-%1$@-installer.jar",
+                        @"metadata": @"https://maven.neoforged.net/releases/net/neoforged/forge/maven-metadata.xml"
+                    }
+                };
+                
+                // Download the installer
+                NSString *installerUrl = [NSString stringWithFormat:endpoints[vendor][@"installer"], fullVersion];
+                NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"forge-installer.jar"];
+                NSLog(@"[ModrinthAPI] Downloading %@ installer from: %@", vendor, installerUrl);
+                
+                // Create download manager
+                NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+                AFURLSessionManager *manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
+                
+                // Setup UI for download
+                UIViewController *currentVC = UIApplication.sharedApplication.keyWindow.rootViewController;
+                while (currentVC.presentedViewController) {
+                    currentVC = currentVC.presentedViewController;
+                }
+                
+                // Add progress indicator
+                LauncherNavigationController *navVC = nil;
+                if ([currentVC isKindOfClass:UISplitViewController.class]) {
+                    navVC = (LauncherNavigationController *)((UISplitViewController *)currentVC).viewControllers[1];
+                    [navVC setInteractionEnabled:NO forDownloading:YES];
+                    navVC.progressText.text = [NSString stringWithFormat:@"Downloading %@ installer...", vendor];
+                    navVC.progressViewMain.hidden = NO;
+                }
+                
+                // Create download request
+                NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:installerUrl]];
+                NSURLSessionDownloadTask *downloadTask = [manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull progress) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        navVC.progressViewMain.progress = progress.fractionCompleted;
+                    });
+                } destination:^NSURL *(NSURL *targetPath, NSURLResponse *response) {
+                    [NSFileManager.defaultManager removeItemAtPath:outPath error:nil];
+                    return [NSURL fileURLWithPath:outPath];
+                } completionHandler:^(NSURLResponse *response, NSURL *filePath, NSError *error) {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        if (error) {
+                            if (navVC) {
+                                [navVC setInteractionEnabled:YES forDownloading:NO];
+                            }
+                            showDialog(@"Error", [NSString stringWithFormat:@"Failed to download %@ installer: %@", vendor, error.localizedDescription]);
+                            return;
+                        }
+                        
+                        // Launch the installer
+                        JavaGUIViewController *vc = [[JavaGUIViewController alloc] init];
+                        vc.filepath = outPath;
+                        [vc setHitEnterAfterWindowShown:YES];
+                        
+                        if (!vc.requiredJavaVersion) {
+                            if (navVC) {
+                                [navVC setInteractionEnabled:YES forDownloading:NO];
+                            }
+                            showDialog(@"Error", @"Could not determine required Java version for installer");
+                            return;
+                        }
+                        
+                        // Configure the view controller
+                        vc.modalPresentationStyle = UIModalPresentationFullScreen;
+                        
+                        // Hide navigation UI
+                        if (navVC) {
+                            [navVC setInteractionEnabled:YES forDownloading:NO];
+                            navVC.progressViewMain.hidden = YES;
+                            navVC.progressText.text = nil;
+                        }
+                        
+                        // Show a message that the app will need to be restarted
+                        UIAlertController *restartAlert = [UIAlertController 
+                            alertControllerWithTitle:@"Restart Required"
+                            message:[NSString stringWithFormat:@"After %@ installation completes, please restart the app to finalize the installation.", vendor]
+                            preferredStyle:UIAlertControllerStyleAlert];
+                        
+                        [restartAlert addAction:[UIAlertAction 
+                            actionWithTitle:@"OK" 
+                            style:UIAlertActionStyleDefault 
+                            handler:^(UIAlertAction * _Nonnull action) {
+                                // Present the installer
+                                [currentVC presentViewController:vc animated:YES completion:nil];
+                            }]];
+                        
+                        [currentVC presentViewController:restartAlert animated:YES completion:nil];
+                    });
+                }];
+                
+                [downloadTask resume];
+            }]];
+            
+        [alert addAction:[UIAlertAction 
+            actionWithTitle:@"No" 
+            style:UIAlertActionStyleCancel 
+            handler:nil]];
+        
+        // Present the alert
+        UIViewController *currentVC = UIApplication.sharedApplication.keyWindow.rootViewController;
+        while (currentVC.presentedViewController) {
+            currentVC = currentVC.presentedViewController;
+        }
+        [currentVC presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 @end
