@@ -297,26 +297,30 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     init_loadCustomJvmFlags(&margc, (const char **)margv);
     NSLog(@"[Init] Found JLI lib");
 
+    // Set up classpath 
     NSString *classpath = [NSString stringWithFormat:@"%@/*", librariesPath];
     if (launchJar) {
         classpath = [classpath stringByAppendingFormat:@":%@", launchTarget];
     }
-    margv[++margc] = "-cp";
-    margv[++margc] = classpath.UTF8String;
-    margv[++margc] = "net.kdt.pojavlaunch.PojavLauncher";
 
+    // Add different arguments depending on whether we're launching a JAR or Minecraft
     if (launchJar) {
+        // For JAR files, use the -jar option directly
         margv[++margc] = "-jar";
-    } else {
-        margv[++margc] = username.UTF8String;
-    }
-
-    if ([launchTarget isKindOfClass:NSDictionary.class]) {
-        margv[++margc] = [launchTarget[@"id"] UTF8String];
-    } else {
         margv[++margc] = [launchTarget UTF8String];
+    } else {
+        // For Minecraft, use the PojavLauncher with classpath
+        margv[++margc] = "-cp";
+        margv[++margc] = classpath.UTF8String;
+        margv[++margc] = "net.kdt.pojavlaunch.PojavLauncher";
+        margv[++margc] = username.UTF8String;
+        
+        if ([launchTarget isKindOfClass:NSDictionary.class]) {
+            margv[++margc] = [launchTarget[@"id"] UTF8String];
+        } else {
+            margv[++margc] = [launchTarget UTF8String];
+        }
     }
-    //margv[++margc] = "ghidra.GhidraRun";
 
     pJLI_Launch = (JLI_Launch_func *)dlsym(libjli, "JLI_Launch");
 
