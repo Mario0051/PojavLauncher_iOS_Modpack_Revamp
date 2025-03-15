@@ -277,17 +277,17 @@
             // Compare major version first
             NSInteger major1 = components1.count > 0 ? [components1[0] integerValue] : 0;
             NSInteger major2 = components2.count > 0 ? [components2[0] integerValue] : 0;
-            if (major1 != major2) return major1 - major2; // Higher major version first
+            if (major1 != major2) return major2 - major1; // Higher major version first
             
             // Compare minor version next
             NSInteger minor1 = components1.count > 1 ? [components1[1] integerValue] : 0;
             NSInteger minor2 = components2.count > 1 ? [components2[1] integerValue] : 0;
-            if (minor1 != minor2) return minor1 - minor2; // Higher minor version first
+            if (minor1 != minor2) return minor2 - minor1; // Higher minor version first
             
             // Compare patch version last
             NSInteger patch1 = components1.count > 2 ? [components1[2] integerValue] : 0;
             NSInteger patch2 = components2.count > 2 ? [components2[2] integerValue] : 0;
-            return patch1 - patch2; // Higher patch version first
+            return patch2 - patch1; // Higher patch version first
         }];
         
         // Reorder forgeList and visibilityList to match the new version order
@@ -325,15 +325,15 @@
                             NSInteger num1 = [buildParts1[j] integerValue];
                             NSInteger num2 = [buildParts2[j] integerValue];
                             if (num1 != num2) {
-                                return num1 - num2; // Higher numbers first (descending)
+                                return num2 - num1; // Higher numbers first (descending)
                             }
                         }
                         
                         // If one has more components than the other
-                        return buildParts1.count - buildParts2.count;
+                        return buildParts2.count - buildParts1.count;
                     }
                     
-                    return [version1 compare:version2]; // Fallback to string comparison
+                    return [version2 compare:version1]; // Fallback to string comparison
                 }];
             } else {
                 // Traditional Forge version sorting
@@ -353,15 +353,15 @@
                             NSInteger num1 = [parts1[j] integerValue];
                             NSInteger num2 = [parts2[j] integerValue];
                             if (num1 != num2) {
-                                return num1 - num2; // Higher numbers first (descending)
+                                return num2 - num1; // Higher numbers first (descending)
                             }
                         }
                         
                         // If one has more components than the other
-                        return parts1.count - parts2.count;
+                        return parts2.count - parts1.count;
                     }
                     
-                    return [version1 compare:version2]; // Fallback to string comparison
+                    return [version2 compare:version1]; // Fallback to string comparison
                 }];
             }
         }
