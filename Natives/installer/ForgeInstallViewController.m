@@ -368,7 +368,10 @@ typedef struct {
         return ver1.patch > ver2.patch ? NSOrderedDescending : NSOrderedAscending;
     }
     
+    // At this point, the base versions are equal (e.g., 1.20 == 1.20.0)
+    
     // If one has a pre-release and the other doesn't, the one without is greater
+    // This properly handles 1.20 vs 1.20-beta, where 1.20 is higher
     if (ver1.preRelease && !ver2.preRelease) return NSOrderedAscending;
     if (!ver1.preRelease && ver2.preRelease) return NSOrderedDescending;
     
