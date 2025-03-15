@@ -15,6 +15,7 @@
 @property(nonatomic) NSMutableArray<NSString *> *versionList;
 @property(nonatomic) NSMutableArray<NSMutableArray *> *forgeList;
 @property(nonatomic, assign) BOOL isVersionElement;
+@property(nonatomic, strong) NSMutableString *currentVersionValue;
 @end
 
 @implementation ForgeInstallViewController
@@ -63,6 +64,8 @@
         NSURL *url = [[NSURL alloc] initWithString:self.endpoints[vendor][@"metadata"]];
         NSXMLParser *parser = [[NSXMLParser alloc] initWithContentsOfURL:url];
         parser.delegate = self;
+        // Initialize current version value buffer
+        self.currentVersionValue = [NSMutableString new];
         if (![parser parse]) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 showDialog(localize(@"Error", nil), parser.parserError.localizedDescription);
@@ -202,7 +205,7 @@
 #pragma mark NSXMLParser
 
 - (void)parserDidEndDocument:(NSXMLParser *)unused {
-        dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
         [self switchToReadyState];
         [self.tableView reloadData];
     });
@@ -210,11 +213,24 @@
 
 - (void)parser:(NSXMLParser *)parser didStartElement:(NSString *)elementName namespaceURI:(NSString *)namespaceURI qualifiedName:(NSString *)qualifiedName attributes:(NSDictionary *)attributeDict {
     self.isVersionElement = [elementName isEqualToString:@"version"];
+    if (self.isVersionElement) {
+        // Clear the buffer at the start of a version element
+        [self.currentVersionValue setString:@""];
+    }
 }
 
-- (void)parser:(NSXMLParser *)parser foundCharacters:(NSString *)version {
+- (void)parser:(NSXMLParser *)parser foundCharacters:(NSString *)string {
     if (self.isVersionElement) {
-        [self addVersionToList:version];
+        // Append to buffer instead of processing immediately
+        [self.currentVersionValue appendString:string];
+    }
+}
+
+- (void)parser:(NSXMLParser *)parser didEndElement:(NSString *)elementName namespaceURI:(NSString *)namespaceURI qualifiedName:(NSString *)qName {
+    if ([elementName isEqualToString:@"version"]) {
+        // Process the complete version string when the element ends
+        [self addVersionToList:[self.currentVersionValue copy]];
+        self.isVersionElement = NO;
     }
 }
 
