@@ -124,49 +124,54 @@
 #pragma mark - Version Parsing and Management
 
 - (NSString *)extractMinecraftVersionFromForgeVersion:(NSString *)version {
-    if (![version containsString:@"-"]) {
-        return @"Other";
-    }
-    
-    NSRange hyphenRange = [version rangeOfString:@"-"];
-    return [version substringToIndex:hyphenRange.location];
-}
-
-- (NSString *)extractMinecraftVersionFromNeoForgeVersion:(NSString *)version {
-    // Get the part before any hyphen first
-    NSString *versionBase = version;
+    // Handle Forge versions in format "1.X.Y-Z.W.V" or "1.X-Z.W.V"
     NSRange hyphenRange = [version rangeOfString:@"-"];
     if (hyphenRange.location != NSNotFound) {
-        versionBase = [version substringToIndex:hyphenRange.location];
+        return [version substringToIndex:hyphenRange.location];
     }
     
-    // Split into components
-    NSArray *components = [versionBase componentsSeparatedByString:@"."];
-    
-    // NeoForge usually has format XX.Y.ZZ where XX.Y corresponds to 1.XX.Y in Minecraft
-    if (components.count >= 2) {
-        NSString *major = components[0];
-        NSString *minor = components[1];
-        
-        // Validate these are numbers
-        if ([self isNumeric:major] && [self isNumeric:minor]) {
-            // Check if it's likely a Minecraft version (major version < 30)
-            if ([major intValue] < 30) {
-                return [NSString stringWithFormat:@"1.%@.%@", major, minor];
+    // For older Forge versions that don't follow the standard format
+    NSRange dotRange = [version rangeOfString:@"."];
+    if (dotRange.location != NSNotFound) {
+        NSString *majorPart = [version substringToIndex:dotRange.location];
+        if ([self isNumeric:majorPart]) {
+            if (majorPart.intValue < 2) {  // Likely a Minecraft version starting with 1.X
+                return version;
             }
         }
     }
     
-    // Fallback: Also check if the full version contains a standard Minecraft version format
-    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"1\\.[0-9]+\\.[0-9]+" options:0 error:nil];
+    return @"Unknown";
+}
+
+- (NSString *)extractMinecraftVersionFromNeoForgeVersion:(NSString *)version {
+    // First try to extract a standard Minecraft version like "1.X.Y" from the string
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"1\\.[0-9]+(?:\\.[0-9]+)?" options:0 error:nil];
     NSTextCheckingResult *match = [regex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
     
     if (match) {
         return [version substringWithRange:match.range];
     }
     
-    // Last resort
-    return @"Other";
+    // For NeoForge's new versioning scheme (e.g., "20.4.72-beta" for MC 1.20.4)
+    NSArray *components = [version componentsSeparatedByString:@"."];
+    if (components.count >= 2) {
+        NSString *majorComponent = components[0];
+        
+        // Check if this is likely a major version number (below 30)
+        if ([self isNumeric:majorComponent] && [majorComponent intValue] < 30) {
+            NSString *minorComponent = components[1];
+            
+            // Format as proper Minecraft version: "20.4" -> "1.20.4"
+            if ([self isNumeric:minorComponent]) {
+                return [NSString stringWithFormat:@"1.%@.%@", majorComponent, minorComponent];
+            } else {
+                return [NSString stringWithFormat:@"1.%@", majorComponent];
+            }
+        }
+    }
+    
+    return @"Unknown";
 }
 
 - (BOOL)isNumeric:(NSString *)string {
@@ -175,32 +180,111 @@
 }
 
 - (NSArray *)extractVersionComponents:(NSString *)version {
+    NSMutableArray *components = [NSMutableArray new];
+    
     if ([self.currentVendor isEqualToString:@"NeoForge"]) {
-        // For NeoForge, get the build number parts (before any hyphen)
+        // For NeoForge, get the version part (before any qualifier like "beta")
         NSString *versionBase = version;
-        NSRange hyphenRange = [version rangeOfString:@"-"];
-        if (hyphenRange.location != NSNotFound) {
-            versionBase = [version substringToIndex:hyphenRange.location];
+        NSRange qualifierRange = [version rangeOfString:@"-"];
+        if (qualifierRange.location != NSNotFound) {
+            versionBase = [version substringToIndex:qualifierRange.location];
         }
         
-        return [versionBase componentsSeparatedByString:@"."];
+        NSArray *parts = [versionBase componentsSeparatedByString:@"."];
+        for (NSString *part in parts) {
+            if ([self isNumeric:part]) {
+                [components addObject:@([part intValue])];
+            } else {
+                [components addObject:part];
+            }
+        }
     } else {
-        // For Forge, get everything after the hyphen: "1.16.5-36.2.39" → "36.2.39"
+        // For Forge, handle the format "1.X.Y-Z.W.V"
         NSRange hyphenRange = [version rangeOfString:@"-"];
         if (hyphenRange.location != NSNotFound && hyphenRange.location < version.length - 1) {
+            // Get everything after the hyphen (forge version number)
             NSString *forgeVersion = [version substringFromIndex:hyphenRange.location + 1];
-            return [forgeVersion componentsSeparatedByString:@"."];
+            NSArray *parts = [forgeVersion componentsSeparatedByString:@"."];
+            
+            for (NSString *part in parts) {
+                if ([self isNumeric:part]) {
+                    [components addObject:@([part intValue])];
+                } else {
+                    [components addObject:part];
+                }
+            }
         }
-        return @[];
+    }
+    
+    return components;
+}
+
+- (NSString *)getDisplayName:(NSString *)version {
+    if ([self.currentVendor isEqualToString:@"NeoForge"]) {
+        // For NeoForge, format as "NeoForge X.Y.Z for Minecraft 1.A.B"
+        NSString *mcVersion = [self extractMinecraftVersionFromNeoForgeVersion:version];
+        
+        // Remove any Minecraft version embedded in the NeoForge version string
+        NSString *cleanVersion = version;
+        NSRange mcRange = [version rangeOfString:mcVersion];
+        if (mcRange.location != NSNotFound) {
+            cleanVersion = [version stringByReplacingCharactersInRange:mcRange withString:@""];
+            cleanVersion = [cleanVersion stringByReplacingOccurrencesOfString:@"--" withString:@"-"];
+            if ([cleanVersion hasPrefix:@"-"]) {
+                cleanVersion = [cleanVersion substringFromIndex:1];
+            }
+            if ([cleanVersion hasSuffix:@"-"]) {
+                cleanVersion = [cleanVersion substringToIndex:cleanVersion.length - 1];
+            }
+        }
+        
+        // If version is empty after cleanup, just use original
+        if (cleanVersion.length == 0) {
+            cleanVersion = version;
+        }
+        
+        if (![mcVersion isEqualToString:@"Unknown"]) {
+            return [NSString stringWithFormat:@"%@ (Minecraft %@)", cleanVersion, mcVersion];
+        } else {
+            return cleanVersion;
+        }
+    } else {
+        // For Forge, format as "Forge Z.W.V for Minecraft 1.X.Y"
+        NSString *mcVersion = [self extractMinecraftVersionFromForgeVersion:version];
+        NSRange hyphenRange = [version rangeOfString:@"-"];
+        
+        if (hyphenRange.location != NSNotFound && ![mcVersion isEqualToString:@"Unknown"]) {
+            NSString *forgeVersion = [version substringFromIndex:hyphenRange.location + 1];
+            return [NSString stringWithFormat:@"%@ (Minecraft %@)", forgeVersion, mcVersion];
+        } else {
+            return version;
+        }
     }
 }
 
-- (NSString *)extractSuffix:(NSString *)version {
-    NSRange hyphenRange = [version rangeOfString:@"-"];
-    if (hyphenRange.location != NSNotFound && hyphenRange.location < version.length - 1) {
-        return [version substringFromIndex:hyphenRange.location + 1];
+- (NSString *)getVersionQualifier:(NSString *)version {
+    // Extract qualifiers like "beta", "alpha", "recommended", etc.
+    NSRange betaRange = [version rangeOfString:@"-beta" options:NSCaseInsensitiveSearch];
+    if (betaRange.location != NSNotFound) {
+        return @"beta";
     }
-    return @"";
+    
+    NSRange alphaRange = [version rangeOfString:@"-alpha" options:NSCaseInsensitiveSearch];
+    if (alphaRange.location != NSNotFound) {
+        return @"alpha";
+    }
+    
+    NSRange rcRange = [version rangeOfString:@"-rc" options:NSCaseInsensitiveSearch];
+    if (rcRange.location != NSNotFound) {
+        return @"rc";
+    }
+    
+    // Check for "recommended" or "latest" by examining the full version string
+    if ([version containsString:@"recommended"] || [version containsString:@"latest"]) {
+        return @"recommended";
+    }
+    
+    return @"release"; // Default is release
 }
 
 - (void)addVersionToList:(NSString *)version {
@@ -215,16 +299,12 @@
     if ([self.currentVendor isEqualToString:@"NeoForge"]) {
         minecraftVersion = [self extractMinecraftVersionFromNeoForgeVersion:version];
     } else {
-        // For standard Forge
-        if (![version containsString:@"-"]) {
-            return; // Skip if not in expected format
-        }
         minecraftVersion = [self extractMinecraftVersionFromForgeVersion:version];
     }
     
-    // If we couldn't determine a version, skip
+    // If we couldn't determine a version, use 'Unknown' category
     if (!minecraftVersion || minecraftVersion.length == 0) {
-        return;
+        minecraftVersion = @"Unknown";
     }
     
     // Find or create section for this Minecraft version
@@ -252,21 +332,66 @@
     UITableViewHeaderFooterView *view = [self.tableView dequeueReusableHeaderFooterViewWithIdentifier:@"section"];
     if (!view) {
         view = [[UITableViewHeaderFooterView alloc] initWithReuseIdentifier:@"section"];
+        view.textLabel.font = [UIFont boldSystemFontOfSize:16];
+        
         UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tableViewDidSelectSection:)];
         [view addGestureRecognizer:tapGesture];
+        
+        // Add a disclosure indicator
+        UIImageView *disclosureIndicator = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+        disclosureIndicator.tag = 1001;
+        disclosureIndicator.tintColor = [UIColor systemGrayColor];
+        [view.contentView addSubview:disclosureIndicator];
+        
+        // Add constraints for the disclosure indicator
+        disclosureIndicator.translatesAutoresizingMaskIntoConstraints = NO;
+        [NSLayoutConstraint activateConstraints:@[
+            [disclosureIndicator.trailingAnchor constraintEqualToAnchor:view.contentView.trailingAnchor constant:-16],
+            [disclosureIndicator.centerYAnchor constraintEqualToAnchor:view.contentView.centerYAnchor]
+        ]];
     }
+    
+    // Update disclosure indicator rotation based on section state
+    UIImageView *indicator = [view viewWithTag:1001];
+    indicator.transform = self.visibilityList[section].boolValue ? 
+        CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
+    
     return view;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return self.versionList[section];
+    NSString *mcVersion = self.versionList[section];
+    
+    // Enhance the section title for better readability
+    if ([mcVersion hasPrefix:@"1."]) {
+        return [NSString stringWithFormat:@"Minecraft %@", mcVersion];
+    } else {
+        return mcVersion;
+    }
 }
 
 - (void)tableViewDidSelectSection:(UITapGestureRecognizer *)sender {
     UITableViewHeaderFooterView *view = (id)sender.view;
-    NSInteger section = [self.versionList indexOfObject:view.textLabel.text];
+    NSString *sectionTitle = view.textLabel.text;
+    
+    // Extract the actual Minecraft version from the enhanced section title
+    NSString *mcVersion = sectionTitle;
+    if ([sectionTitle hasPrefix:@"Minecraft "]) {
+        mcVersion = [sectionTitle substringFromIndex:10]; // Remove "Minecraft " prefix
+    }
+    
+    NSInteger section = [self.versionList indexOfObject:mcVersion];
     if (section != NSNotFound) {
+        // Toggle section visibility
         self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
+        
+        // Animate the disclosure indicator
+        UIImageView *indicator = [view viewWithTag:1001];
+        [UIView animateWithDuration:0.3 animations:^{
+            indicator.transform = self.visibilityList[section].boolValue ? 
+                CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
+        }];
+        
         [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationAutomatic];
     }
 }
@@ -278,17 +403,40 @@
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"cell"];
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"cell"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
 
-    cell.textLabel.text = self.forgeList[indexPath.section][indexPath.row];
+    NSString *version = self.forgeList[indexPath.section][indexPath.row];
+    cell.textLabel.text = [self getDisplayName:version];
+    
+    // Add version qualifier info as subtitle
+    NSString *qualifier = [self getVersionQualifier:version];
+    if (![qualifier isEqualToString:@"release"]) {
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ version", qualifier.capitalizedString];
+        
+        // Set color based on stability
+        if ([qualifier isEqualToString:@"recommended"]) {
+            cell.detailTextLabel.textColor = [UIColor systemGreenColor];
+        } else if ([qualifier isEqualToString:@"beta"]) {
+            cell.detailTextLabel.textColor = [UIColor systemOrangeColor];
+        } else if ([qualifier isEqualToString:@"alpha"]) {
+            cell.detailTextLabel.textColor = [UIColor systemRedColor];
+        } else {
+            cell.detailTextLabel.textColor = [UIColor systemGrayColor];
+        }
+    } else {
+        cell.detailTextLabel.text = @"Release version";
+        cell.detailTextLabel.textColor = [UIColor systemGrayColor];
+    }
+    
     return cell;
 }
 
 #pragma mark - UITableViewDelegate
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:NO];
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
     tableView.allowsSelection = NO;
 
     [self switchToLoadingState];
@@ -297,9 +445,11 @@
     UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
     cell.accessoryView = self.progressView;
 
-    NSString *jarURL = [NSString stringWithFormat:self.endpoints[self.currentVendor][@"installer"], cell.textLabel.text];
+    // Get the raw version string (not the display name)
+    NSString *versionString = self.forgeList[indexPath.section][indexPath.row];
+    NSString *jarURL = [NSString stringWithFormat:self.endpoints[self.currentVendor][@"installer"], versionString];
     NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"tmp.jar"];
-    NSDebugLog(@"[%@ Installer] Downloading %@", self.currentVendor, jarURL);
+    NSLog(@"[%@ Installer] Downloading %@", self.currentVendor, jarURL);
 
     self.afManager = [AFURLSessionManager new];
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:jarURL]];
@@ -316,7 +466,7 @@
             cell.accessoryView = nil;
             if (error) {
                 if (error.code != NSURLErrorCancelled) {
-                    NSDebugLog(@"Error: %@", error);
+                    NSLog(@"Error: %@", error);
                     showDialog(localize(@"Error", nil), error.localizedDescription);
                 }
                 [self switchToReadyState];
@@ -343,6 +493,11 @@
         
         // Sort versions within each section with newest first
         [self sortVersionsWithinSections];
+        
+        // Expand the first (newest) section by default
+        if (self.versionList.count > 0) {
+            self.visibilityList[0] = @YES;
+        }
         
         [self switchToReadyState];
         [self.tableView reloadData];
@@ -375,13 +530,13 @@
 #pragma mark - Sorting Methods
 
 - (void)sortVersionSections {
-    // Sort Minecraft versions with newest first
+    // Sort Minecraft versions semantically with newest first
     [self.versionList sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
-        // Handle "Other" category
-        if ([version1 isEqualToString:@"Other"]) return NSOrderedDescending;
-        if ([version2 isEqualToString:@"Other"]) return NSOrderedAscending;
+        // Handle special categories
+        if ([version1 isEqualToString:@"Unknown"]) return NSOrderedDescending;
+        if ([version2 isEqualToString:@"Unknown"]) return NSOrderedAscending;
         
-        return [self compareVersions:version2 to:version1]; // Reverse order for newest first
+        return [self compareMinecraftVersions:version2 to:version1]; // Reversed for newest first
     }];
     
     // Reorder section arrays to match sorted version list
@@ -406,17 +561,70 @@
         NSMutableArray *sectionVersions = self.forgeList[i];
         
         [sectionVersions sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
+            // First compare by stability/release type
+            NSString *qualifier1 = [self getVersionQualifier:version1];
+            NSString *qualifier2 = [self getVersionQualifier:version2];
+            
+            // Recommended versions first
+            if ([qualifier1 isEqualToString:@"recommended"] && ![qualifier2 isEqualToString:@"recommended"]) {
+                return NSOrderedAscending;
+            } 
+            if (![qualifier1 isEqualToString:@"recommended"] && [qualifier2 isEqualToString:@"recommended"]) {
+                return NSOrderedDescending;
+            }
+            
+            // Then stable releases before pre-releases
+            BOOL isStable1 = [qualifier1 isEqualToString:@"release"];
+            BOOL isStable2 = [qualifier2 isEqualToString:@"release"];
+            
+            if (isStable1 && !isStable2) {
+                return NSOrderedAscending;
+            }
+            if (!isStable1 && isStable2) {
+                return NSOrderedDescending;
+            }
+            
+            // Pre-release order: rc > beta > alpha
+            if (![qualifier1 isEqualToString:qualifier2]) {
+                if ([qualifier1 isEqualToString:@"rc"]) return NSOrderedAscending;
+                if ([qualifier2 isEqualToString:@"rc"]) return NSOrderedDescending;
+                if ([qualifier1 isEqualToString:@"beta"]) return NSOrderedAscending;
+                if ([qualifier2 isEqualToString:@"beta"]) return NSOrderedDescending;
+            }
+            
+            // Finally compare version numbers
             NSArray *components1 = [self extractVersionComponents:version1];
             NSArray *components2 = [self extractVersionComponents:version2];
             
-            // Compare each component
+            // Compare each numeric component
             NSInteger minComponents = MIN(components1.count, components2.count);
+            
             for (NSInteger j = 0; j < minComponents; j++) {
-                NSInteger num1 = [components1[j] integerValue];
-                NSInteger num2 = [components2[j] integerValue];
+                id comp1 = components1[j];
+                id comp2 = components2[j];
                 
-                if (num1 != num2) {
-                    return num2 - num1; // Higher numbers first
+                // If both are numbers, compare numerically
+                if ([comp1 isKindOfClass:[NSNumber class]] && [comp2 isKindOfClass:[NSNumber class]]) {
+                    NSInteger num1 = [comp1 integerValue];
+                    NSInteger num2 = [comp2 integerValue];
+                    
+                    if (num1 != num2) {
+                        return num2 - num1; // Higher numbers first (newest)
+                    }
+                } 
+                // If one is a number and one is a string, number comes first
+                else if ([comp1 isKindOfClass:[NSNumber class]] && ![comp2 isKindOfClass:[NSNumber class]]) {
+                    return NSOrderedAscending;
+                }
+                else if (![comp1 isKindOfClass:[NSNumber class]] && [comp2 isKindOfClass:[NSNumber class]]) {
+                    return NSOrderedDescending;
+                }
+                // If both are strings, compare lexicographically
+                else {
+                    NSComparisonResult result = [comp2 compare:comp1];
+                    if (result != NSOrderedSame) {
+                        return result;
+                    }
                 }
             }
             
@@ -425,40 +633,13 @@
                 return components2.count - components1.count;
             }
             
-            // Fallback to suffix comparison (release vs beta/alpha)
-            NSString *suffix1 = [self extractSuffix:version1];
-            NSString *suffix2 = [self extractSuffix:version2];
-            
-            // Release versions (no suffix) come before pre-release versions
-            BOOL isRelease1 = [self isReleaseVersion:suffix1];
-            BOOL isRelease2 = [self isReleaseVersion:suffix2];
-            
-            if (isRelease1 && !isRelease2) return NSOrderedAscending;
-            if (!isRelease1 && isRelease2) return NSOrderedDescending;
-            
-            // Both release or both pre-release, compare normally
+            // Fallback to direct string comparison
             return [version2 compare:version1];
         }];
     }
 }
 
-- (BOOL)isReleaseVersion:(NSString *)suffix {
-    // Check if this is a release version (no suffix or a stable suffix)
-    if (suffix.length == 0) return YES;
-    
-    NSArray *preReleaseKeywords = @[@"alpha", @"beta", @"rc", @"pre", @"snapshot"];
-    NSString *lowerSuffix = [suffix lowercaseString];
-    
-    for (NSString *keyword in preReleaseKeywords) {
-        if ([lowerSuffix containsString:keyword]) {
-            return NO;
-        }
-    }
-    
-    return YES;
-}
-
-- (NSComparisonResult)compareVersions:(NSString *)version1 to:(NSString *)version2 {
+- (NSComparisonResult)compareMinecraftVersions:(NSString *)version1 to:(NSString *)version2 {
     // Split versions into components
     NSArray *components1 = [version1 componentsSeparatedByString:@"."];
     NSArray *components2 = [version2 componentsSeparatedByString:@"."];
@@ -470,13 +651,13 @@
         NSInteger num2 = [components2[i] integerValue];
         
         if (num1 != num2) {
-            return num1 > num2 ? NSOrderedAscending : NSOrderedDescending;
+            return num1 > num2 ? NSOrderedDescending : NSOrderedAscending;
         }
     }
     
-    // If equal so far, more components usually means newer
+    // If equal so far, more components usually means newer (e.g. 1.19.4 > 1.19)
     if (components1.count != components2.count) {
-        return components1.count > components2.count ? NSOrderedAscending : NSOrderedDescending;
+        return components1.count > components2.count ? NSOrderedDescending : NSOrderedAscending;
     }
     
     // Exactly equal
