@@ -160,7 +160,11 @@ extern void showDialog(NSString *title, NSString *message);
         
         NSString *url = [downloadURLs firstObject];
         NSString *sha = indexFile[@"hashes"][@"sha1"];
-        NSString *path = [destPath stringByAppendingPathComponent:indexFile[@"path"]];
+        
+        // Ensure the path is correctly constructed relative to the destPath
+        NSString *relativePath = indexFile[@"path"];
+        NSString *path = [destPath stringByAppendingPathComponent:relativePath];
+        
         NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
         
         // Create directory structure if needed
@@ -171,7 +175,7 @@ extern void showDialog(NSString *title, NSString *message);
                                                        error:nil];
         
         // Create a display name that includes more path information
-        NSString *displayName = indexFile[@"path"];
+        NSString *displayName = [NSString stringWithFormat:@"Downloading %@", relativePath];
         NSLog(@"[ModrinthAPI] Preparing to download: %@ to %@", displayName, path);
         
         // Create unique ID for tracking retries
@@ -180,7 +184,7 @@ extern void showDialog(NSString *title, NSString *message);
         // Create success callback that decrements pending downloads and checks for completion
         void(^fileSuccess)(void) = ^{
             pendingDownloads--;
-            NSLog(@"[ModrinthAPI] Download completed: %@", displayName);
+            NSLog(@"[ModrinthAPI] Download completed: %@", relativePath);
             
             // If all downloads are complete, proceed to extraction
             if (pendingDownloads == 0) {
@@ -196,7 +200,7 @@ extern void showDialog(NSString *title, NSString *message);
             
             if (!retryCount || retryCount.intValue < 1) {
                 // Log retry attempt
-                NSLog(@"[ModrinthAPI] Retrying download for %@ after failure: %@", displayName, error.localizedDescription);
+                NSLog(@"[ModrinthAPI] Retrying download for %@ after failure: %@", relativePath, error.localizedDescription);
                 
                 // Mark this file as retried
                 retryMap[downloadID] = @(retryCount ? retryCount.intValue + 1 : 1);
@@ -210,7 +214,7 @@ extern void showDialog(NSString *title, NSString *message);
                                                                             success:fileSuccess
                                                                             failure:^(NSError *retryError) {
                     // If retry also fails, decrement pending count
-                    NSLog(@"[ModrinthAPI] Retry failed for %@: %@", displayName, retryError.localizedDescription);
+                    NSLog(@"[ModrinthAPI] Retry failed for %@: %@", relativePath, retryError.localizedDescription);
                     pendingDownloads--;
                     
                     // If all downloads are complete (including failures), proceed
