@@ -325,15 +325,15 @@
                             NSInteger num1 = [buildParts1[j] integerValue];
                             NSInteger num2 = [buildParts2[j] integerValue];
                             if (num1 != num2) {
-                                return num2 - num1; // Descending order
+                                return num1 - num2; // Higher numbers first (descending)
                             }
                         }
                         
                         // If one has more components than the other
-                        return buildParts2.count - buildParts1.count;
+                        return buildParts1.count - buildParts2.count;
                     }
                     
-                    return [version2 compare:version1]; // Fallback to string comparison
+                    return [version1 compare:version2]; // Fallback to string comparison
                 }];
             } else {
                 // Traditional Forge version sorting
@@ -353,23 +353,20 @@
                             NSInteger num1 = [parts1[j] integerValue];
                             NSInteger num2 = [parts2[j] integerValue];
                             if (num1 != num2) {
-                                return num2 - num1; // Descending order
+                                return num1 - num2; // Higher numbers first (descending)
                             }
                         }
                         
                         // If one has more components than the other
-                        return parts2.count - parts1.count;
+                        return parts1.count - parts2.count;
                     }
                     
-                    return [version2 compare:version1]; // Fallback to string comparison
+                    return [version1 compare:version2]; // Fallback to string comparison
                 }];
             }
         }
         
-        // Expand the first section by default if available
-        if (self.versionList.count > 0 && self.visibilityList.count > 0) {
-            self.visibilityList[0] = @YES;
-        }
+        // No automatic expansion of any section
         
         [self switchToReadyState];
         [self.tableView reloadData];
