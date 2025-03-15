@@ -495,11 +495,15 @@ extern void showDialog(NSString *title, NSString *message);
                 // Find the root view controller - proper way to get the current UI
                 NSArray<UIWindow *> *windows = nil;
                 if (@available(iOS 13.0, *)) {
-                    windows = [UIApplication.sharedApplication.connectedScenes.allObjects filteredArrayUsingPredicate:
-                      [NSPredicate predicateWithBlock:^BOOL(UIScene *scene, NSDictionary *bindings) {
-                        return [scene isKindOfClass:[UIWindowScene class]] && 
-                               ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive;
-                    }]].firstObject.windows;
+                    UIWindowScene *windowScene = nil;
+                    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                        if ([scene isKindOfClass:[UIWindowScene class]] && 
+                            ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive) {
+                            windowScene = (UIWindowScene *)scene;
+                            break;
+                        }
+                    }
+                    windows = windowScene.windows;
                 } else {
                     windows = UIApplication.sharedApplication.windows;
                 }
@@ -583,11 +587,15 @@ extern void showDialog(NSString *title, NSString *message);
         // Find the root view controller - proper way to get the current UI
         NSArray<UIWindow *> *windows = nil;
         if (@available(iOS 13.0, *)) {
-            windows = [UIApplication.sharedApplication.connectedScenes.allObjects filteredArrayUsingPredicate:
-              [NSPredicate predicateWithBlock:^BOOL(UIScene *scene, NSDictionary *bindings) {
-                return [scene isKindOfClass:[UIWindowScene class]] && 
-                       ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive;
-            }]].firstObject.windows;
+            UIWindowScene *windowScene = nil;
+            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]] && 
+                    ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive) {
+                    windowScene = (UIWindowScene *)scene;
+                    break;
+                }
+            }
+            windows = windowScene.windows;
         } else {
             windows = UIApplication.sharedApplication.windows;
         }
