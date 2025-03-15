@@ -201,41 +201,44 @@
         // NeoForge version parsing
         NSArray *components = [version componentsSeparatedByString:@"-"];
         
-        // Handle NeoForge format where the first component omits the "1." prefix
-        // Format example: "21.4.94-something" for Minecraft 1.21.4
         if (components.count > 0) {
+            // Check if this is the format without "1." prefix (e.g., "21.4.94-something")
             NSString *firstComponent = components[0];
             NSArray *versionParts = [firstComponent componentsSeparatedByString:@"."];
             
-            // Check if it matches the pattern XX.X.YY where XX.X could be a Minecraft version without "1."
-            if (versionParts.count >= 2) {
-                NSString *majorMinor = [NSString stringWithFormat:@"%@.%@", versionParts[0], versionParts[1]];
+            // Only process if it has multiple parts and first part is numeric
+            if (versionParts.count >= 2 && 
+                [[NSScanner scannerWithString:versionParts[0]] scanInt:NULL] && 
+                [[NSScanner scannerWithString:versionParts[1]] scanInt:NULL]) {
                 
-                // Check if it looks like a version number (digits.digits)
-                NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"^\\d+\\.\\d+" options:0 error:nil];
-                NSUInteger matches = [regex numberOfMatchesInString:majorMinor options:0 range:NSMakeRange(0, majorMinor.length)];
-                
-                if (matches > 0) {
-                    // Add back the "1." prefix to form the proper Minecraft version
+                // Check if first component could be a Minecraft version without "1."
+                // Typically major versions will be under 30 (we don't expect MC 1.31+)
+                if ([versionParts[0] intValue] < 30) {
+                    NSString *majorMinor = [NSString stringWithFormat:@"%@.%@", versionParts[0], versionParts[1]];
                     gameVersion = [NSString stringWithFormat:@"1.%@", majorMinor];
-                    NSLog(@"[ForgeInstall] Identified NeoForge version: %@ as Minecraft %@", version, gameVersion);
+                    NSLog(@"[ForgeInstall] NeoForge version: %@ ➝ Minecraft %@", version, gameVersion);
+                }
+            }
+            
+            // Also check if the components after the first hyphen contain a MC version
+            if (!gameVersion && components.count > 1) {
+                for (NSInteger i = 1; i < components.count; i++) {
+                    NSString *component = components[i];
+                    if ([component hasPrefix:@"1."] && 
+                        [component componentsSeparatedByString:@"."].count >= 3) {
+                        gameVersion = component;
+                        NSLog(@"[ForgeInstall] Found MC version in NeoForge suffix: %@", gameVersion);
+                        break;
+                    }
                 }
             }
         }
         
-        // Fallback to legacy detection methods if needed
+        // Final fallback
         if (!gameVersion) {
-            // Try to find standard version format (with 1.xx.x) anywhere in the string
-            NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"1\\.[0-9]+\\.[0-9]+" options:0 error:nil];
-            NSTextCheckingResult *match = [regex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
-            
-            if (match) {
-                gameVersion = [version substringWithRange:match.range];
-            } else {
-                // Unable to determine Minecraft version clearly
-                gameVersion = @"Other";
-                NSLog(@"[ForgeInstall] Could not determine Minecraft version for: %@", version);
-            }
+            // Unable to determine Minecraft version clearly
+            gameVersion = @"Other";
+            NSLog(@"[ForgeInstall] Could not determine MC version for: %@", version);
         }
     } else {
         // Standard Forge format: "1.16.5-36.2.39"
@@ -258,14 +261,128 @@
         index = self.versionList.count - 1;
     }
     
-    // Add the version to the correct section
-    [self.forgeList[index] addObject:version];
+    // Check if this exact version is already in the list (avoid duplicates)
+    if (![self.forgeList[index] containsObject:version]) {
+        // Add the version to the correct section
+        [self.forgeList[index] addObject:version];
+    }
 }
 
 #pragma mark NSXMLParser
 
 - (void)parserDidEndDocument:(NSXMLParser *)unused {
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Sort the version lists for better organization
+        UISegmentedControl *segment = (id)self.navigationItem.titleView;
+        NSString *vendor = [segment titleForSegmentAtIndex:segment.selectedSegmentIndex];
+        
+        // Sort MC versions by semantic versioning (newest first)
+        [self.versionList sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
+            // Handle "Other" category - always at the end
+            if ([version1 isEqualToString:@"Other"]) return NSOrderedDescending;
+            if ([version2 isEqualToString:@"Other"]) return NSOrderedAscending;
+            
+            // Compare version components
+            NSArray *components1 = [version1 componentsSeparatedByString:@"."];
+            NSArray *components2 = [version2 componentsSeparatedByString:@"."];
+            
+            // Compare major version
+            NSInteger major1 = components1.count > 0 ? [components1[0] integerValue] : 0;
+            NSInteger major2 = components2.count > 0 ? [components2[0] integerValue] : 0;
+            if (major1 != major2) return major2 - major1;
+            
+            // Compare minor version
+            NSInteger minor1 = components1.count > 1 ? [components1[1] integerValue] : 0;
+            NSInteger minor2 = components2.count > 1 ? [components2[1] integerValue] : 0;
+            if (minor1 != minor2) return minor2 - minor1;
+            
+            // Compare patch version
+            NSInteger patch1 = components1.count > 2 ? [components1[2] integerValue] : 0;
+            NSInteger patch2 = components2.count > 2 ? [components2[2] integerValue] : 0;
+            return patch2 - patch1;
+        }];
+        
+        // Reorder forgeList and visibilityList to match the new version order
+        NSMutableArray *newForgeList = [NSMutableArray arrayWithCapacity:self.versionList.count];
+        NSMutableArray *newVisibilityList = [NSMutableArray arrayWithCapacity:self.versionList.count];
+        
+        for (NSString *version in self.versionList) {
+            NSUInteger oldIndex = [self.versionList indexOfObject:version];
+            if (oldIndex < self.forgeList.count) {
+                [newForgeList addObject:self.forgeList[oldIndex]];
+                [newVisibilityList addObject:self.visibilityList[oldIndex]];
+            }
+        }
+        
+        self.forgeList = newForgeList;
+        self.visibilityList = newVisibilityList;
+        
+        // For each section, sort the Forge/NeoForge versions (newest first)
+        for (NSUInteger i = 0; i < self.forgeList.count; i++) {
+            NSMutableArray *sectionVersions = self.forgeList[i];
+            
+            if ([vendor isEqualToString:@"NeoForge"]) {
+                // Sort NeoForge versions by comparing their numeric components
+                [sectionVersions sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
+                    // Extract build numbers for comparison
+                    NSArray *parts1 = [version1 componentsSeparatedByString:@"-"];
+                    NSArray *parts2 = [version2 componentsSeparatedByString:@"-"];
+                    
+                    if (parts1.count > 0 && parts2.count > 0) {
+                        NSArray *buildParts1 = [parts1[0] componentsSeparatedByString:@"."];
+                        NSArray *buildParts2 = [parts2[0] componentsSeparatedByString:@"."];
+                        
+                        // Compare build numbers starting from highest significance
+                        for (NSInteger j = 0; j < MIN(buildParts1.count, buildParts2.count); j++) {
+                            NSInteger num1 = [buildParts1[j] integerValue];
+                            NSInteger num2 = [buildParts2[j] integerValue];
+                            if (num1 != num2) {
+                                return num2 - num1; // Descending order
+                            }
+                        }
+                        
+                        // If one has more components than the other
+                        return buildParts2.count - buildParts1.count;
+                    }
+                    
+                    return [version2 compare:version1]; // Fallback to string comparison
+                }];
+            } else {
+                // Traditional Forge version sorting
+                [sectionVersions sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
+                    NSRange range1 = [version1 rangeOfString:@"-"];
+                    NSRange range2 = [version2 rangeOfString:@"-"];
+                    
+                    if (range1.location != NSNotFound && range2.location != NSNotFound) {
+                        NSString *forgeVersion1 = [version1 substringFromIndex:range1.location + 1];
+                        NSString *forgeVersion2 = [version2 substringFromIndex:range2.location + 1];
+                        
+                        NSArray *parts1 = [forgeVersion1 componentsSeparatedByString:@"."];
+                        NSArray *parts2 = [forgeVersion2 componentsSeparatedByString:@"."];
+                        
+                        // Compare each component
+                        for (NSInteger j = 0; j < MIN(parts1.count, parts2.count); j++) {
+                            NSInteger num1 = [parts1[j] integerValue];
+                            NSInteger num2 = [parts2[j] integerValue];
+                            if (num1 != num2) {
+                                return num2 - num1; // Descending order
+                            }
+                        }
+                        
+                        // If one has more components than the other
+                        return parts2.count - parts1.count;
+                    }
+                    
+                    return [version2 compare:version1]; // Fallback to string comparison
+                }];
+            }
+        }
+        
+        // Expand the first section by default if available
+        if (self.versionList.count > 0 && self.visibilityList.count > 0) {
+            self.visibilityList[0] = @YES;
+        }
+        
         [self switchToReadyState];
         [self.tableView reloadData];
     });
