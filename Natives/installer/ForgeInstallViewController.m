@@ -274,20 +274,20 @@
             NSArray *components1 = [version1 componentsSeparatedByString:@"."];
             NSArray *components2 = [version2 componentsSeparatedByString:@"."];
             
-            // Compare major version
+            // Compare major version first
             NSInteger major1 = components1.count > 0 ? [components1[0] integerValue] : 0;
             NSInteger major2 = components2.count > 0 ? [components2[0] integerValue] : 0;
-            if (major1 != major2) return major2 - major1;
+            if (major1 != major2) return major1 - major2; // Higher major version first
             
-            // Compare minor version
+            // Compare minor version next
             NSInteger minor1 = components1.count > 1 ? [components1[1] integerValue] : 0;
             NSInteger minor2 = components2.count > 1 ? [components2[1] integerValue] : 0;
-            if (minor1 != minor2) return minor2 - minor1;
+            if (minor1 != minor2) return minor1 - minor2; // Higher minor version first
             
-            // Compare patch version
+            // Compare patch version last
             NSInteger patch1 = components1.count > 2 ? [components1[2] integerValue] : 0;
             NSInteger patch2 = components2.count > 2 ? [components2[2] integerValue] : 0;
-            return patch2 - patch1;
+            return patch1 - patch2; // Higher patch version first
         }];
         
         // Reorder forgeList and visibilityList to match the new version order
