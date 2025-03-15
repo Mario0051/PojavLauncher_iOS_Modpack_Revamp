@@ -137,6 +137,9 @@ extern void showDialog(NSString *title, NSString *message);
     }
     downloader.metadata[@"retryMap"] = [NSMutableDictionary dictionary];
     
+    // Store the modpack dependencies for later use in Forge/NeoForge installation
+    downloader.metadata[@"modpackDependencies"] = indexDict[@"dependencies"];
+    
     downloader.progress.totalUnitCount = [files count];
     
     // Track pending downloads to ensure we complete properly
@@ -409,7 +412,6 @@ extern void showDialog(NSString *title, NSString *message);
     }
     downloader.metadata[@"isModpackInstall"] = @YES;
     downloader.metadata[@"allTasksComplete"] = @YES;
-    downloader.metadata[@"forgeDependencies"] = indexDict[@"dependencies"]; // Store for later use
     downloader.metadata[@"profileName"] = profileName;
     
     // Ensure progress is marked as complete
@@ -424,11 +426,10 @@ extern void showDialog(NSString *title, NSString *message);
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
     
-    // Check for Forge after a short delay to ensure the UI has updated
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // Now check if Forge is required and needs to be installed
-        [self checkAndInstallForge:downloader withDependencies:indexDict[@"dependencies"] profileName:profileName];
-    });
+    // Check for Forge immediately
+    [self checkAndInstallForge:downloader 
+             withDependencies:indexDict[@"dependencies"] 
+                  profileName:profileName];
 }
 
 - (void)checkAndInstallForge:(MinecraftResourceDownloadTask *)downloader 
