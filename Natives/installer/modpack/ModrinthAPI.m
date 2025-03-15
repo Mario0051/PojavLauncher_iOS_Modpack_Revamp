@@ -4,6 +4,7 @@
 #import "LauncherNavigationController.h"
 #import "MinecraftResourceDownloadTask.h"
 #import "ModrinthAPI.h"
+#import "ModpackUtils.h"
 #import "PLProfiles.h"
 #import "UIKit+hook.h"
 #import "utils.h"
@@ -283,13 +284,13 @@ extern void showDialog(NSString *title, NSString *message);
     NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
     [downloader.progressList addObject:extractionProgress];
     
-    NSLog(@"[ModrinthAPI] Beginning extraction of modpack");
+    NSLog(@"[ModrinthAPI] Beginning extraction of modpack to %@", destPath);
     
-    // Extract overrides directory
+    // Extract overrides directory - this is the main content directory
     [self extractDirectoryFromArchive:archive directory:@"overrides" toPath:destPath progress:extractionProgress];
     extractionProgress.completedUnitCount = 50;
     
-    // Extract client-overrides directory
+    // Extract client-overrides directory if it exists
     [self extractDirectoryFromArchive:archive directory:@"client-overrides" toPath:destPath progress:extractionProgress];
     extractionProgress.completedUnitCount = 75;
     
@@ -324,7 +325,7 @@ extern void showDialog(NSString *title, NSString *message);
         NSURLSessionDownloadTask *task = [downloader createDownloadTask:depInfo[@"json"] 
                                                                    size:0 
                                                                     sha:nil 
-                                                                altName:nil 
+                                                                altName:@"Downloading dependency JSON..."
                                                                  toPath:jsonPath 
                                                                 success:jsonSuccess
                                                                 failure:^(NSError *jsonError) {
@@ -351,63 +352,14 @@ extern void showDialog(NSString *title, NSString *message);
 
 - (void)extractDirectoryFromArchive:(UZKArchive *)archive directory:(NSString *)directoryName toPath:(NSString *)destPath progress:(NSProgress *)progress {
     NSError *error;
-    NSLog(@"[ModrinthAPI] Attempting to extract %@ directory", directoryName);
+    NSLog(@"[ModrinthAPI] Extracting %@ directory to %@", directoryName, destPath);
     
-    // Get list of files in the archive
-    NSArray<NSString *> *fileList = [archive listFilenames:&error];
+    [ModpackUtils archive:archive extractDirectory:directoryName toPath:destPath error:&error];
+    
     if (error) {
-        NSLog(@"[ModrinthAPI] Error listing files in archive: %@", error.localizedDescription);
-        return;
-    }
-    
-    // Filter list to only include files in the specified directory
-    NSString *directoryPrefix = [directoryName stringByAppendingString:@"/"];
-    NSMutableArray<NSString *> *filesToExtract = [NSMutableArray array];
-    
-    for (NSString *filename in fileList) {
-        if ([filename hasPrefix:directoryPrefix]) {
-            [filesToExtract addObject:filename];
-        }
-    }
-    
-    if (filesToExtract.count == 0) {
-        NSLog(@"[ModrinthAPI] No files found in %@ directory", directoryName);
-        return;
-    }
-    
-    NSLog(@"[ModrinthAPI] Found %lu files in %@ directory", (unsigned long)filesToExtract.count, directoryName);
-    
-    // Extract each file
-    for (NSString *filename in filesToExtract) {
-        NSString *relativePath = [filename substringFromIndex:directoryPrefix.length];
-        NSString *targetPath = [destPath stringByAppendingPathComponent:relativePath];
-        
-        // Create target directory if needed
-        NSString *targetDir = [targetPath stringByDeletingLastPathComponent];
-        [[NSFileManager defaultManager] createDirectoryAtPath:targetDir
-                                 withIntermediateDirectories:YES
-                                                  attributes:nil
-                                                       error:&error];
-        if (error) {
-            NSLog(@"[ModrinthAPI] Error creating directory %@: %@", targetDir, error.localizedDescription);
-            continue;
-        }
-        
-        // Extract file
-        NSData *fileData = [archive extractDataFromFile:filename error:&error];
-        if (error) {
-            NSLog(@"[ModrinthAPI] Error extracting %@: %@", filename, error.localizedDescription);
-            continue;
-        }
-        
-        // Write file
-        [fileData writeToFile:targetPath options:NSDataWritingAtomic error:&error];
-        if (error) {
-            NSLog(@"[ModrinthAPI] Error writing %@: %@", targetPath, error.localizedDescription);
-            continue;
-        }
-        
-        NSLog(@"[ModrinthAPI] Extracted %@ to %@", filename, targetPath);
+        NSLog(@"[ModrinthAPI] Error extracting %@ directory: %@", directoryName, error.localizedDescription);
+    } else {
+        NSLog(@"[ModrinthAPI] Successfully extracted %@ directory to %@", directoryName, destPath);
     }
 }
 
