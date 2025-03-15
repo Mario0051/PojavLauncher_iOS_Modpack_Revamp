@@ -577,41 +577,37 @@ typedef struct {
 
 - (NSString *)getDisplayName:(NSString *)version {
     if ([self.currentVendor isEqualToString:@"NeoForge"]) {
-        // For NeoForge, format as "NeoForge X.Y.Z for Minecraft 1.A.B"
+        // For NeoForge, we need a clear display format that shows both version components
         NSString *mcVersion = [self extractMinecraftVersionFromNeoForgeVersion:version];
         
-        // Remove any Minecraft version embedded in the NeoForge version string
-        NSString *cleanVersion = version;
-        NSRange mcRange = [version rangeOfString:mcVersion];
-        if (mcRange.location != NSNotFound) {
-            cleanVersion = [version stringByReplacingCharactersInRange:mcRange withString:@""];
-            cleanVersion = [cleanVersion stringByReplacingOccurrencesOfString:@"--" withString:@"-"];
-            if ([cleanVersion hasPrefix:@"-"]) {
-                cleanVersion = [cleanVersion substringFromIndex:1];
-            }
-            if ([cleanVersion hasSuffix:@"-"]) {
-                cleanVersion = [cleanVersion substringToIndex:cleanVersion.length - 1];
-            }
+        // Get the NeoForge version part
+        NSString *neoforgeVersion = version;
+        
+        // Clean up the version for display
+        NSRange hyphenRange = [neoforgeVersion rangeOfString:@"-"];
+        NSString *suffix = @"";
+        
+        if (hyphenRange.location != NSNotFound) {
+            // Extract any suffix (like -beta, -release)
+            suffix = [neoforgeVersion substringFromIndex:hyphenRange.location];
+            neoforgeVersion = [neoforgeVersion substringToIndex:hyphenRange.location];
         }
         
-        // If version is empty after cleanup, just use original
-        if (cleanVersion.length == 0) {
-            cleanVersion = version;
-        }
-        
+        // Format: "NeoForge 20.4.1 for Minecraft 1.20.4" or similar
         if (![mcVersion isEqualToString:@"Unknown"]) {
-            return [NSString stringWithFormat:@"%@ (Minecraft %@)", cleanVersion, mcVersion];
+            return [NSString stringWithFormat:@"NeoForge %@%@ (Minecraft %@)", 
+                    neoforgeVersion, suffix, mcVersion];
         } else {
-            return cleanVersion;
+            return [NSString stringWithFormat:@"NeoForge %@%@", neoforgeVersion, suffix];
         }
     } else {
-        // For Forge, format as "Forge Z.W.V for Minecraft 1.X.Y"
+        // For Forge, use the existing approach
         NSString *mcVersion = [self extractMinecraftVersionFromForgeVersion:version];
         NSRange hyphenRange = [version rangeOfString:@"-"];
         
         if (hyphenRange.location != NSNotFound && ![mcVersion isEqualToString:@"Unknown"]) {
             NSString *forgeVersion = [version substringFromIndex:hyphenRange.location + 1];
-            return [NSString stringWithFormat:@"%@ (Minecraft %@)", forgeVersion, mcVersion];
+            return [NSString stringWithFormat:@"Forge %@ (Minecraft %@)", forgeVersion, mcVersion];
         } else {
             return version;
         }
@@ -671,16 +667,43 @@ typedef struct {
     // Skip known problematic versions for NeoForge/Forge that cause issues
     if ([self.currentVendor isEqualToString:@"NeoForge"]) {
         // Skip NeoForge versions with these patterns
-        NSArray *skipPatterns = @[@"sources", @"userdev", @"javadoc", @"universal", @"slim"];
+        NSArray *skipPatterns = @[
+            @"sources", @"userdev", @"javadoc", @"universal", @"slim", 
+            @"-javadoc", @"-sources", @"-all", @"-changelog", 
+            @"-installer-win", @"-mdk"
+        ];
+        
         for (NSString *pattern in skipPatterns) {
             if ([version containsString:pattern]) {
                 NSLog(@"[ForgeInstall] Skipping problematic NeoForge version: %@", version);
                 return;
             }
         }
+        
+        // Skip versions that don't have -installer or -installer.jar suffix
+        // NeoForge installers should have these suffixes
+        if (![version containsString:@"-installer"] && ![version hasSuffix:@".jar"]) {
+            BOOL hasValidPattern = NO;
+            NSArray *validPatterns = @[@"-beta", @"-release"];
+            for (NSString *pattern in validPatterns) {
+                if ([version containsString:pattern]) {
+                    hasValidPattern = YES;
+                    break;
+                }
+            }
+            
+            if (!hasValidPattern) {
+                NSLog(@"[ForgeInstall] Skipping non-installer NeoForge version: %@", version);
+                return;
+            }
+        }
     } else {
         // Skip Forge versions with these patterns
-        NSArray *skipPatterns = @[@"mdk", @"userdev", @"javadoc", @"src", @"sources", @"universal"];
+        NSArray *skipPatterns = @[
+            @"mdk", @"userdev", @"javadoc", @"src", @"sources", @"universal",
+            @"-all", @"-changelog", @"-client", @"-server", @"-launcher"
+        ];
+        
         for (NSString *pattern in skipPatterns) {
             if ([version containsString:pattern]) {
                 NSLog(@"[ForgeInstall] Skipping problematic Forge version: %@", version);
@@ -701,6 +724,12 @@ typedef struct {
     
     if ([self.currentVendor isEqualToString:@"NeoForge"]) {
         minecraftVersion = [self extractMinecraftVersionFromNeoForgeVersion:version];
+        
+        // Additional sanity check for NeoForge
+        if ([minecraftVersion isEqualToString:@"Unknown"]) {
+            NSLog(@"[ForgeInstall] Skipping NeoForge version with unknown MC version: %@", version);
+            return;
+        }
     } else {
         minecraftVersion = [self extractMinecraftVersionFromForgeVersion:version];
         
