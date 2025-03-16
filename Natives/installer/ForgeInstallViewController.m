@@ -146,57 +146,41 @@
 }
 
 - (NSString *)extractMinecraftVersionFromNeoForgeVersion:(NSString *)version {
-    // First try to find an embedded Minecraft version (pattern: 1.X.Y)
-    NSRegularExpression *mcRegex = [NSRegularExpression 
-        regularExpressionWithPattern:@"(1\\.[0-9]+(?:\\.[0-9]+)?)" 
-        options:0 error:nil];
+    // NeoForge versioning scheme:
+    // Format: [Minecraft version without 1.].[NeoForge version][-beta/alpha]
+    // Example: "21.4.114-beta" for Minecraft 1.21.4
     
-    NSTextCheckingResult *match = [mcRegex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
-    
-    if (match) {
-        return [version substringWithRange:match.range];
-    }
-    
-    // Fallback for the newer NeoForge versioning scheme (e.g., 20.4.x for Minecraft 1.20.4)
-    // Strip any pre-release suffix first
+    // First remove any beta/alpha/etc. suffix
     NSString *cleanVersion = version;
     NSRange hyphenRange = [version rangeOfString:@"-"];
     if (hyphenRange.location != NSNotFound) {
         cleanVersion = [version substringToIndex:hyphenRange.location];
     }
     
+    // Extract the first part (Minecraft version without the leading "1.")
     NSArray *components = [cleanVersion componentsSeparatedByString:@"."];
-    
-    // Need at least major.minor components
     if (components.count >= 2) {
+        // Take first two components which represent Minecraft version (without the 1.)
         NSString *majorComponent = components[0];
         NSString *minorComponent = components[1];
         
-        // Validate components
+        // Validate components are numeric
         if ([self isNumeric:majorComponent] && [self isNumeric:minorComponent]) {
-            NSInteger majorValue = [majorComponent integerValue];
-            
-            // Is this likely a new-style NeoForge version? (e.g. 20.4.x for MC 1.20.4)
-            if (majorValue >= 19 && majorValue <= 30) { // Reasonable range for Minecraft versions
-                NSString *mcVersion = [NSString stringWithFormat:@"1.%@.%@", majorComponent, minorComponent];
-                return mcVersion;
-            }
+            // Reconstruct as 1.x.y
+            NSString *mcVersion = [NSString stringWithFormat:@"1.%@.%@", majorComponent, minorComponent];
+            return mcVersion;
         }
     }
     
-    // Look for version pattern at the end that might indicate Minecraft version
+    // Fallback: Look for version pattern that might indicate Minecraft version
     NSRegularExpression *versionRegex = [NSRegularExpression 
-        regularExpressionWithPattern:@"-(?:mc)?(1\\.[0-9]+(?:\\.[0-9]+)?)" 
+        regularExpressionWithPattern:@"(\\d+\\.\\d+)" 
         options:0 error:nil];
     
-    match = [versionRegex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
-    
+    NSTextCheckingResult *match = [versionRegex firstMatchInString:version options:0 range:NSMakeRange(0, version.length)];
     if (match) {
-        // Extract just the version part, not the "mc" prefix if present
-        NSRange versionRange = [match rangeAtIndex:1];
-        if (versionRange.location != NSNotFound) {
-            return [version substringWithRange:versionRange];
-        }
+        NSString *extractedPart = [version substringWithRange:match.range];
+        return [NSString stringWithFormat:@"1.%@", extractedPart];
     }
     
     return @"Unknown";
