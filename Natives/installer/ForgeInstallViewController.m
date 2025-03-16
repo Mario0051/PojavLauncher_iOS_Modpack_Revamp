@@ -266,8 +266,15 @@
             return;
         }
         
-        // Add to section
-        NSUInteger sectionIndex = [self.versionList indexOfObject:minecraftVersion];
+        // Add to section - do exact string matching for section headers
+        NSUInteger sectionIndex = NSNotFound;
+        for (NSUInteger i = 0; i < self.versionList.count; i++) {
+            if ([self.versionList[i] isEqualToString:minecraftVersion]) {
+                sectionIndex = i;
+                break;
+            }
+        }
+        
         if (sectionIndex == NSNotFound) {
             [self.versionList addObject:minecraftVersion];
             [self.visibilityList addObject:@NO]; // Start collapsed
@@ -318,8 +325,15 @@
             minecraftVersion = @"Unknown";
         }
         
-        // Add to section
-        NSUInteger sectionIndex = [self.versionList indexOfObject:minecraftVersion];
+        // Add to section - do exact string matching for section headers
+        NSUInteger sectionIndex = NSNotFound;
+        for (NSUInteger i = 0; i < self.versionList.count; i++) {
+            if ([self.versionList[i] isEqualToString:minecraftVersion]) {
+                sectionIndex = i;
+                break;
+            }
+        }
+        
         if (sectionIndex == NSNotFound) {
             [self.versionList addObject:minecraftVersion];
             [self.visibilityList addObject:@NO]; // Start collapsed
@@ -393,7 +407,15 @@
         mcVersion = [sectionTitle substringFromIndex:10]; // Remove "Minecraft " prefix
     }
     
-    NSInteger section = [self.versionList indexOfObject:mcVersion];
+    // Find the section by doing exact match on the version string
+    NSInteger section = NSNotFound;
+    for (NSInteger i = 0; i < self.versionList.count; i++) {
+        if ([self.versionList[i] isEqualToString:mcVersion]) {
+            section = i;
+            break;
+        }
+    }
+    
     if (section != NSNotFound) {
         // Toggle section visibility
         self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
@@ -538,6 +560,9 @@
 #pragma mark - Sorting Methods
 
 - (void)sortVersionSections {
+    // Create a stable copy of version sections before sorting
+    NSArray *originalVersions = [self.versionList copy];
+    
     // Sort Minecraft versions semantically with newest first
     [self.versionList sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
         // Handle special categories
@@ -638,6 +663,11 @@
 }
 
 - (NSComparisonResult)compareMinecraftVersions:(NSString *)version1 to:(NSString *)version2 {
+    // Handle exact string equality case first
+    if ([version1 isEqualToString:version2]) {
+        return NSOrderedSame;
+    }
+    
     // Split versions into components
     NSArray *components1 = [version1 componentsSeparatedByString:@"."];
     NSArray *components2 = [version2 componentsSeparatedByString:@"."];
@@ -658,8 +688,9 @@
         return components1.count > components2.count ? NSOrderedDescending : NSOrderedAscending;
     }
     
-    // Exactly equal
-    return NSOrderedSame;
+    // If we get here, then the versions have same numeric value but possibly different string representation
+    // In this case, preserve string comparison to ensure uniqueness and predictable sorting
+    return [version1 compare:version2];
 }
 
 @end
