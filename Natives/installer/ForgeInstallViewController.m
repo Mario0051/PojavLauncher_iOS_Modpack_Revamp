@@ -330,8 +330,24 @@
     UITableViewHeaderFooterView *view = [self.tableView dequeueReusableHeaderFooterViewWithIdentifier:@"section"];
     if (!view) {
         view = [[UITableViewHeaderFooterView alloc] initWithReuseIdentifier:@"section"];
+        
+        // Configure the visual appearance for better touch feedback
+        view.contentView.backgroundColor = [UIColor systemGroupedBackgroundColor];
+        
+        // Configure the text label
         view.textLabel.font = [UIFont boldSystemFontOfSize:16];
         
+        // Adjust text label positioning for taller header
+        view.textLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [NSLayoutConstraint activateConstraints:@[
+            [view.textLabel.leadingAnchor constraintEqualToAnchor:view.contentView.leadingAnchor constant:16],
+            [view.textLabel.centerYAnchor constraintEqualToAnchor:view.contentView.centerYAnchor]
+        ]];
+        
+        // Ensure the entire header is interactive
+        view.userInteractionEnabled = YES;
+        
+        // Add tap gesture recognizer to the entire header view
         UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tableViewDidSelectSection:)];
         [view addGestureRecognizer:tapGesture];
         
@@ -357,6 +373,11 @@
     return view;
 }
 
+// Add method to define taller header height
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    return 56.0; // Increased from the default (~22-44 depending on system)
+}
+
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     NSString *mcVersion = self.versionList[section];
     
@@ -370,6 +391,19 @@
 
 - (void)tableViewDidSelectSection:(UITapGestureRecognizer *)sender {
     UITableViewHeaderFooterView *view = (id)sender.view;
+    
+    // Add visual feedback for the tap
+    UIView *flashView = [[UIView alloc] initWithFrame:view.bounds];
+    flashView.backgroundColor = [UIColor systemGrayColor];
+    flashView.alpha = 0.3;
+    [view insertSubview:flashView atIndex:0];
+    
+    [UIView animateWithDuration:0.15 animations:^{
+        flashView.alpha = 0.0;
+    } completion:^(BOOL finished) {
+        [flashView removeFromSuperview];
+    }];
+    
     NSString *sectionTitle = view.textLabel.text;
     
     // Extract the actual Minecraft version from the enhanced section title
@@ -388,6 +422,9 @@
     }
     
     if (section != NSNotFound) {
+        // Save content offset before modifying the table
+        CGPoint savedOffset = self.tableView.contentOffset;
+        
         // Toggle section visibility
         self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
         
@@ -398,7 +435,13 @@
                 CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
         }];
         
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationAutomatic];
+        // Reload without animation to prevent automatic scrolling
+        [UIView performWithoutAnimation:^{
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationNone];
+        }];
+        
+        // Restore the content offset
+        [self.tableView setContentOffset:savedOffset animated:NO];
     }
 }
 
