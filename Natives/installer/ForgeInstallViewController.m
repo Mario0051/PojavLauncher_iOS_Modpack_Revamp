@@ -288,7 +288,7 @@
             NSLog(@"[ForgeInstall] Added NeoForge %@ to %@ section", version, minecraftVersion);
         }
     } else {
-        // FORGE SPECIFIC HANDLING
+        // FORGE SPECIFIC HANDLING - SIMPLIFIED VERSION
         // Skip versions without a hyphen (need mcVersion-forgeVersion format)
         if (![version containsString:@"-"]) {
             NSLog(@"[ForgeInstall] Skipping invalid Forge version format: %@", version);
@@ -308,22 +308,9 @@
             }
         }
         
-        // Get minecraft version - this uses the simpler approach from older version
+        // Simply get minecraft version - part before the hyphen
         NSRange hyphenRange = [version rangeOfString:@"-"];
         NSString *minecraftVersion = [version substringToIndex:hyphenRange.location];
-        
-        // Validate Minecraft version format
-        NSRegularExpression *mcRegex = [NSRegularExpression 
-            regularExpressionWithPattern:@"^1\\.[0-9]+(\\.[0-9]+)?$" 
-            options:0 error:nil];
-            
-        NSRange fullRange = NSMakeRange(0, minecraftVersion.length);
-        NSArray *matches = [mcRegex matchesInString:minecraftVersion options:0 range:fullRange];
-        
-        if (matches.count == 0) {
-            NSLog(@"[ForgeInstall] Invalid Minecraft version format: %@, using Unknown", minecraftVersion);
-            minecraftVersion = @"Unknown";
-        }
         
         // Add to section - do exact string matching for section headers
         NSUInteger sectionIndex = NSNotFound;
