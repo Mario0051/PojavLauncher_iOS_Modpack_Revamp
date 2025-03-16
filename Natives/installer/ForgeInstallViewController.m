@@ -675,7 +675,8 @@
         }
     }
     
-    // If equal so far, more components usually means newer (e.g. 1.19.4 > 1.19)
+    // If all components so far are equal, the version with MORE components is newer
+    // (e.g., 1.21.4 is newer than 1.21)
     if (components1.count != components2.count) {
         return components1.count > components2.count ? NSOrderedDescending : NSOrderedAscending;
     }
