@@ -334,15 +334,8 @@
         // Configure the visual appearance for better touch feedback
         view.contentView.backgroundColor = [UIColor systemGroupedBackgroundColor];
         
-        // Configure the text label
+        // Configure the text label - don't modify constraints
         view.textLabel.font = [UIFont boldSystemFontOfSize:16];
-        
-        // Adjust text label positioning for taller header
-        view.textLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        [NSLayoutConstraint activateConstraints:@[
-            [view.textLabel.leadingAnchor constraintEqualToAnchor:view.contentView.leadingAnchor constant:16],
-            [view.textLabel.centerYAnchor constraintEqualToAnchor:view.contentView.centerYAnchor]
-        ]];
         
         // Ensure the entire header is interactive
         view.userInteractionEnabled = YES;
@@ -357,16 +350,14 @@
         disclosureIndicator.tintColor = [UIColor systemGrayColor];
         [view.contentView addSubview:disclosureIndicator];
         
-        // Add constraints for the disclosure indicator
-        disclosureIndicator.translatesAutoresizingMaskIntoConstraints = NO;
-        [NSLayoutConstraint activateConstraints:@[
-            [disclosureIndicator.trailingAnchor constraintEqualToAnchor:view.contentView.trailingAnchor constant:-16],
-            [disclosureIndicator.centerYAnchor constraintEqualToAnchor:view.contentView.centerYAnchor]
-        ]];
+        // Position the indicator using frame-based layout instead of constraints
+        disclosureIndicator.frame = CGRectMake(0, 0, 20, 20);
+        disclosureIndicator.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
     }
     
-    // Update disclosure indicator rotation based on section state
+    // Update disclosure indicator position and rotation
     UIImageView *indicator = [view viewWithTag:1001];
+    indicator.center = CGPointMake(view.contentView.bounds.size.width - 25, view.contentView.bounds.size.height / 2);
     indicator.transform = self.visibilityList[section].boolValue ? 
         CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
     
