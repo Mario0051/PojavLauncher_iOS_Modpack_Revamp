@@ -441,6 +441,7 @@
         dispatch_async(dispatch_get_main_queue(), ^{
             // Calculate adjustment for content size changes
             CGFloat heightDifference = self.tableView.contentSize.height - savedHeight;
+            CGPoint newOffset = savedOffset;
             
             // Apply offset with adjustment if content expanded and we're scrolled past the changed section
             if (self.visibilityList[section].boolValue) {
@@ -448,12 +449,12 @@
                 CGRect sectionRect = [self.tableView rectForSection:section];
                 if (sectionRect.origin.y < savedOffset.y) {
                     // Adjust offset to account for new rows
-                    savedOffset.y += heightDifference;
+                    newOffset.y += heightDifference;
                 }
             }
             
             // Apply the final offset
-            [self.tableView setContentOffset:savedOffset animated:NO];
+            [self.tableView setContentOffset:newOffset animated:NO];
         });
     }
 }
