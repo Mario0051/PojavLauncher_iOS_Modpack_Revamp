@@ -505,11 +505,25 @@
 
 - (void)parserDidEndDocument:(NSXMLParser *)parser {
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Log all version sections for debugging
+        NSLog(@"[ForgeInstall] Before sorting, version sections: %@", self.versionList);
+        for (NSInteger i = 0; i < self.versionList.count; i++) {
+            NSLog(@"[ForgeInstall] Section %@ has %lu versions", 
+                  self.versionList[i], (unsigned long)self.forgeList[i].count);
+        }
+        
         // Sort Minecraft versions (sections) with newest first
         [self sortVersionSections];
         
         // Sort versions within each section with newest first
         [self sortVersionsWithinSections];
+        
+        // Log all version sections after sorting for debugging
+        NSLog(@"[ForgeInstall] After sorting, version sections: %@", self.versionList);
+        for (NSInteger i = 0; i < self.versionList.count; i++) {
+            NSLog(@"[ForgeInstall] Section %@ has %lu versions", 
+                  self.versionList[i], (unsigned long)self.forgeList[i].count);
+        }
         
         // Expand the first (newest) section by default
         if (self.versionList.count > 0) {
@@ -547,11 +561,19 @@
 #pragma mark - Sorting Methods
 
 - (void)sortVersionSections {
-    // Create a stable copy of version sections before sorting
-    NSArray *originalVersions = [self.versionList copy];
+    // Create maps to maintain the relationship between versions and their data
+    NSMutableDictionary *versionToForgeList = [NSMutableDictionary new];
+    NSMutableDictionary *versionToVisibility = [NSMutableDictionary new];
     
-    // Sort Minecraft versions semantically with newest first
-    [self.versionList sortUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
+    // Store the current data in the dictionaries
+    for (NSInteger i = 0; i < self.versionList.count; i++) {
+        NSString *version = self.versionList[i];
+        versionToForgeList[version] = self.forgeList[i];
+        versionToVisibility[version] = self.visibilityList[i];
+    }
+    
+    // Sort the version list
+    NSArray *sortedVersions = [self.versionList sortedArrayUsingComparator:^NSComparisonResult(NSString *version1, NSString *version2) {
         // Handle special categories
         if ([version1 isEqualToString:@"Unknown"]) return NSOrderedDescending;
         if ([version2 isEqualToString:@"Unknown"]) return NSOrderedAscending;
@@ -559,20 +581,19 @@
         return [self compareMinecraftVersions:version2 to:version1]; // Reversed for newest first
     }];
     
-    // Reorder section arrays to match sorted version list
-    NSMutableArray *newForgeList = [NSMutableArray arrayWithCapacity:self.versionList.count];
-    NSMutableArray *newVisibilityList = [NSMutableArray arrayWithCapacity:self.versionList.count];
+    // Clear and refill the arrays in the sorted order
+    [self.versionList removeAllObjects];
+    [self.forgeList removeAllObjects];
+    [self.visibilityList removeAllObjects];
     
-    for (NSString *version in self.versionList) {
-        NSUInteger oldIndex = [self.versionList indexOfObject:version];
-        if (oldIndex < self.forgeList.count) {
-            [newForgeList addObject:self.forgeList[oldIndex]];
-            [newVisibilityList addObject:self.visibilityList[oldIndex]];
-        }
+    for (NSString *version in sortedVersions) {
+        [self.versionList addObject:version];
+        [self.forgeList addObject:versionToForgeList[version]];
+        [self.visibilityList addObject:versionToVisibility[version]];
     }
     
-    self.forgeList = newForgeList;
-    self.visibilityList = newVisibilityList;
+    // Debug log to verify correct sorting
+    NSLog(@"[ForgeInstall] Sorted sections: %@", self.versionList);
 }
 
 - (void)sortVersionsWithinSections {
