@@ -6,32 +6,191 @@
 #import "utils.h"
 #include <dlfcn.h>
 
+// Custom cell for version display
+@interface ForgeVersionCell : UITableViewCell
+@property (nonatomic, strong) UILabel *versionLabel;
+@property (nonatomic, strong) UILabel *releaseTypeLabel;
+@property (nonatomic, strong) UIView *releaseTypeTagView;
+@end
+
+@implementation ForgeVersionCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        // Version label (main title)
+        self.versionLabel = [[UILabel alloc] init];
+        self.versionLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+        self.versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:self.versionLabel];
+        
+        // Release type tag background
+        self.releaseTypeTagView = [[UIView alloc] init];
+        self.releaseTypeTagView.layer.cornerRadius = 10;
+        self.releaseTypeTagView.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:self.releaseTypeTagView];
+        
+        // Release type label
+        self.releaseTypeLabel = [[UILabel alloc] init];
+        self.releaseTypeLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+        self.releaseTypeLabel.textColor = [UIColor whiteColor];
+        self.releaseTypeLabel.textAlignment = NSTextAlignmentCenter;
+        self.releaseTypeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.releaseTypeTagView addSubview:self.releaseTypeLabel];
+        
+        // Add disclosure indicator
+        self.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        
+        // Constraints for version label
+        [NSLayoutConstraint activateConstraints:@[
+            [self.versionLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+            [self.versionLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10],
+            [self.versionLabel.trailingAnchor constraintEqualToAnchor:self.releaseTypeTagView.leadingAnchor constant:-8],
+            [self.versionLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-10]
+        ]];
+        
+        // Constraints for tag view
+        [NSLayoutConstraint activateConstraints:@[
+            [self.releaseTypeTagView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-44],
+            [self.releaseTypeTagView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
+            [self.releaseTypeTagView.widthAnchor constraintGreaterThanOrEqualToConstant:80],
+            [self.releaseTypeTagView.heightAnchor constraintEqualToConstant:24]
+        ]];
+        
+        // Constraints for release type label
+        [NSLayoutConstraint activateConstraints:@[
+            [self.releaseTypeLabel.leadingAnchor constraintEqualToAnchor:self.releaseTypeTagView.leadingAnchor constant:8],
+            [self.releaseTypeLabel.trailingAnchor constraintEqualToAnchor:self.releaseTypeTagView.trailingAnchor constant:-8],
+            [self.releaseTypeLabel.topAnchor constraintEqualToAnchor:self.releaseTypeTagView.topAnchor],
+            [self.releaseTypeLabel.bottomAnchor constraintEqualToAnchor:self.releaseTypeTagView.bottomAnchor]
+        ]];
+    }
+    return self;
+}
+
+@end
+
+// Custom header view for Minecraft versions
+@interface MinecraftVersionHeaderView : UITableViewHeaderFooterView
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UIImageView *chevronImageView;
+@property (nonatomic, strong) UIButton *expandCollapseButton;
+@property (nonatomic, assign) BOOL isExpanded;
+@end
+
+@implementation MinecraftVersionHeaderView
+
+- (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithReuseIdentifier:reuseIdentifier];
+    if (self) {
+        // Create a container view with background
+        UIView *containerView = [[UIView alloc] init];
+        containerView.backgroundColor = [UIColor systemGroupedBackgroundColor];
+        containerView.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:containerView];
+        
+        // Title label
+        self.titleLabel = [[UILabel alloc] init];
+        self.titleLabel.font = [UIFont boldSystemFontOfSize:18];
+        self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [containerView addSubview:self.titleLabel];
+        
+        // Chevron indicator
+        self.chevronImageView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+        self.chevronImageView.tintColor = [UIColor systemGrayColor];
+        self.chevronImageView.translatesAutoresizingMaskIntoConstraints = NO;
+        self.chevronImageView.contentMode = UIViewContentModeScaleAspectFit;
+        [containerView addSubview:self.chevronImageView];
+        
+        // Button to expand/collapse (covers the whole header area)
+        self.expandCollapseButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        self.expandCollapseButton.translatesAutoresizingMaskIntoConstraints = NO;
+        self.expandCollapseButton.backgroundColor = [UIColor clearColor];
+        [containerView addSubview:self.expandCollapseButton];
+        
+        // Constraints for container view (full size)
+        [NSLayoutConstraint activateConstraints:@[
+            [containerView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [containerView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+            [containerView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [containerView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor]
+        ]];
+        
+        // Constraints for title label
+        [NSLayoutConstraint activateConstraints:@[
+            [self.titleLabel.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor constant:16],
+            [self.titleLabel.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
+            [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.chevronImageView.leadingAnchor constant:-16]
+        ]];
+        
+        // Constraints for chevron
+        [NSLayoutConstraint activateConstraints:@[
+            [self.chevronImageView.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor constant:-16],
+            [self.chevronImageView.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
+            [self.chevronImageView.widthAnchor constraintEqualToConstant:20],
+            [self.chevronImageView.heightAnchor constraintEqualToConstant:20]
+        ]];
+        
+        // Constraints for button (covers the whole area)
+        [NSLayoutConstraint activateConstraints:@[
+            [self.expandCollapseButton.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor],
+            [self.expandCollapseButton.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor],
+            [self.expandCollapseButton.topAnchor constraintEqualToAnchor:containerView.topAnchor],
+            [self.expandCollapseButton.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor]
+        ]];
+    }
+    return self;
+}
+
+- (void)setIsExpanded:(BOOL)isExpanded {
+    _isExpanded = isExpanded;
+    
+    // Animate chevron rotation
+    [UIView animateWithDuration:0.3 animations:^{
+        self.chevronImageView.transform = isExpanded ? 
+            CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
+    }];
+}
+
+@end
+
 @interface ForgeInstallViewController()<NSXMLParserDelegate>
+@property(nonatomic, strong) UISearchController *searchController;
+@property(nonatomic, strong) NSString *searchText;
 @property(atomic) AFURLSessionManager *afManager;
 @property(nonatomic) WFWorkflowProgressView *progressView;
+@property(nonatomic, strong) UIRefreshControl *refreshControl;
 
 @property(nonatomic) NSDictionary *endpoints;
 @property(nonatomic) NSMutableArray<NSNumber *> *visibilityList;
 @property(nonatomic) NSMutableArray<NSString *> *versionList;
 @property(nonatomic) NSMutableArray<NSMutableArray *> *forgeList;
+@property(nonatomic) NSMutableArray<NSMutableArray *> *filteredForgeList;
 @property(nonatomic, assign) BOOL isVersionElement;
 @property(nonatomic, strong) NSMutableString *currentVersionValue;
 @property(nonatomic, strong) NSString *currentVendor;
+@property(nonatomic, strong) NSIndexPath *currentDownloadIndexPath;
 @end
 
 @implementation ForgeInstallViewController
 
-#pragma mark - Lifecycle Methods
+#pragma mark - Initialization Methods
 
-// Initialize with plain style to avoid sticky headers
-- (instancetype)initWithStyle:(UITableViewStyle)style {
-    return [super initWithStyle:UITableViewStylePlain];
+- (instancetype)init {
+    return [self initWithStyle:UITableViewStylePlain];
 }
+
+- (instancetype)initWithStyle:(UITableViewStyle)style {
+    self = [super initWithStyle:UITableViewStylePlain];
+    return self;
+}
+
+#pragma mark - Lifecycle Methods
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    // Configure table view to prevent sticky headers
+    // Configure table view
     if (@available(iOS 15.0, *)) {
         self.tableView.sectionHeaderTopPadding = 0;
     }
@@ -39,12 +198,30 @@
     // Additional settings to prevent header stickiness
     self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     
+    // Register custom cell and header view
+    [self.tableView registerClass:[ForgeVersionCell class] forCellReuseIdentifier:@"ForgeVersionCell"];
+    [self.tableView registerClass:[MinecraftVersionHeaderView class] forHeaderFooterViewReuseIdentifier:@"MinecraftVersionHeader"];
+    
     // Setup segmented control for vendor selection
     UISegmentedControl *segment = [[UISegmentedControl alloc] initWithItems:@[@"Forge", @"NeoForge"]];
     segment.selectedSegmentIndex = 0;
     [segment addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
     self.navigationItem.titleView = segment;
     self.currentVendor = @"Forge";
+
+    // Setup search controller
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.searchResultsUpdater = self;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.searchBar.placeholder = @"Search versions";
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
+    
+    // Setup refresh control
+    self.refreshControl = [[UIRefreshControl alloc] init];
+    [self.refreshControl addTarget:self action:@selector(refreshVersions) forControlEvents:UIControlEventValueChanged];
+    [self.tableView addSubview:self.refreshControl];
 
     // Load WorkflowProgressView for download progress
     dlopen("/System/Library/PrivateFrameworks/WorkflowUIServices.framework/WorkflowUIServices", RTLD_GLOBAL);
@@ -68,6 +245,7 @@
     self.visibilityList = [NSMutableArray new];
     self.versionList = [NSMutableArray new];
     self.forgeList = [NSMutableArray new];
+    self.filteredForgeList = [NSMutableArray new];
     self.currentVersionValue = [NSMutableString new];
     
     // Load initial data
@@ -77,7 +255,20 @@
 #pragma mark - Action Methods
 
 - (void)actionCancelDownload {
+    // Reset the current download cell's appearance
+    if (self.currentDownloadIndexPath) {
+        [self resetCellAppearance:self.currentDownloadIndexPath];
+        self.currentDownloadIndexPath = nil;
+    }
+    
     [self.afManager invalidateSessionCancelingTasks:YES resetSession:NO];
+    showDialog(@"Download Cancelled", @"The download has been cancelled.");
+}
+
+- (void)resetCellAppearance:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 }
 
 - (void)actionClose {
@@ -89,12 +280,29 @@
     [self.visibilityList removeAllObjects];
     [self.versionList removeAllObjects];
     [self.forgeList removeAllObjects];
+    [self.filteredForgeList removeAllObjects];
     [self.tableView reloadData];
+    
+    // Reset search if active
+    if (self.searchController.isActive) {
+        [self.searchController setActive:NO animated:YES];
+    }
     
     // Get selected vendor and load data
     NSString *vendor = [segment titleForSegmentAtIndex:segment.selectedSegmentIndex];
     self.currentVendor = vendor;
     [self loadMetadataFromVendor:vendor];
+}
+
+- (void)refreshVersions {
+    // Clear existing data
+    [self.visibilityList removeAllObjects];
+    [self.versionList removeAllObjects];
+    [self.forgeList removeAllObjects];
+    [self.filteredForgeList removeAllObjects];
+    
+    // Load data again
+    [self loadMetadataFromVendor:self.currentVendor];
 }
 
 #pragma mark - Data Loading
@@ -112,6 +320,7 @@
         
         if (![parser parse]) {
             dispatch_async(dispatch_get_main_queue(), ^{
+                [self.refreshControl endRefreshing];
                 showDialog(localize(@"Error", nil), parser.parserError.localizedDescription);
                 [self actionClose];
             });
@@ -133,6 +342,46 @@
     [indicator stopAnimating];
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
     self.navigationController.modalInPresentation = NO;
+    [self.refreshControl endRefreshing];
+}
+
+#pragma mark - Search Results Updating
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    NSString *searchText = searchController.searchBar.text;
+    self.searchText = searchText;
+    
+    if (searchText.length == 0) {
+        // If search is empty, clear filtered data and show all sections
+        [self.filteredForgeList removeAllObjects];
+        for (NSMutableArray *forgeVersions in self.forgeList) {
+            [self.filteredForgeList addObject:[forgeVersions mutableCopy]];
+        }
+    } else {
+        // Filter versions based on search text
+        [self.filteredForgeList removeAllObjects];
+        
+        for (NSUInteger i = 0; i < self.forgeList.count; i++) {
+            NSMutableArray *sectionVersions = self.forgeList[i];
+            NSMutableArray *filteredSectionVersions = [NSMutableArray new];
+            
+            for (NSString *version in sectionVersions) {
+                NSString *displayName = [self getDisplayName:version];
+                if ([displayName localizedCaseInsensitiveContainsString:searchText]) {
+                    [filteredSectionVersions addObject:version];
+                }
+            }
+            
+            [self.filteredForgeList addObject:filteredSectionVersions];
+            
+            // Expand sections with matching results
+            if (filteredSectionVersions.count > 0) {
+                self.visibilityList[i] = @YES;
+            }
+        }
+    }
+    
+    [self.tableView reloadData];
 }
 
 #pragma mark - Version Parsing and Management
@@ -272,6 +521,30 @@
     }
 }
 
+- (UIColor *)getColorForVersionType:(NSString *)version {
+    if ([version containsString:@"recommended"]) {
+        return [UIColor systemGreenColor];
+    } else if ([version containsString:@"beta"] || [version containsString:@"-beta"]) {
+        return [UIColor systemOrangeColor];
+    } else if ([version containsString:@"alpha"] || [version containsString:@"-alpha"]) {
+        return [UIColor systemRedColor];
+    } else {
+        return [UIColor systemBlueColor]; // Release version
+    }
+}
+
+- (NSString *)getLabelForVersionType:(NSString *)version {
+    if ([version containsString:@"recommended"]) {
+        return @"Recommended";
+    } else if ([version containsString:@"beta"] || [version containsString:@"-beta"]) {
+        return @"Beta";
+    } else if ([version containsString:@"alpha"] || [version containsString:@"-alpha"]) {
+        return @"Alpha";
+    } else {
+        return @"Release";
+    }
+}
+
 - (BOOL)isNumeric:(NSString *)string {
     if (!string || string.length == 0) return NO;
     
@@ -386,164 +659,101 @@
     return self.versionList.count;
 }
 
-// Custom non-sticky header view implementation
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section < self.visibilityList.count && self.visibilityList[section].boolValue) {
+        return self.searchController.isActive ? self.filteredForgeList[section].count : self.forgeList[section].count;
+    }
+    return 0;
+}
+
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    // Create a completely custom view for header
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 56.0)];
-    headerView.backgroundColor = [UIColor systemGroupedBackgroundColor];
-    
-    // Add a tap gesture recognizer for section expansion
-    UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleHeaderTap:)];
-    [headerView addGestureRecognizer:tapGesture];
-    
-    // Store the section index in the view's tag
-    headerView.tag = section;
-    
-    // Add a label for the section title
-    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(15, 0, headerView.bounds.size.width - 60, headerView.bounds.size.height)];
-    titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    MinecraftVersionHeaderView *headerView = [tableView dequeueReusableHeaderFooterViewWithIdentifier:@"MinecraftVersionHeader"];
     
     // Apply the section title
     NSString *mcVersion = self.versionList[section];
     if ([mcVersion hasPrefix:@"1."]) {
-        titleLabel.text = [NSString stringWithFormat:@"Minecraft %@", mcVersion];
+        headerView.titleLabel.text = [NSString stringWithFormat:@"Minecraft %@", mcVersion];
     } else {
-        titleLabel.text = mcVersion;
+        headerView.titleLabel.text = mcVersion;
     }
     
-    [headerView addSubview:titleLabel];
+    // Set expanded state
+    headerView.isExpanded = self.visibilityList[section].boolValue;
     
-    // Add a disclosure indicator
-    UIImageView *indicator = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
-    indicator.tintColor = [UIColor systemGrayColor];
-    indicator.frame = CGRectMake(headerView.bounds.size.width - 30, (headerView.bounds.size.height - 20) / 2, 20, 20);
-    indicator.transform = self.visibilityList[section].boolValue ? 
-        CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
-    indicator.tag = 1001;
-    [headerView addSubview:indicator];
+    // Store the section index
+    headerView.expandCollapseButton.tag = section;
+    
+    // Add action for the button
+    [headerView.expandCollapseButton addTarget:self action:@selector(toggleSection:) forControlEvents:UIControlEventTouchUpInside];
     
     return headerView;
 }
 
-// Handler for tapping on the custom header
-- (void)handleHeaderTap:(UITapGestureRecognizer *)gesture {
-    NSInteger section = gesture.view.tag;
+- (void)toggleSection:(UIButton *)sender {
+    NSInteger section = sender.tag;
     
     // Check if the section is valid
     if (section >= 0 && section < self.visibilityList.count) {
-        // Save content offset before modifying the table
-        CGPoint savedOffset = self.tableView.contentOffset;
-        
         // Toggle section visibility
         self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
         
-        // Animate the disclosure indicator
-        UIImageView *indicator = [gesture.view viewWithTag:1001];
-        [UIView animateWithDuration:0.3 animations:^{
-            indicator.transform = self.visibilityList[section].boolValue ? 
-                CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
-        }];
-        
-        // Disable animations for section reload to avoid scrolling
-        [UIView performWithoutAnimation:^{
-            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] 
-                         withRowAnimation:UITableViewRowAnimationNone];
-        }];
-        
-        // Simply restore the exact same content offset without any adjustments
-        [self.tableView setContentOffset:savedOffset animated:NO];
+        // Update section
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationFade];
     }
 }
 
-// Override style for headers to prevent stickiness
-- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
-    // Ensure the header doesn't stick
-    view.layer.zPosition = 0;
-}
-
-// Prevent default behavior for section headers
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 56.0; // Consistent height
+    return 60.0; // Consistent height
 }
 
-// The title is still needed for accessibility
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    NSString *mcVersion = self.versionList[section];
-    
-    if ([mcVersion hasPrefix:@"1."]) {
-        return [NSString stringWithFormat:@"Minecraft %@", mcVersion];
-    } else {
-        return mcVersion;
-    }
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.visibilityList[section].boolValue ? self.forgeList[section].count : 0;
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    return 56.0; // Consistent cell height
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"cell"];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"cell"];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    }
-
-    NSString *version = self.forgeList[indexPath.section][indexPath.row];
+    ForgeVersionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ForgeVersionCell" forIndexPath:indexPath];
+    
+    // Get the version based on search state
+    NSString *version = self.searchController.isActive ? 
+        self.filteredForgeList[indexPath.section][indexPath.row] : 
+        self.forgeList[indexPath.section][indexPath.row];
+    
     BOOL isUnsupported = [self isUnsupportedForgeVersion:version];
     
     // Update text label
+    NSString *displayName = [self getDisplayName:version];
     if (isUnsupported) {
-        // Create attributed string for unsupported versions
-        NSString *displayName = [self getDisplayName:version];
-        NSMutableAttributedString *attributedText = [[NSMutableAttributedString alloc] 
-                                                    initWithString:[NSString stringWithFormat:@"%@ - UNSUPPORTED", displayName]];
-        
-        // Add red color to the "UNSUPPORTED" part
-        [attributedText addAttribute:NSForegroundColorAttributeName 
-                               value:[UIColor systemRedColor] 
-                               range:NSMakeRange(displayName.length + 3, 11)];
-        
-        cell.textLabel.attributedText = attributedText;
+        NSMutableAttributedString *attributedText = [[NSMutableAttributedString alloc] initWithString:displayName];
+        [attributedText appendAttributedString:[[NSAttributedString alloc] initWithString:@" (UNSUPPORTED)" attributes:@{
+            NSForegroundColorAttributeName: [UIColor systemRedColor],
+            NSFontAttributeName: [UIFont systemFontOfSize:14 weight:UIFontWeightBold]
+        }]];
+        cell.versionLabel.attributedText = attributedText;
     } else {
-        // Regular display for supported versions
-        cell.textLabel.attributedText = nil;
-        cell.textLabel.text = [self getDisplayName:version];
+        cell.versionLabel.attributedText = nil;
+        cell.versionLabel.text = displayName;
     }
     
-    // Add release type info as subtitle
-    if ([version containsString:@"beta"] || [version containsString:@"-beta"]) {
-        cell.detailTextLabel.text = @"Beta version";
-        cell.detailTextLabel.textColor = [UIColor systemOrangeColor];
-    } else if ([version containsString:@"alpha"] || [version containsString:@"-alpha"]) {
-        cell.detailTextLabel.text = @"Alpha version";
-        cell.detailTextLabel.textColor = [UIColor systemRedColor];
-    } else if ([version containsString:@"recommended"]) {
-        cell.detailTextLabel.text = @"Recommended version";
-        cell.detailTextLabel.textColor = [UIColor systemGreenColor];
-    } else {
-        cell.detailTextLabel.text = @"Release version";
-        cell.detailTextLabel.textColor = [UIColor systemGrayColor];
-    }
+    // Set release type tag
+    cell.releaseTypeLabel.text = [self getLabelForVersionType:version];
+    cell.releaseTypeTagView.backgroundColor = [self getColorForVersionType:version];
+    
+    // Disable selection for unsupported versions
+    cell.selectionStyle = isUnsupported ? UITableViewCellSelectionStyleNone : UITableViewCellSelectionStyleDefault;
+    cell.accessoryType = isUnsupported ? UITableViewCellAccessoryNone : UITableViewCellAccessoryDisclosureIndicator;
     
     return cell;
 }
 
 #pragma mark - UITableViewDelegate
 
-// Disable sticky headers completely
-- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
-    // Reset transforms of any header views that might be trying to stick
-    for (UIView *view in self.tableView.subviews) {
-        if ([NSStringFromClass([view class]) containsString:@"HeaderView"]) {
-            view.transform = CGAffineTransformIdentity;
-        }
-    }
-}
-
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    NSString *versionString = self.forgeList[indexPath.section][indexPath.row];
+    // Get the version based on search state
+    NSString *versionString = self.searchController.isActive ? 
+        self.filteredForgeList[indexPath.section][indexPath.row] : 
+        self.forgeList[indexPath.section][indexPath.row];
     
     // Check if the selected version is unsupported
     if ([self isUnsupportedForgeVersion:versionString]) {
@@ -553,13 +763,17 @@
         return;
     }
     
+    // Store the current download index path
+    self.currentDownloadIndexPath = indexPath;
+    
     // Continue with normal installation for supported versions
     tableView.allowsSelection = NO;
     [self switchToLoadingState];
     self.progressView.fractionCompleted = 0;
 
-    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+    ForgeVersionCell *cell = (ForgeVersionCell *)[tableView cellForRowAtIndexPath:indexPath];
     cell.accessoryView = self.progressView;
+    cell.accessoryType = UITableViewCellAccessoryNone;
 
     NSString *jarURL = [NSString stringWithFormat:self.endpoints[self.currentVendor][@"installer"], versionString];
     NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"tmp.jar"];
@@ -577,7 +791,9 @@
     } completionHandler:^(NSURLResponse *response, NSURL *filePath, NSError *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             tableView.allowsSelection = YES;
-            cell.accessoryView = nil;
+            [self resetCellAppearance:indexPath];
+            self.currentDownloadIndexPath = nil;
+            
             if (error) {
                 if (error.code != NSURLErrorCancelled) {
                     NSLog(@"Error: %@", error);
@@ -586,6 +802,11 @@
                 [self switchToReadyState];
                 return;
             }
+            
+            // Show success message
+            showDialog(@"Download Complete", 
+                      [NSString stringWithFormat:@"%@ installer will now run. After installation completes, you may need to restart the app.", self.currentVendor]);
+            
             LauncherNavigationController *navVC = (id)((UISplitViewController *)self.presentingViewController).viewControllers[1];
             [self dismissViewControllerAnimated:YES completion:^{
                 [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
@@ -602,24 +823,16 @@
 
 - (void)parserDidEndDocument:(NSXMLParser *)parser {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Log all version sections for debugging
-        NSLog(@"[ForgeInstall] Before sorting, version sections: %@", self.versionList);
-        for (NSInteger i = 0; i < self.versionList.count; i++) {
-            NSLog(@"[ForgeInstall] Section %@ has %lu versions", 
-                  self.versionList[i], (unsigned long)self.forgeList[i].count);
-        }
-        
         // Sort Minecraft versions (sections) with newest first
         [self sortVersionSections];
         
         // Sort versions within each section with newest first
         [self sortVersionsWithinSections];
         
-        // Log all version sections after sorting for debugging
-        NSLog(@"[ForgeInstall] After sorting, version sections: %@", self.versionList);
-        for (NSInteger i = 0; i < self.versionList.count; i++) {
-            NSLog(@"[ForgeInstall] Section %@ has %lu versions", 
-                  self.versionList[i], (unsigned long)self.forgeList[i].count);
+        // Create filtered list (initially same as full list)
+        [self.filteredForgeList removeAllObjects];
+        for (NSMutableArray *forgeVersions in self.forgeList) {
+            [self.filteredForgeList addObject:[forgeVersions mutableCopy]];
         }
         
         // Expand the first (newest) section by default
@@ -629,6 +842,13 @@
         
         [self switchToReadyState];
         [self.tableView reloadData];
+        
+        // Scroll to top
+        if (self.versionList.count > 0) {
+            [self.tableView scrollToRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0] 
+                                  atScrollPosition:UITableViewScrollPositionTop 
+                                          animated:YES];
+        }
     });
 }
 
@@ -653,6 +873,14 @@
         }
         self.isVersionElement = NO;
     }
+}
+
+- (void)parser:(NSXMLParser *)parser parseErrorOccurred:(NSError *)parseError {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.refreshControl endRefreshing];
+        showDialog(@"Error Loading Versions", parseError.localizedDescription);
+        [self switchToReadyState];
+    });
 }
 
 #pragma mark - Sorting Methods
@@ -688,9 +916,6 @@
         [self.forgeList addObject:versionToForgeList[version]];
         [self.visibilityList addObject:versionToVisibility[version]];
     }
-    
-    // Debug log to verify correct sorting
-    NSLog(@"[ForgeInstall] Sorted sections: %@", self.versionList);
 }
 
 - (void)sortVersionsWithinSections {
