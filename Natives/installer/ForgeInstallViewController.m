@@ -26,13 +26,13 @@
         
         // Release type tag background
         self.releaseTypeTagView = [[UIView alloc] init];
-        self.releaseTypeTagView.layer.cornerRadius = 10;
+        self.releaseTypeTagView.layer.cornerRadius = 8;
         self.releaseTypeTagView.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentView addSubview:self.releaseTypeTagView];
         
         // Release type label
         self.releaseTypeLabel = [[UILabel alloc] init];
-        self.releaseTypeLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+        self.releaseTypeLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
         self.releaseTypeLabel.textColor = [UIColor whiteColor];
         self.releaseTypeLabel.textAlignment = NSTextAlignmentCenter;
         self.releaseTypeLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -51,16 +51,16 @@
         
         // Constraints for tag view
         [NSLayoutConstraint activateConstraints:@[
-            [self.releaseTypeTagView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-44],
+            [self.releaseTypeTagView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-44], // Account for disclosure indicator
             [self.releaseTypeTagView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-            [self.releaseTypeTagView.widthAnchor constraintGreaterThanOrEqualToConstant:80],
-            [self.releaseTypeTagView.heightAnchor constraintEqualToConstant:24]
+            [self.releaseTypeTagView.widthAnchor constraintGreaterThanOrEqualToConstant:60], // Reduced from 80
+            [self.releaseTypeTagView.heightAnchor constraintEqualToConstant:20] // Reduced from 24
         ]];
         
         // Constraints for release type label
         [NSLayoutConstraint activateConstraints:@[
-            [self.releaseTypeLabel.leadingAnchor constraintEqualToAnchor:self.releaseTypeTagView.leadingAnchor constant:8],
-            [self.releaseTypeLabel.trailingAnchor constraintEqualToAnchor:self.releaseTypeTagView.trailingAnchor constant:-8],
+            [self.releaseTypeLabel.leadingAnchor constraintEqualToAnchor:self.releaseTypeTagView.leadingAnchor constant:6], // Smaller padding
+            [self.releaseTypeLabel.trailingAnchor constraintEqualToAnchor:self.releaseTypeTagView.trailingAnchor constant:-6], // Smaller padding
             [self.releaseTypeLabel.topAnchor constraintEqualToAnchor:self.releaseTypeTagView.topAnchor],
             [self.releaseTypeLabel.bottomAnchor constraintEqualToAnchor:self.releaseTypeTagView.bottomAnchor]
         ]];
