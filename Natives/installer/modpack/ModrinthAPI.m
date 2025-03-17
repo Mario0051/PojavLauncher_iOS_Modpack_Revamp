@@ -15,6 +15,162 @@ extern void showDialog(NSString *title, NSString *message);
 
 @implementation ModrinthAPI
 
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        self.baseURL = @"https://api.modrinth.com/v2";
+        self.reachedLastPage = NO;
+    }
+    return self;
+}
+
+#pragma mark - Search Implementation
+
+- (NSMutableArray *)searchModWithFilters:(NSDictionary *)searchFilters previousPageResult:(NSMutableArray *)prevResult {
+    // Start with a fresh array unless we're paginating
+    NSMutableArray *results = prevResult ?: [NSMutableArray new];
+    
+    // Determine pagination - get the current page offset
+    NSInteger offset = 0;
+    if (prevResult && prevResult.count > 0) {
+        offset = prevResult.count;
+    }
+    
+    // Create parameters for the search
+    NSMutableDictionary *params = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"offset": @(offset),
+        @"limit": @(20)  // Fetch up to 20 items per page
+    }];
+    
+    // Add search filters
+    if (searchFilters[@"name"] && ![searchFilters[@"name"] isEqualToString:@" "]) {
+        params[@"query"] = searchFilters[@"name"];
+    }
+    
+    // Set content type to modpack
+    if (searchFilters[@"isModpack"] && [searchFilters[@"isModpack"] boolValue]) {
+        params[@"facets"] = @"[[\"project_type:modpack\"]]";
+    }
+    
+    // Add game version filter if provided
+    if (searchFilters[@"mcVersion"]) {
+        NSString *versionFacet = [NSString stringWithFormat:@"[[\"versions:%@\"]]", searchFilters[@"mcVersion"]];
+        params[@"facets"] = versionFacet;
+    }
+    
+    // Make the API request
+    id response = [self getEndpoint:@"search" params:params];
+    
+    // Check if we got a valid response
+    if (!response || ![response isKindOfClass:[NSDictionary class]]) {
+        self.reachedLastPage = YES;
+        return results;
+    }
+    
+    // Process the results
+    NSArray *hits = response[@"hits"];
+    if (!hits || hits.count == 0) {
+        self.reachedLastPage = YES;
+        return results;
+    }
+    
+    // Process each hit
+    for (NSDictionary *hit in hits) {
+        NSMutableDictionary *modData = [NSMutableDictionary new];
+        modData[@"title"] = hit[@"title"] ?: @"Unknown";
+        modData[@"description"] = hit[@"description"] ?: @"";
+        modData[@"id"] = hit[@"project_id"] ?: @"";
+        modData[@"author"] = hit[@"author"] ?: @"Unknown";
+        modData[@"imageUrl"] = hit[@"icon_url"] ?: @"";
+        modData[@"versionDetailsLoaded"] = @NO;
+        
+        // Add the mod to the results
+        [results addObject:modData];
+    }
+    
+    // Check if we've reached the last page
+    NSNumber *totalHits = response[@"total_hits"];
+    if (totalHits) {
+        self.reachedLastPage = (offset + hits.count) >= [totalHits integerValue];
+    } else {
+        self.reachedLastPage = hits.count < [params[@"limit"] integerValue];
+    }
+    
+    return results;
+}
+
+#pragma mark - Load Mod Details
+
+- (void)loadDetailsOfMod:(NSMutableDictionary *)item {
+    if (!item || ![item isKindOfClass:[NSMutableDictionary class]]) {
+        return;
+    }
+    
+    NSString *projectId = item[@"id"];
+    if (!projectId || ![projectId isKindOfClass:[NSString class]]) {
+        return;
+    }
+    
+    NSString *endpoint = [NSString stringWithFormat:@"project/%@/version", projectId];
+    id response = [self getEndpoint:endpoint params:nil];
+    
+    if (!response || ![response isKindOfClass:[NSArray class]]) {
+        return;
+    }
+    
+    NSArray *versions = (NSArray *)response;
+    if (versions.count == 0) {
+        return;
+    }
+    
+    NSMutableArray *versionNames = [NSMutableArray new];
+    NSMutableArray *versionUrls = [NSMutableArray new];
+    NSMutableArray *versionHashes = [NSMutableArray new];
+    NSMutableArray *versionSizes = [NSMutableArray new];
+    NSMutableArray *mcVersions = [NSMutableArray new];
+    
+    for (NSDictionary *version in versions) {
+        // Get version name
+        NSString *versionName = version[@"name"] ?: @"Unknown Version";
+        [versionNames addObject:versionName];
+        
+        // Get Minecraft versions
+        NSArray *gameVersions = version[@"game_versions"];
+        NSString *mcVersion = gameVersions && gameVersions.count > 0 ? gameVersions[0] : @"Unknown";
+        [mcVersions addObject:mcVersion];
+        
+        // Get download URL, hash, and size from the first file
+        NSArray *files = version[@"files"];
+        NSDictionary *primaryFile = files && files.count > 0 ? files[0] : nil;
+        
+        if (primaryFile) {
+            NSString *downloadUrl = primaryFile[@"url"] ?: @"";
+            [versionUrls addObject:downloadUrl];
+            
+            NSDictionary *hashes = primaryFile[@"hashes"];
+            NSString *sha1 = hashes && hashes[@"sha1"] ? hashes[@"sha1"] : @"";
+            [versionHashes addObject:sha1];
+            
+            NSNumber *size = primaryFile[@"size"] ?: @(0);
+            [versionSizes addObject:size];
+        } else {
+            [versionUrls addObject:@""];
+            [versionHashes addObject:@""];
+            [versionSizes addObject:@(0)];
+        }
+    }
+    
+    // Update the item with version information
+    item[@"versionNames"] = versionNames;
+    item[@"versionUrls"] = versionUrls;
+    item[@"versionHashes"] = versionHashes;
+    item[@"versionSizes"] = versionSizes;
+    item[@"mcVersionNames"] = mcVersions;
+    item[@"versionDetailsLoaded"] = @YES;
+}
+
+#pragma mark - ModPack Installation Methods
+
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
     NSError *error;
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:packagePath error:&error];
