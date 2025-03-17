@@ -159,7 +159,7 @@
 @property(nonatomic, strong) NSString *searchText;
 @property(atomic) AFURLSessionManager *afManager;
 @property(nonatomic) WFWorkflowProgressView *progressView;
-@property(nonatomic, strong) UIRefreshControl *refreshControl;
+// Use UITableViewController's built-in refreshControl
 
 @property(nonatomic) NSDictionary *endpoints;
 @property(nonatomic) NSMutableArray<NSNumber *> *visibilityList;
@@ -173,6 +173,8 @@
 @end
 
 @implementation ForgeInstallViewController
+// Acknowledge that refreshControl is implemented by superclass
+@dynamic refreshControl;
 
 #pragma mark - Initialization Methods
 
@@ -211,7 +213,7 @@
 
     // Setup search controller
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
-    self.searchController.searchResultsUpdater = self;
+    self.searchController.searchResultsUpdater = (id<UISearchResultsUpdating>)self;
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchBar.placeholder = @"Search versions";
     self.navigationItem.searchController = self.searchController;
@@ -285,7 +287,7 @@
     
     // Reset search if active
     if (self.searchController.isActive) {
-        [self.searchController setActive:NO animated:YES];
+        [self.searchController dismissViewControllerAnimated:YES completion:nil];
     }
     
     // Get selected vendor and load data
