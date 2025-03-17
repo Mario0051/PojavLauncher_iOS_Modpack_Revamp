@@ -199,6 +199,53 @@
     return @"Unknown";
 }
 
+// Check if a Forge version is unsupported (Forge 1.5.1 and below)
+- (BOOL)isUnsupportedForgeVersion:(NSString *)version {
+    if (![self.currentVendor isEqualToString:@"Forge"]) {
+        return NO; // Only applies to Forge
+    }
+    
+    NSString *mcVersion = [self extractMinecraftVersionFromForgeVersion:version];
+    if ([mcVersion isEqualToString:@"Unknown"]) {
+        return NO;
+    }
+    
+    // Compare the Minecraft version to 1.5.1
+    NSArray *components = [mcVersion componentsSeparatedByString:@"."];
+    
+    // Must have at least major.minor format
+    if (components.count < 2) {
+        return NO;
+    }
+    
+    // Check major version (must be 1)
+    if ([components[0] integerValue] != 1) {
+        return NO;
+    }
+    
+    // Check minor version
+    NSInteger minorVersion = [components[1] integerValue];
+    if (minorVersion > 5) {
+        return NO; // Forge for MC > 1.5 is supported
+    }
+    
+    if (minorVersion < 5) {
+        return YES; // Forge for MC < 1.5 is unsupported
+    }
+    
+    // For 1.5.x, we need to check patch version
+    if (components.count > 2) {
+        NSInteger patchVersion = [components[2] integerValue];
+        if (patchVersion <= 1) {
+            return YES; // 1.5.0 and 1.5.1 are unsupported
+        }
+    } else {
+        return YES; // Just "1.5" is considered unsupported
+    }
+    
+    return NO;
+}
+
 - (NSString *)getDisplayName:(NSString *)version {
     if ([self.currentVendor isEqualToString:@"NeoForge"]) {
         // For NeoForge, we need a clear display format that shows both version components
@@ -442,7 +489,26 @@
     }
 
     NSString *version = self.forgeList[indexPath.section][indexPath.row];
-    cell.textLabel.text = [self getDisplayName:version];
+    BOOL isUnsupported = [self isUnsupportedForgeVersion:version];
+    
+    // Update text label
+    if (isUnsupported) {
+        // Create attributed string for unsupported versions
+        NSString *displayName = [self getDisplayName:version];
+        NSMutableAttributedString *attributedText = [[NSMutableAttributedString alloc] 
+                                                    initWithString:[NSString stringWithFormat:@"%@ - UNSUPPORTED", displayName]];
+        
+        // Add red color to the "UNSUPPORTED" part
+        [attributedText addAttribute:NSForegroundColorAttributeName 
+                               value:[UIColor systemRedColor] 
+                               range:NSMakeRange(displayName.length + 3, 11)];
+        
+        cell.textLabel.attributedText = attributedText;
+    } else {
+        // Regular display for supported versions
+        cell.textLabel.attributedText = nil;
+        cell.textLabel.text = [self getDisplayName:version];
+    }
     
     // Add release type info as subtitle
     if ([version containsString:@"beta"] || [version containsString:@"-beta"]) {
@@ -476,16 +542,25 @@
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    NSString *versionString = self.forgeList[indexPath.section][indexPath.row];
+    
+    // Check if the selected version is unsupported
+    if ([self isUnsupportedForgeVersion:versionString]) {
+        // Show dialog for unsupported versions
+        showDialog(@"Unsupported Version", 
+                  @"This version is currently not available due to how it requires manual setup.");
+        return;
+    }
+    
+    // Continue with normal installation for supported versions
     tableView.allowsSelection = NO;
-
     [self switchToLoadingState];
     self.progressView.fractionCompleted = 0;
 
     UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
     cell.accessoryView = self.progressView;
 
-    // Get the raw version string (not the display name)
-    NSString *versionString = self.forgeList[indexPath.section][indexPath.row];
     NSString *jarURL = [NSString stringWithFormat:self.endpoints[self.currentVendor][@"installer"], versionString];
     NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"tmp.jar"];
     NSLog(@"[%@ Installer] Downloading %@", self.currentVendor, jarURL);
