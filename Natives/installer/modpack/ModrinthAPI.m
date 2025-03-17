@@ -16,160 +16,206 @@ extern void showDialog(NSString *title, NSString *message);
 @implementation ModrinthAPI
 
 - (instancetype)init {
-    self = [super init];
-    if (self) {
-        self.baseURL = @"https://api.modrinth.com/v2";
-        self.reachedLastPage = NO;
-    }
-    return self;
+    return [super initWithURL:@"https://api.modrinth.com/v2"];
 }
 
-#pragma mark - Search Implementation
+- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, NSString *> *)searchFilters previousPageResult:(NSMutableArray *)modrinthSearchResult {
+    // Check for nil input to prevent crashes
+    if (!searchFilters) {
+        NSLog(@"[ModrinthAPI] Warning: searchFilters is nil");
+        return modrinthSearchResult ?: [NSMutableArray new];
+    }
+    
+    int limit = 50;
 
-- (NSMutableArray *)searchModWithFilters:(NSDictionary *)searchFilters previousPageResult:(NSMutableArray *)prevResult {
-    // Start with a fresh array unless we're paginating
-    NSMutableArray *results = prevResult ?: [NSMutableArray new];
+    // Build the facets with appropriate null checks
+    NSMutableString *facetString = [NSMutableString new];
+    [facetString appendString:@"["];
     
-    // Determine pagination - get the current page offset
-    NSInteger offset = 0;
-    if (prevResult && prevResult.count > 0) {
-        offset = prevResult.count;
+    // Safely handle boolean value
+    BOOL isModpack = NO;
+    if (searchFilters[@"isModpack"]) {
+        if ([searchFilters[@"isModpack"] isKindOfClass:[NSNumber class]]) {
+            isModpack = [searchFilters[@"isModpack"] boolValue];
+        }
     }
+    [facetString appendFormat:@"[\"project_type:%@\"]", isModpack ? @"modpack" : @"mod"];
     
-    // Create parameters for the search
-    NSMutableDictionary *params = [NSMutableDictionary dictionaryWithDictionary:@{
-        @"offset": @(offset),
-        @"limit": @(20)  // Fetch up to 20 items per page
-    }];
-    
-    // Add search filters
-    if (searchFilters[@"name"] && ![searchFilters[@"name"] isEqualToString:@" "]) {
-        params[@"query"] = searchFilters[@"name"];
+    // Safely handle MC version
+    if (searchFilters[@"mcVersion"] && [searchFilters[@"mcVersion"] isKindOfClass:[NSString class]] && searchFilters[@"mcVersion"].length > 0) {
+        [facetString appendFormat:@",[\"versions:%@\"]", searchFilters[@"mcVersion"]];
     }
-    
-    // Set content type to modpack
-    if (searchFilters[@"isModpack"] && [searchFilters[@"isModpack"] boolValue]) {
-        params[@"facets"] = @"[[\"project_type:modpack\"]]";
-    }
-    
-    // Add game version filter if provided
-    if (searchFilters[@"mcVersion"]) {
-        NSString *versionFacet = [NSString stringWithFormat:@"[[\"versions:%@\"]]", searchFilters[@"mcVersion"]];
-        params[@"facets"] = versionFacet;
-    }
-    
-    // Make the API request
-    id response = [self getEndpoint:@"search" params:params];
-    
-    // Check if we got a valid response
-    if (!response || ![response isKindOfClass:[NSDictionary class]]) {
-        self.reachedLastPage = YES;
-        return results;
-    }
-    
-    // Process the results
-    NSArray *hits = response[@"hits"];
-    if (!hits || hits.count == 0) {
-        self.reachedLastPage = YES;
-        return results;
-    }
-    
-    // Process each hit
-    for (NSDictionary *hit in hits) {
-        NSMutableDictionary *modData = [NSMutableDictionary new];
-        modData[@"title"] = hit[@"title"] ?: @"Unknown";
-        modData[@"description"] = hit[@"description"] ?: @"";
-        modData[@"id"] = hit[@"project_id"] ?: @"";
-        modData[@"author"] = hit[@"author"] ?: @"Unknown";
-        modData[@"imageUrl"] = hit[@"icon_url"] ?: @"";
-        modData[@"versionDetailsLoaded"] = @NO;
-        
-        // Add the mod to the results
-        [results addObject:modData];
-    }
-    
-    // Check if we've reached the last page
-    NSNumber *totalHits = response[@"total_hits"];
-    if (totalHits) {
-        self.reachedLastPage = (offset + hits.count) >= [totalHits integerValue];
-    } else {
-        self.reachedLastPage = hits.count < [params[@"limit"] integerValue];
-    }
-    
-    return results;
-}
+    [facetString appendString:@"]"];
 
-#pragma mark - Load Mod Details
-
-- (void)loadDetailsOfMod:(NSMutableDictionary *)item {
-    if (!item || ![item isKindOfClass:[NSMutableDictionary class]]) {
-        return;
-    }
+    // Create parameters dictionary with appropriate null checks
+    NSMutableDictionary *params = [NSMutableDictionary dictionary];
+    params[@"facets"] = facetString;
     
-    NSString *projectId = item[@"id"];
-    if (!projectId || ![projectId isKindOfClass:[NSString class]]) {
-        return;
-    }
-    
-    NSString *endpoint = [NSString stringWithFormat:@"project/%@/version", projectId];
-    id response = [self getEndpoint:endpoint params:nil];
-    
-    if (!response || ![response isKindOfClass:[NSArray class]]) {
-        return;
-    }
-    
-    NSArray *versions = (NSArray *)response;
-    if (versions.count == 0) {
-        return;
-    }
-    
-    NSMutableArray *versionNames = [NSMutableArray new];
-    NSMutableArray *versionUrls = [NSMutableArray new];
-    NSMutableArray *versionHashes = [NSMutableArray new];
-    NSMutableArray *versionSizes = [NSMutableArray new];
-    NSMutableArray *mcVersions = [NSMutableArray new];
-    
-    for (NSDictionary *version in versions) {
-        // Get version name
-        NSString *versionName = version[@"name"] ?: @"Unknown Version";
-        [versionNames addObject:versionName];
-        
-        // Get Minecraft versions
-        NSArray *gameVersions = version[@"game_versions"];
-        NSString *mcVersion = gameVersions && gameVersions.count > 0 ? gameVersions[0] : @"Unknown";
-        [mcVersions addObject:mcVersion];
-        
-        // Get download URL, hash, and size from the first file
-        NSArray *files = version[@"files"];
-        NSDictionary *primaryFile = files && files.count > 0 ? files[0] : nil;
-        
-        if (primaryFile) {
-            NSString *downloadUrl = primaryFile[@"url"] ?: @"";
-            [versionUrls addObject:downloadUrl];
-            
-            NSDictionary *hashes = primaryFile[@"hashes"];
-            NSString *sha1 = hashes && hashes[@"sha1"] ? hashes[@"sha1"] : @"";
-            [versionHashes addObject:sha1];
-            
-            NSNumber *size = primaryFile[@"size"] ?: @(0);
-            [versionSizes addObject:size];
-        } else {
-            [versionUrls addObject:@""];
-            [versionHashes addObject:@""];
-            [versionSizes addObject:@(0)];
+    // Safely handle search query
+    if (searchFilters[@"name"] && [searchFilters[@"name"] isKindOfClass:[NSString class]]) {
+        NSString *queryString = searchFilters[@"name"];
+        // Only replace if not empty or just whitespace
+        if (![queryString isEqualToString:@" "]) {
+            params[@"query"] = [queryString stringByReplacingOccurrencesOfString:@" " withString:@"+"];
         }
     }
     
-    // Update the item with version information
-    item[@"versionNames"] = versionNames;
-    item[@"versionUrls"] = versionUrls;
-    item[@"versionHashes"] = versionHashes;
-    item[@"versionSizes"] = versionSizes;
-    item[@"mcVersionNames"] = mcVersions;
-    item[@"versionDetailsLoaded"] = @YES;
+    params[@"limit"] = @(limit);
+    params[@"index"] = @"relevance";
+    
+    // Set offset for pagination
+    if (modrinthSearchResult) {
+        params[@"offset"] = @(modrinthSearchResult.count);
+    } else {
+        params[@"offset"] = @(0);
+    }
+    
+    // Make the API request
+    NSDictionary *response = [self getEndpoint:@"search" params:params];
+    if (!response) {
+        NSLog(@"[ModrinthAPI] Error: API response is nil");
+        return modrinthSearchResult ?: [NSMutableArray new];
+    }
+
+    // Create or use existing results array
+    NSMutableArray *result = modrinthSearchResult ?: [NSMutableArray new];
+    
+    // Safely process hits
+    NSArray *hits = response[@"hits"];
+    if (!hits || ![hits isKindOfClass:[NSArray class]]) {
+        NSLog(@"[ModrinthAPI] Warning: API response has no valid hits");
+        self.reachedLastPage = YES;
+        return result;
+    }
+    
+    // Process each hit with null checking
+    for (NSDictionary *hit in hits) {
+        if (![hit isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        
+        // Default values for all properties
+        NSString *projectId = hit[@"project_id"] ?: @"";
+        NSString *title = hit[@"title"] ?: @"Unknown";
+        NSString *description = hit[@"description"] ?: @"";
+        NSString *iconUrl = hit[@"icon_url"] ?: @"";
+        BOOL isModpackItem = [hit[@"project_type"] isKindOfClass:[NSString class]] && 
+                             [hit[@"project_type"] isEqualToString:@"modpack"];
+        
+        // Create the result dictionary
+        NSMutableDictionary *itemDict = [NSMutableDictionary dictionary];
+        itemDict[@"apiSource"] = @(1); // Constant MODRINTH
+        itemDict[@"isModpack"] = @(isModpackItem);
+        itemDict[@"id"] = projectId;
+        itemDict[@"title"] = title;
+        itemDict[@"description"] = description;
+        itemDict[@"imageUrl"] = iconUrl;
+        itemDict[@"versionDetailsLoaded"] = @NO;
+        
+        [result addObject:itemDict];
+    }
+    
+    // Check if we've reached the last page
+    if ([response[@"total_hits"] isKindOfClass:[NSNumber class]]) {
+        self.reachedLastPage = result.count >= [response[@"total_hits"] unsignedLongValue];
+    } else {
+        self.reachedLastPage = YES; // Default to true if no total_hits
+    }
+    
+    return result;
 }
 
-#pragma mark - ModPack Installation Methods
+- (void)loadDetailsOfMod:(NSMutableDictionary *)item {
+    // Check for nil or invalid item
+    if (!item || ![item isKindOfClass:[NSMutableDictionary class]]) {
+        NSLog(@"[ModrinthAPI] Warning: item is nil or not a mutable dictionary");
+        return;
+    }
+    
+    // Check for project ID
+    NSString *projectId = item[@"id"];
+    if (!projectId || ![projectId isKindOfClass:[NSString class]] || projectId.length == 0) {
+        NSLog(@"[ModrinthAPI] Warning: item has no valid ID");
+        return;
+    }
+    
+    // Make API request
+    NSString *endpoint = [NSString stringWithFormat:@"project/%@/version", projectId];
+    NSArray *response = [self getEndpoint:endpoint params:nil];
+    
+    // Check response validity
+    if (!response || ![response isKindOfClass:[NSArray class]] || response.count == 0) {
+        NSLog(@"[ModrinthAPI] Warning: no version data for project ID %@", projectId);
+        return;
+    }
+    
+    // Extract version data
+    NSMutableArray<NSString *> *names = [NSMutableArray new];
+    NSMutableArray<NSString *> *mcNames = [NSMutableArray new];
+    NSMutableArray<NSString *> *urls = [NSMutableArray new];
+    NSMutableArray<NSString *> *hashes = [NSMutableArray new];
+    NSMutableArray<NSNumber *> *sizes = [NSMutableArray new];
+    
+    // Initialize arrays to avoid index out of bounds
+    for (NSUInteger i = 0; i < response.count; i++) {
+        [names addObject:@"Unknown Version"];
+        [mcNames addObject:@"Unknown"];
+        [urls addObject:@""];
+        [hashes addObject:@""];
+        [sizes addObject:@(0)];
+    }
+    
+    // Safely process each version
+    [response enumerateObjectsUsingBlock:^(NSDictionary *version, NSUInteger i, BOOL *stop) {
+        if (![version isKindOfClass:[NSDictionary class]]) {
+            return;
+        }
+        
+        // Get version name
+        if (version[@"name"] && [version[@"name"] isKindOfClass:[NSString class]]) {
+            names[i] = version[@"name"];
+        }
+        
+        // Get Minecraft version
+        if (version[@"game_versions"] && [version[@"game_versions"] isKindOfClass:[NSArray class]] && 
+            [version[@"game_versions"] count] > 0 && 
+            [version[@"game_versions"][0] isKindOfClass:[NSString class]]) {
+            mcNames[i] = version[@"game_versions"][0];
+        }
+        
+        // Get file information
+        if (version[@"files"] && [version[@"files"] isKindOfClass:[NSArray class]] && 
+            [version[@"files"] count] > 0 && 
+            [version[@"files"][0] isKindOfClass:[NSDictionary class]]) {
+            
+            NSDictionary *file = version[@"files"][0];
+            
+            // Get file size
+            if (file[@"size"] && [file[@"size"] isKindOfClass:[NSNumber class]]) {
+                sizes[i] = file[@"size"];
+            }
+            
+            // Get download URL
+            if (file[@"url"] && [file[@"url"] isKindOfClass:[NSString class]]) {
+                urls[i] = file[@"url"];
+            }
+            
+            // Get hash
+            if (file[@"hashes"] && [file[@"hashes"] isKindOfClass:[NSDictionary class]] && 
+                file[@"hashes"][@"sha1"] && [file[@"hashes"][@"sha1"] isKindOfClass:[NSString class]]) {
+                hashes[i] = file[@"hashes"][@"sha1"];
+            }
+        }
+    }];
+    
+    // Update the item with version information
+    item[@"versionNames"] = names;
+    item[@"mcVersionNames"] = mcNames;
+    item[@"versionSizes"] = sizes;
+    item[@"versionUrls"] = urls;
+    item[@"versionHashes"] = hashes;
+    item[@"versionDetailsLoaded"] = @(YES);
+}
 
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
     NSError *error;
@@ -190,15 +236,6 @@ extern void showDialog(NSString *title, NSString *message);
     if (error) {
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create destination directory: %@", error.localizedDescription]];
         return;
-    }
-
-    // First, determine the size of the archive to help with progress reporting
-    unsigned long long archiveSize = 0;
-    NSError *fileError;
-    NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:packagePath error:&fileError];
-    if (!fileError) {
-        archiveSize = [fileAttributes fileSize];
-        NSLog(@"[ModrinthAPI] Modpack archive size: %llu bytes", archiveSize);
     }
 
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
@@ -239,21 +276,7 @@ extern void showDialog(NSString *title, NSString *message);
     // Store the modpack dependencies for later use in Forge/NeoForge installation
     downloader.metadata[@"modpackDependencies"] = indexDict[@"dependencies"];
     
-    // Calculate total download size for all files
-    unsigned long long totalFileSize = 0;
-    for (NSDictionary *indexFile in files) {
-        if ([indexFile isKindOfClass:[NSDictionary class]] && indexFile[@"fileSize"]) {
-            totalFileSize += [indexFile[@"fileSize"] unsignedLongLongValue];
-        }
-    }
-    
-    // Add extraction size estimate (use the archive size as a base)
-    totalFileSize += archiveSize;
-    
-    // Set total unit count with more accurate estimate
-    downloader.progress.totalUnitCount = totalFileSize > 0 ? totalFileSize : files.count * 1000000;
-    
-    NSLog(@"[ModrinthAPI] Total estimated download size: %llu bytes for %lu files", totalFileSize, (unsigned long)files.count);
+    downloader.progress.totalUnitCount = [files count];
     
     // Track pending downloads to ensure we complete properly
     __block NSInteger pendingDownloads = files.count;
@@ -370,7 +393,8 @@ extern void showDialog(NSString *title, NSString *message);
                                                                 failure:fileFailure];
         
         if (task) {
-            // Task was created and added to file list
+            // Add to file list with the unique display name
+            [downloader.fileList addObject:displayName];
             [task resume];
         } else if (!downloader.progress.cancelled) {
             pendingDownloads--;
@@ -400,22 +424,8 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Add extraction filename to track progress
     [downloader.fileList addObject:@"Extracting modpack..."];
-    
-    // Create a progress object with a meaningful weight based on archive size
-    NSUInteger extractionWeight = 0;
-    NSError *fileError;
-    NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:packagePath error:&fileError];
-    if (!fileError) {
-        extractionWeight = (NSUInteger)[fileAttributes fileSize] / 2; // Use half the archive size as the weight
-    } else {
-        extractionWeight = 10000000; // 10MB default if we can't determine file size
-    }
-    
-    NSLog(@"[ModrinthAPI] Creating extraction progress with weight: %lu bytes", (unsigned long)extractionWeight);
-    
     NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
     [downloader.progressList addObject:extractionProgress];
-    [downloader.progress addChild:extractionProgress withPendingUnitCount:extractionWeight];
     
     NSLog(@"[ModrinthAPI] Beginning extraction of modpack to %@", destPath);
     
