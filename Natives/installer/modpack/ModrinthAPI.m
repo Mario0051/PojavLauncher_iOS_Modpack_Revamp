@@ -102,6 +102,9 @@ extern void showDialog(NSString *title, NSString *message);
         BOOL isModpackItem = [hit[@"project_type"] isKindOfClass:[NSString class]] && 
                              [hit[@"project_type"] isEqualToString:@"modpack"];
         
+        // Extract categories/tags if available
+        NSArray *categories = hit[@"categories"] ?: @[];
+        
         // Create the result dictionary
         NSMutableDictionary *itemDict = [NSMutableDictionary dictionary];
         itemDict[@"apiSource"] = @(1); // Constant MODRINTH
@@ -110,6 +113,7 @@ extern void showDialog(NSString *title, NSString *message);
         itemDict[@"title"] = title;
         itemDict[@"description"] = description;
         itemDict[@"imageUrl"] = iconUrl;
+        itemDict[@"categories"] = categories; // Store categories from search
         itemDict[@"versionDetailsLoaded"] = @NO;
         
         [result addObject:itemDict];
@@ -139,7 +143,39 @@ extern void showDialog(NSString *title, NSString *message);
         return;
     }
     
-    // Make API request
+    // First, load full project details to get complete category info and other metadata
+    NSString *projectEndpoint = [NSString stringWithFormat:@"project/%@", projectId];
+    NSDictionary *projectDetails = [self getEndpoint:projectEndpoint params:nil];
+    
+    // Extract additional metadata if available
+    if (projectDetails) {
+        // Get complete categories list
+        if (projectDetails[@"categories"] && [projectDetails[@"categories"] isKindOfClass:[NSArray class]]) {
+            item[@"categories"] = projectDetails[@"categories"];
+        }
+        
+        // Get additional tags if available
+        if (projectDetails[@"additional_categories"] && [projectDetails[@"additional_categories"] isKindOfClass:[NSArray class]]) {
+            NSMutableArray *allCategories = [NSMutableArray arrayWithArray:item[@"categories"] ?: @[]];
+            [allCategories addObjectsFromArray:projectDetails[@"additional_categories"]];
+            item[@"categories"] = allCategories;
+        }
+        
+        // Get client/server side info
+        if (projectDetails[@"client_side"]) {
+            item[@"client_side"] = projectDetails[@"client_side"];
+        }
+        if (projectDetails[@"server_side"]) {
+            item[@"server_side"] = projectDetails[@"server_side"];
+        }
+        
+        // Get license info
+        if (projectDetails[@"license"]) {
+            item[@"license"] = projectDetails[@"license"];
+        }
+    }
+    
+    // Now load version data (as before)
     NSString *endpoint = [NSString stringWithFormat:@"project/%@/version", projectId];
     NSArray *response = [self getEndpoint:endpoint params:nil];
     
