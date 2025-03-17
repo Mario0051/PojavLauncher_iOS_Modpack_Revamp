@@ -124,6 +124,12 @@ extern void showDialog(NSString *title, NSString *message);
 
     NSLog(@"[ModrinthAPI] Modpack index parsed successfully");
 
+    // Store the destination path in metadata for later use
+    if (!downloader.metadata) {
+        downloader.metadata = [NSMutableDictionary dictionary];
+    }
+    downloader.metadata[@"destPath"] = destPath;
+
     // Get files and create a more unique display name for each file
     NSArray *files = indexDict[@"files"];
     if (!files || ![files isKindOfClass:[NSArray class]] || files.count == 0) {
@@ -132,9 +138,6 @@ extern void showDialog(NSString *title, NSString *message);
     }
     
     // Set up tracking for retries
-    if (!downloader.metadata) {
-        downloader.metadata = [NSMutableDictionary dictionary];
-    }
     downloader.metadata[@"retryMap"] = [NSMutableDictionary dictionary];
     
     // Store the modpack dependencies for later use in Forge/NeoForge installation
@@ -374,14 +377,36 @@ extern void showDialog(NSString *title, NSString *message);
                           indexDict:(NSDictionary *)indexDict
                             depInfo:(NSDictionary *)depInfo
                            destPath:(NSString *)destPath {
-    // Create a mutable dictionary for the new profile
+    // Get the profile name from indexDict, or use the directory name if not available
     NSString *profileName = indexDict[@"name"];
     if (!profileName || [profileName length] == 0) {
         profileName = [destPath lastPathComponent];
     }
     
+    // Calculate the relative gameDir from the absolute destPath
+    NSString *gameDir;
+    NSString *instancesPath = [NSString stringWithFormat:@"%s/instances/%@", 
+                              getenv("POJAV_HOME"), 
+                              getPrefObject(@"general.game_directory")];
+    
+    // If destPath starts with instancesPath, extract the relative part
+    if ([destPath hasPrefix:instancesPath]) {
+        gameDir = [destPath substringFromIndex:instancesPath.length];
+        // Remove leading slash if present
+        if ([gameDir hasPrefix:@"/"]) {
+            gameDir = [gameDir substringFromIndex:1];
+        }
+    } else {
+        // Fallback to default gameDir path (should not normally happen)
+        gameDir = [PLProfiles uniqueGameDirForProfileName:profileName];
+        NSLog(@"[ModrinthAPI] Warning: Could not determine relative gameDir from destPath. Using: %@", gameDir);
+    }
+    
+    NSLog(@"[ModrinthAPI] Creating profile: %@ with gameDir: %@", profileName, gameDir);
+    
+    // Create the profile with the properly aligned gameDir
     NSMutableDictionary *newProfile = [@{
-        @"gameDir": [PLProfiles uniqueGameDirForProfileName:profileName],
+        @"gameDir": gameDir,
         @"name": profileName,
         @"lastVersionId": depInfo[@"id"] ?: @"latest-release"
     } mutableCopy];
@@ -394,8 +419,6 @@ extern void showDialog(NSString *title, NSString *message);
         newProfile[@"icon"] = [NSString stringWithFormat:@"data:image/png;base64,%@",
                               [iconData base64EncodedStringWithOptions:0]];
     }
-    
-    NSLog(@"[ModrinthAPI] Creating profile: %@ with gameDir: %@", profileName, newProfile[@"gameDir"]);
     
     // Add the profile to the profiles list
     PLProfiles.current.profiles[profileName] = newProfile;
