@@ -17,8 +17,8 @@
 @property (nonatomic, strong) UIImageView *modpackIconView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
-@property (nonatomic, strong) UILabel *categoryLabel;
-@property (nonatomic, strong) UIView *categoryTagView;
+@property (nonatomic, strong) UIScrollView *tagsScrollView;
+@property (nonatomic, strong) NSMutableArray<UIView *> *tagViews;
 @end
 
 @implementation ModpackVersionCell
@@ -56,20 +56,16 @@
         self.subtitleLabel.numberOfLines = 2;
         [containerView addSubview:self.subtitleLabel];
         
-        // Category tag background - rounded rect with color
-        self.categoryTagView = [[UIView alloc] init];
-        self.categoryTagView.layer.cornerRadius = 8;
-        self.categoryTagView.translatesAutoresizingMaskIntoConstraints = NO;
-        self.categoryTagView.backgroundColor = [UIColor systemBlueColor];
-        [containerView addSubview:self.categoryTagView];
+        // Tags scroll view - for multiple category tags
+        self.tagsScrollView = [[UIScrollView alloc] init];
+        self.tagsScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+        self.tagsScrollView.showsHorizontalScrollIndicator = NO;
+        self.tagsScrollView.showsVerticalScrollIndicator = NO;
+        self.tagsScrollView.clipsToBounds = YES;
+        [containerView addSubview:self.tagsScrollView];
         
-        // Category label - white text on tag
-        self.categoryLabel = [[UILabel alloc] init];
-        self.categoryLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
-        self.categoryLabel.textColor = [UIColor whiteColor];
-        self.categoryLabel.textAlignment = NSTextAlignmentCenter;
-        self.categoryLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        [self.categoryTagView addSubview:self.categoryLabel];
+        // Initialize tag views array
+        self.tagViews = [NSMutableArray array];
         
         // Add disclosure indicator
         self.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
@@ -94,34 +90,127 @@
         [NSLayoutConstraint activateConstraints:@[
             [self.titleLabel.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:2],
             [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.modpackIconView.trailingAnchor constant:12],
-            [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.categoryTagView.leadingAnchor constant:-8]
+            [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:containerView.trailingAnchor constant:-8]
         ]];
         
         // Subtitle label constraints - below title
         [NSLayoutConstraint activateConstraints:@[
             [self.subtitleLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:2],
             [self.subtitleLabel.leadingAnchor constraintEqualToAnchor:self.titleLabel.leadingAnchor],
-            [self.subtitleLabel.trailingAnchor constraintEqualToAnchor:self.titleLabel.trailingAnchor],
-            [self.subtitleLabel.bottomAnchor constraintLessThanOrEqualToAnchor:containerView.bottomAnchor constant:-2]
+            [self.subtitleLabel.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor]
         ]];
         
-        // Category tag constraints - fixed size at trailing edge
+        // Tags scroll view constraints
         [NSLayoutConstraint activateConstraints:@[
-            [self.categoryTagView.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor],
-            [self.categoryTagView.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
-            [self.categoryTagView.widthAnchor constraintEqualToConstant:70],
-            [self.categoryTagView.heightAnchor constraintEqualToConstant:24]
-        ]];
-        
-        // Category label constraints - fill tag
-        [NSLayoutConstraint activateConstraints:@[
-            [self.categoryLabel.leadingAnchor constraintEqualToAnchor:self.categoryTagView.leadingAnchor constant:4],
-            [self.categoryLabel.trailingAnchor constraintEqualToAnchor:self.categoryTagView.trailingAnchor constant:-4],
-            [self.categoryLabel.topAnchor constraintEqualToAnchor:self.categoryTagView.topAnchor],
-            [self.categoryLabel.bottomAnchor constraintEqualToAnchor:self.categoryTagView.bottomAnchor]
+            [self.tagsScrollView.topAnchor constraintEqualToAnchor:self.subtitleLabel.bottomAnchor constant:4],
+            [self.tagsScrollView.leadingAnchor constraintEqualToAnchor:self.titleLabel.leadingAnchor],
+            [self.tagsScrollView.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor],
+            [self.tagsScrollView.heightAnchor constraintEqualToConstant:24],
+            [self.tagsScrollView.bottomAnchor constraintLessThanOrEqualToAnchor:containerView.bottomAnchor constant:-2]
         ]];
     }
     return self;
+}
+
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    
+    // Clear existing tag views
+    for (UIView *tagView in self.tagViews) {
+        [tagView removeFromSuperview];
+    }
+    [self.tagViews removeAllObjects];
+}
+
+- (void)setTags:(NSArray<NSString *> *)tags {
+    // Clear existing tags first
+    for (UIView *tagView in self.tagViews) {
+        [tagView removeFromSuperview];
+    }
+    [self.tagViews removeAllObjects];
+    
+    if (tags.count == 0) {
+        return;
+    }
+    
+    // Create a horizontal stack to hold tags
+    CGFloat xOffset = 0;
+    CGFloat tagHeight = 20;
+    CGFloat tagSpacing = 8;
+    
+    for (NSString *tag in tags) {
+        // Skip empty tags
+        if (tag.length == 0) continue;
+        
+        // Create tag container view
+        UIView *tagView = [[UIView alloc] init];
+        tagView.backgroundColor = [self colorForTag:tag];
+        tagView.layer.cornerRadius = tagHeight / 2;
+        [self.tagsScrollView addSubview:tagView];
+        [self.tagViews addObject:tagView];
+        
+        // Create tag label
+        UILabel *tagLabel = [[UILabel alloc] init];
+        tagLabel.text = tag;
+        tagLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        tagLabel.textColor = [UIColor whiteColor];
+        tagLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [tagView addSubview:tagLabel];
+        
+        // Size the tag based on text content
+        CGSize textSize = [tag boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, tagHeight)
+                                           options:NSStringDrawingUsesLineFragmentOrigin
+                                        attributes:@{NSFontAttributeName: tagLabel.font}
+                                           context:nil].size;
+        
+        CGFloat tagWidth = textSize.width + 16; // Padding
+        tagView.frame = CGRectMake(xOffset, 0, tagWidth, tagHeight);
+        
+        // Position label centered in tag
+        [NSLayoutConstraint activateConstraints:@[
+            [tagLabel.centerXAnchor constraintEqualToAnchor:tagView.centerXAnchor],
+            [tagLabel.centerYAnchor constraintEqualToAnchor:tagView.centerYAnchor]
+        ]];
+        
+        // Update offset for next tag
+        xOffset += tagWidth + tagSpacing;
+    }
+    
+    // Set content size of scroll view
+    self.tagsScrollView.contentSize = CGSizeMake(xOffset, tagHeight);
+}
+
+- (UIColor *)colorForTag:(NSString *)tag {
+    // Map tags to specific colors for consistency
+    NSDictionary *tagColors = @{
+        @"adventure": [UIColor systemGreenColor],
+        @"magic": [UIColor systemBlueColor],
+        @"tech": [UIColor systemOrangeColor],
+        @"large": [UIColor systemPurpleColor],
+        @"small": [UIColor systemTealColor],
+        @"quest": [UIColor systemIndigoColor],
+        @"fabric": [UIColor systemPinkColor],
+        @"forge": [UIColor systemBrownColor],
+        @"challenge": [UIColor systemRedColor]
+    };
+    
+    // Try to find a predefined color for known tags
+    for (NSString *key in tagColors.allKeys) {
+        if ([tag.lowercaseString containsString:key]) {
+            return tagColors[key];
+        }
+    }
+    
+    // Calculate a unique color based on the tag string (for unknown tags)
+    NSUInteger hash = 0;
+    for (NSUInteger i = 0; i < tag.length; i++) {
+        NSUInteger character = [tag characterAtIndex:i];
+        hash = ((hash << 5) - hash) + character;
+    }
+    
+    // Use the hash to create a repeatable color with good saturation and brightness
+    CGFloat hue = (hash % 256) / 256.0;
+    return [UIColor colorWithHue:hue saturation:0.75 brightness:0.85 alpha:1.0];
 }
 
 @end
@@ -705,7 +794,7 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 80.0; // Taller than ForgeInstallViewController for more modpack details
+    return 100.0; // Increased height to accommodate tags
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -715,8 +804,7 @@
     if (self.isDataLoading) {
         cell.titleLabel.text = localize(@"Loading modpacks...", nil);
         cell.subtitleLabel.text = @"";
-        cell.categoryLabel.text = @"";
-        cell.categoryTagView.backgroundColor = [UIColor clearColor];
+        [cell setTags:@[]];
         cell.accessoryType = UITableViewCellAccessoryNone;
         
         // Add activity indicator as accessory view
@@ -749,8 +837,7 @@
         // Return an empty state cell
         cell.titleLabel.text = localize(@"No modpacks found", nil);
         cell.subtitleLabel.text = localize(@"Try changing your search criteria", nil);
-        cell.categoryLabel.text = @"";
-        cell.categoryTagView.backgroundColor = [UIColor clearColor];
+        [cell setTags:@[]];
         cell.accessoryType = UITableViewCellAccessoryNone;
         cell.modpackIconView.image = [UIImage systemImageNamed:@"cube.box"];
         cell.modpackIconView.tintColor = [UIColor systemGray3Color];
@@ -766,6 +853,7 @@
     NSString *description = [modpack[@"description"] copy] ?: @"";
     NSString *imageUrl = [modpack[@"imageUrl"] copy] ?: @"";
     BOOL detailsLoaded = [modpack[@"versionDetailsLoaded"] boolValue];
+    NSArray *categories = [modpack[@"categories"] copy] ?: @[];
     
     [self.dataLock unlock];
     
@@ -773,33 +861,8 @@
     cell.titleLabel.text = title;
     cell.subtitleLabel.text = description;
     
-    // Set category tag based on section
-    NSString *category;
-    [self.dataLock lock];
-    if (indexPath.section < self.categories.count) {
-        category = self.categories[indexPath.section];
-    } else {
-        category = @"Modpack";
-    }
-    [self.dataLock unlock];
-    
-    // Set tag color based on category
-    UIColor *tagColor;
-    if ([category containsString:@"Featured"]) {
-        tagColor = [UIColor systemPurpleColor];
-    } else if ([category containsString:@"Magic"]) {
-        tagColor = [UIColor systemBlueColor];
-    } else if ([category containsString:@"Tech"]) {
-        tagColor = [UIColor systemOrangeColor];
-    } else if ([category containsString:@"Adventure"]) {
-        tagColor = [UIColor systemGreenColor];
-    } else {
-        tagColor = [UIColor systemGrayColor];
-    }
-    
-    // Set tag appearance
-    cell.categoryTagView.backgroundColor = tagColor;
-    cell.categoryLabel.text = [category componentsSeparatedByString:@" "][0]; // First word only
+    // Set tags from categories
+    [cell setTags:categories];
     
     // Set modpack icon
     UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
@@ -912,6 +975,9 @@
             
             [self.dataLock unlock];
             
+            // If tags have been updated, refresh the cell
+            [cell setTags:modpack[@"categories"] ?: @[]];
+            
             // Show version menu if details loaded successfully
             if ([modpack[@"versionDetailsLoaded"] boolValue]) {
                 [self showVersionMenu:modpack atIndexPath:indexPath];
@@ -951,6 +1017,27 @@
 }
 
 #pragma mark - UISearchResultsUpdating
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    // Store the search text
+    self.searchText = searchController.searchBar.text;
+    
+    // If we're currently loading data, don't do anything
+    if (self.isDataLoading) {
+        return;
+    }
+    
+    // If search is active with non-empty text, filter results
+    if (searchController.isActive && self.searchText.length > 0) {
+        [self filterModpacksWithSearchText:self.searchText];
+    } else {
+        // Reset filtered results to match original
+        [self resetFilteredModpacks];
+    }
+    
+    // Reload the table view to show filtered results
+    [self.tableView reloadData];
+}
 
 - (void)filterModpacksWithSearchText:(NSString *)searchText {
     [self.dataLock lock];
