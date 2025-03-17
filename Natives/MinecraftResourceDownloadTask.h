@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 
 @class ModpackAPI;
+@class AFURLSessionManager;
 
 @interface MinecraftResourceDownloadTask : NSObject
 @property NSProgress *progress, *textProgress;
