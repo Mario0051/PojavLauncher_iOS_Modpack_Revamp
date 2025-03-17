@@ -7,6 +7,7 @@
 @property NSMutableArray *fileList, *progressList;
 @property NSMutableDictionary* metadata;
 @property(nonatomic, copy) void(^handleError)(void);
+@property(nonatomic, readonly) AFURLSessionManager* manager;
 
 // Basic download task method without success callback
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
@@ -32,6 +33,7 @@
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure;
 
+- (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size;
 - (void)finishDownloadWithErrorString:(NSString *)error;
 
 - (void)downloadVersion:(NSDictionary *)version;
