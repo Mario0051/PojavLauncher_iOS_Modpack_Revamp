@@ -219,7 +219,7 @@
 @property(nonatomic, strong) NSString *searchText;
 @property(nonatomic, strong) UIMenu *currentMenu;
 @property(nonatomic, strong) ModrinthAPI *modrinth;
-@property(nonatomic, atomic) AFURLSessionManager *afManager;
+@property(atomic) AFURLSessionManager *afManager;
 @property(nonatomic, strong) WFWorkflowProgressView *progressView;
 @property(nonatomic, strong) NSMutableDictionary *filters;
 
@@ -393,7 +393,7 @@
     [self switchToLoadingState];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         self.filters[@"name"] = name;
-        NSMutableArray *newResults = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.organizeByCategory : nil];
+        NSMutableArray *newResults = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.organizedModpacks : nil];
         
         if (newResults) {
             // If we're not appending, reorganize completely
@@ -951,27 +951,6 @@
 }
 
 #pragma mark - UISearchResultsUpdating
-
-- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    // Store the search text
-    self.searchText = searchController.searchBar.text;
-    
-    // If we're currently loading data, don't do anything
-    if (self.isDataLoading) {
-        return;
-    }
-    
-    // If search is active with non-empty text, filter results
-    if (searchController.isActive && self.searchText.length > 0) {
-        [self filterModpacksWithSearchText:self.searchText];
-    } else {
-        // Reset filtered results to match original
-        [self resetFilteredModpacks];
-    }
-    
-    // Reload the table view to show filtered results
-    [self.tableView reloadData];
-}
 
 - (void)filterModpacksWithSearchText:(NSString *)searchText {
     [self.dataLock lock];
