@@ -173,6 +173,8 @@
 @property(nonatomic, strong) NSMutableString *currentVersionValue;
 @property(nonatomic, strong) NSString *currentVendor;
 @property(nonatomic, strong) NSIndexPath *currentDownloadIndexPath;
+@property(atomic, assign) BOOL isDataLoading; // Add atomic flag to track loading state
+@property(nonatomic, strong) NSLock *dataLock; // Add lock for thread safety
 @end
 
 @implementation ForgeInstallViewController
@@ -250,12 +252,14 @@
         }
     };
     
-    // Initialize data structures
+    // Initialize data structures with thread safety considerations
     self.visibilityList = [NSMutableArray new];
     self.versionList = [NSMutableArray new];
     self.forgeList = [NSMutableArray new];
     self.filteredForgeList = [NSMutableArray new];
     self.currentVersionValue = [NSMutableString new];
+    self.isDataLoading = NO;
+    self.dataLock = [[NSLock alloc] init];
     
     // Load initial data
     [self loadMetadataFromVendor:@"Forge"];
@@ -276,6 +280,8 @@
 
 - (void)resetCellAppearance:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+    if (!cell) return;
+    
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 }
@@ -285,13 +291,6 @@
 }
 
 - (void)segmentChanged:(UISegmentedControl *)segment {
-    // Clear existing data
-    [self.visibilityList removeAllObjects];
-    [self.versionList removeAllObjects];
-    [self.forgeList removeAllObjects];
-    [self.filteredForgeList removeAllObjects];
-    [self.tableView reloadData];
-    
     // Reset search if active
     if (self.searchController.isActive) {
         [self.searchController dismissViewControllerAnimated:YES completion:nil];
@@ -304,13 +303,7 @@
 }
 
 - (void)refreshVersions {
-    // Clear existing data
-    [self.visibilityList removeAllObjects];
-    [self.versionList removeAllObjects];
-    [self.forgeList removeAllObjects];
-    [self.filteredForgeList removeAllObjects];
-    
-    // Load data again
+    // Reload by calling loadMetadataFromVendor again
     [self loadMetadataFromVendor:self.currentVendor];
 }
 
@@ -318,6 +311,22 @@
 
 - (void)loadMetadataFromVendor:(NSString *)vendor {
     [self switchToLoadingState];
+    
+    // Set loading flag to prevent table view access during loading
+    self.isDataLoading = YES;
+    
+    // Clear data under lock
+    [self.dataLock lock];
+    [self.visibilityList removeAllObjects];
+    [self.versionList removeAllObjects];
+    [self.forgeList removeAllObjects];
+    [self.filteredForgeList removeAllObjects];
+    [self.dataLock unlock];
+    
+    // Force reload to prevent accessing stale data
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.tableView reloadData];
+    });
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSURL *url = [[NSURL alloc] initWithString:self.endpoints[vendor][@"metadata"]];
@@ -329,6 +338,7 @@
         
         if (![parser parse]) {
             dispatch_async(dispatch_get_main_queue(), ^{
+                self.isDataLoading = NO;
                 [self.refreshControl endRefreshing];
                 showDialog(localize(@"Error", nil), parser.parserError.localizedDescription);
                 [self actionClose];
@@ -357,8 +367,15 @@
 #pragma mark - Search Results Updating
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    // Avoid updating search results while data is loading
+    if (self.isDataLoading) {
+        return;
+    }
+    
     NSString *searchText = searchController.searchBar.text;
     self.searchText = searchText;
+    
+    [self.dataLock lock];
     
     if (searchText.length == 0) {
         // If search is empty, clear filtered data and show all sections
@@ -384,11 +401,13 @@
             [self.filteredForgeList addObject:filteredSectionVersions];
             
             // Expand sections with matching results
-            if (filteredSectionVersions.count > 0) {
+            if (filteredSectionVersions.count > 0 && i < self.visibilityList.count) {
                 self.visibilityList[i] = @YES;
             }
         }
     }
+    
+    [self.dataLock unlock];
     
     [self.tableView reloadData];
 }
@@ -567,6 +586,9 @@
         return;
     }
     
+    // Use a lock for thread safety when modifying arrays
+    [self.dataLock lock];
+    
     // Handle Forge and NeoForge differently
     if ([self.currentVendor isEqualToString:@"NeoForge"]) {
         // Skip NeoForge versions with problematic patterns
@@ -579,6 +601,7 @@
         for (NSString *pattern in skipPatterns) {
             if ([version containsString:pattern]) {
                 NSLog(@"[ForgeInstall] Skipping problematic NeoForge version: %@", version);
+                [self.dataLock unlock];
                 return;
             }
         }
@@ -589,6 +612,7 @@
         // Skip versions with unknown Minecraft version
         if ([minecraftVersion isEqualToString:@"Unknown"]) {
             NSLog(@"[ForgeInstall] Skipping NeoForge version with unknown MC version: %@", version);
+            [self.dataLock unlock];
             return;
         }
         
@@ -618,6 +642,7 @@
         // Skip versions without a hyphen (need mcVersion-forgeVersion format)
         if (![version containsString:@"-"]) {
             NSLog(@"[ForgeInstall] Skipping invalid Forge version format: %@", version);
+            [self.dataLock unlock];
             return;
         }
         
@@ -630,12 +655,18 @@
         for (NSString *pattern in skipPatterns) {
             if ([version containsString:pattern]) {
                 NSLog(@"[ForgeInstall] Skipping problematic Forge version: %@", version);
+                [self.dataLock unlock];
                 return;
             }
         }
         
         // Simply get minecraft version - part before the hyphen
         NSRange hyphenRange = [version rangeOfString:@"-"];
+        if (hyphenRange.location == NSNotFound) {
+            [self.dataLock unlock];
+            return;
+        }
+        
         NSString *minecraftVersion = [version substringToIndex:hyphenRange.location];
         
         // Add to section - do exact string matching for section headers
@@ -660,23 +691,84 @@
             NSLog(@"[ForgeInstall] Added Forge %@ to %@ section", version, minecraftVersion);
         }
     }
+    
+    [self.dataLock unlock];
 }
 
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return self.versionList.count;
+    // Return 0 sections if data is still loading to prevent any cell rendering attempts
+    if (self.isDataLoading) {
+        return 0;
+    }
+    
+    // Add extra safety by ensuring the tableview isn't accessed during loading
+    [self.dataLock lock];
+    NSInteger count = self.versionList.count;
+    [self.dataLock unlock];
+    
+    return count;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section < self.visibilityList.count && self.visibilityList[section].boolValue) {
-        return self.searchController.isActive ? self.filteredForgeList[section].count : self.forgeList[section].count;
+    // Return 0 rows if data is still loading
+    if (self.isDataLoading) {
+        return 0;
     }
-    return 0;
+    
+    [self.dataLock lock];
+    
+    // Add bounds checking to prevent crashes
+    if (section >= self.visibilityList.count) {
+        [self.dataLock unlock];
+        return 0;
+    }
+    
+    NSInteger rows = 0;
+    
+    if (self.visibilityList[section].boolValue) {
+        // Ensure we don't access an out-of-bounds section in filtered list
+        if (self.searchController.isActive) {
+            if (section < self.filteredForgeList.count) {
+                rows = self.filteredForgeList[section].count;
+            }
+        } else {
+            if (section < self.forgeList.count) {
+                rows = self.forgeList[section].count;
+            }
+        }
+    }
+    
+    [self.dataLock unlock];
+    return rows;
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
     MinecraftVersionHeaderView *headerView = [tableView dequeueReusableHeaderFooterViewWithIdentifier:@"MinecraftVersionHeader"];
+    
+    // Return a loading header if data is still loading
+    if (self.isDataLoading) {
+        headerView.titleLabel.text = @"Loading...";
+        headerView.isExpanded = NO;
+        headerView.expandCollapseButton.tag = section;
+        [headerView.expandCollapseButton removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
+        return headerView;
+    }
+    
+    [self.dataLock lock];
+    
+    // Add bounds checking to prevent index out of bounds crash
+    if (section >= self.versionList.count || self.versionList.count == 0) {
+        [self.dataLock unlock];
+        // Return a default header view if section is out of bounds
+        headerView.titleLabel.text = @"Loading...";
+        headerView.isExpanded = NO;
+        headerView.expandCollapseButton.tag = section;
+        // Remove any existing targets to avoid issues
+        [headerView.expandCollapseButton removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
+        return headerView;
+    }
     
     // Apply the section title
     NSString *mcVersion = self.versionList[section];
@@ -686,8 +778,14 @@
         headerView.titleLabel.text = mcVersion;
     }
     
-    // Set expanded state
-    headerView.isExpanded = self.visibilityList[section].boolValue;
+    // Add bounds checking for visibility list
+    if (section < self.visibilityList.count) {
+        headerView.isExpanded = self.visibilityList[section].boolValue;
+    } else {
+        headerView.isExpanded = NO;
+    }
+    
+    [self.dataLock unlock];
     
     // Store the section index
     headerView.expandCollapseButton.tag = section;
@@ -699,15 +797,26 @@
 }
 
 - (void)toggleSection:(UIButton *)sender {
+    // Return early if data is still loading
+    if (self.isDataLoading) {
+        return;
+    }
+    
     NSInteger section = sender.tag;
     
-    // Check if the section is valid
-    if (section >= 0 && section < self.visibilityList.count) {
+    [self.dataLock lock];
+    
+    // Add stricter bounds checking
+    if (section >= 0 && section < self.visibilityList.count && self.versionList.count > section) {
         // Toggle section visibility
         self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
         
+        [self.dataLock unlock];
+        
         // Update section
         [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationFade];
+    } else {
+        [self.dataLock unlock];
     }
 }
 
@@ -722,10 +831,49 @@
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     ForgeVersionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ForgeVersionCell" forIndexPath:indexPath];
     
+    // If data is loading, return a placeholder cell
+    if (self.isDataLoading) {
+        cell.versionLabel.text = @"Loading...";
+        cell.releaseTypeLabel.text = @"";
+        cell.releaseTypeTagView.backgroundColor = [UIColor clearColor];
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        return cell;
+    }
+    
+    [self.dataLock lock];
+    
+    // Add bounds checking to prevent array index out of bounds crashes
+    BOOL outOfBounds = NO;
+    
+    if (self.searchController.isActive) {
+        outOfBounds = (indexPath.section >= self.filteredForgeList.count || 
+                      (indexPath.section < self.filteredForgeList.count && 
+                       indexPath.row >= self.filteredForgeList[indexPath.section].count));
+    } else {
+        outOfBounds = (indexPath.section >= self.forgeList.count || 
+                      (indexPath.section < self.forgeList.count && 
+                       indexPath.row >= self.forgeList[indexPath.section].count));
+    }
+    
+    if (outOfBounds) {
+        [self.dataLock unlock];
+        // Return cell with default values to avoid crashing
+        cell.versionLabel.text = @"Loading...";
+        cell.releaseTypeLabel.text = @"Unknown";
+        cell.releaseTypeTagView.backgroundColor = [UIColor systemGrayColor];
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        return cell;
+    }
+    
     // Get the version based on search state
     NSString *version = self.searchController.isActive ? 
         self.filteredForgeList[indexPath.section][indexPath.row] : 
         self.forgeList[indexPath.section][indexPath.row];
+    
+    // Make a copy of the string to avoid potential issues if it changes while we're using it
+    version = [version copy];
+    
+    [self.dataLock unlock];
     
     BOOL isUnsupported = [self isUnsupportedForgeVersion:version];
     
@@ -759,10 +907,39 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
+    // Skip if data is still loading
+    if (self.isDataLoading) {
+        return;
+    }
+    
+    [self.dataLock lock];
+    
+    // Add bounds checking to prevent crashes
+    BOOL outOfBounds = NO;
+    if (self.searchController.isActive) {
+        outOfBounds = (indexPath.section >= self.filteredForgeList.count || 
+                      (indexPath.section < self.filteredForgeList.count && 
+                       indexPath.row >= self.filteredForgeList[indexPath.section].count));
+    } else {
+        outOfBounds = (indexPath.section >= self.forgeList.count || 
+                      (indexPath.section < self.forgeList.count && 
+                       indexPath.row >= self.forgeList[indexPath.section].count));
+    }
+    
+    if (outOfBounds) {
+        [self.dataLock unlock];
+        return;
+    }
+    
     // Get the version based on search state
     NSString *versionString = self.searchController.isActive ? 
         self.filteredForgeList[indexPath.section][indexPath.row] : 
         self.forgeList[indexPath.section][indexPath.row];
+    
+    // Make a copy to use after releasing the lock
+    versionString = [versionString copy];
+    
+    [self.dataLock unlock];
     
     // Check if the selected version is unsupported
     if ([self isUnsupportedForgeVersion:versionString]) {
@@ -832,6 +1009,9 @@
 
 - (void)parserDidEndDocument:(NSXMLParser *)parser {
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Sort data under lock to prevent race conditions
+        [self.dataLock lock];
+        
         // Sort Minecraft versions (sections) with newest first
         [self sortVersionSections];
         
@@ -848,6 +1028,11 @@
         if (self.versionList.count > 0) {
             self.visibilityList[0] = @YES;
         }
+        
+        [self.dataLock unlock];
+        
+        // Only after all data processing is complete, clear the loading flag
+        self.isDataLoading = NO;
         
         [self switchToReadyState];
         [self.tableView reloadData];
@@ -886,6 +1071,9 @@
 
 - (void)parser:(NSXMLParser *)parser parseErrorOccurred:(NSError *)parseError {
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Mark loading as complete
+        self.isDataLoading = NO;
+        
         [self.refreshControl endRefreshing];
         showDialog(@"Error Loading Versions", parseError.localizedDescription);
         [self switchToReadyState];
