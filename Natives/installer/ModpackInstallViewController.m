@@ -122,64 +122,6 @@
     [self.tagViews removeAllObjects];
 }
 
-- (void)setTags:(NSArray<NSString *> *)tags {
-    // Clear existing tags first
-    for (UIView *tagView in self.tagViews) {
-        [tagView removeFromSuperview];
-    }
-    [self.tagViews removeAllObjects];
-    
-    if (tags.count == 0) {
-        return;
-    }
-    
-    // Create a horizontal stack to hold tags
-    CGFloat xOffset = 0;
-    CGFloat tagHeight = 20;
-    CGFloat tagSpacing = 8;
-    
-    for (NSString *tag in tags) {
-        // Skip empty tags
-        if (tag.length == 0) continue;
-        
-        // Create tag container view
-        UIView *tagView = [[UIView alloc] init];
-        tagView.backgroundColor = [self colorForTag:tag];
-        tagView.layer.cornerRadius = tagHeight / 2;
-        [self.tagsScrollView addSubview:tagView];
-        [self.tagViews addObject:tagView];
-        
-        // Create tag label
-        UILabel *tagLabel = [[UILabel alloc] init];
-        tagLabel.text = tag;
-        tagLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
-        tagLabel.textColor = [UIColor whiteColor];
-        tagLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        [tagView addSubview:tagLabel];
-        
-        // Size the tag based on text content
-        CGSize textSize = [tag boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, tagHeight)
-                                           options:NSStringDrawingUsesLineFragmentOrigin
-                                        attributes:@{NSFontAttributeName: tagLabel.font}
-                                           context:nil].size;
-        
-        CGFloat tagWidth = textSize.width + 16; // Padding
-        tagView.frame = CGRectMake(xOffset, 0, tagWidth, tagHeight);
-        
-        // Position label centered in tag
-        [NSLayoutConstraint activateConstraints:@[
-            [tagLabel.centerXAnchor constraintEqualToAnchor:tagView.centerXAnchor],
-            [tagLabel.centerYAnchor constraintEqualToAnchor:tagView.centerYAnchor]
-        ]];
-        
-        // Update offset for next tag
-        xOffset += tagWidth + tagSpacing;
-    }
-    
-    // Set content size of scroll view
-    self.tagsScrollView.contentSize = CGSizeMake(xOffset, tagHeight);
-}
-
 - (UIColor *)colorForTag:(NSString *)tag {
     // Enhanced category color mapping with semantically appropriate colors
     NSDictionary *tagColors = @{
@@ -235,6 +177,105 @@
     // Use the hash to create a repeatable color with good saturation and brightness
     CGFloat hue = (hash % 256) / 256.0;
     return [UIColor colorWithHue:hue saturation:0.75 brightness:0.85 alpha:1.0];
+}
+
+- (void)setTags:(NSArray<NSString *> *)tags {
+    // Clear existing tags first
+    for (UIView *tagView in self.tagViews) {
+        [tagView removeFromSuperview];
+    }
+    [self.tagViews removeAllObjects];
+    
+    if (tags.count == 0) {
+        return;
+    }
+    
+    // Create a horizontal stack to hold tags
+    CGFloat xOffset = 0;
+    CGFloat tagHeight = 22; // Slightly larger
+    CGFloat tagSpacing = 8;
+    
+    // First, sort tags alphabetically and limit to a reasonable number
+    NSArray *sortedTags = [tags sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    NSInteger maxTags = 5; // Show only 5 tags at most to avoid clutter
+    NSArray *displayTags = sortedTags.count > maxTags ? 
+                          [sortedTags subarrayWithRange:NSMakeRange(0, maxTags)] : 
+                          sortedTags;
+    
+    for (NSString *tag in displayTags) {
+        // Skip empty tags
+        if (tag.length == 0) continue;
+        
+        // Create tag container view
+        UIView *tagView = [[UIView alloc] init];
+        tagView.backgroundColor = [self colorForTag:tag];
+        tagView.layer.cornerRadius = tagHeight / 2;
+        tagView.layer.masksToBounds = YES; // Ensure content stays within rounded corners
+        [self.tagsScrollView addSubview:tagView];
+        [self.tagViews addObject:tagView];
+        
+        // Create tag label
+        UILabel *tagLabel = [[UILabel alloc] init];
+        tagLabel.text = tag;
+        tagLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        tagLabel.textColor = [UIColor whiteColor];
+        tagLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [tagView addSubview:tagLabel];
+        
+        // Size the tag based on text content
+        CGSize textSize = [tag boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, tagHeight)
+                                           options:NSStringDrawingUsesLineFragmentOrigin
+                                        attributes:@{NSFontAttributeName: tagLabel.font}
+                                           context:nil].size;
+        
+        CGFloat tagWidth = textSize.width + 16; // Padding
+        tagView.frame = CGRectMake(xOffset, 0, tagWidth, tagHeight);
+        
+        // Position label centered in tag
+        [NSLayoutConstraint activateConstraints:@[
+            [tagLabel.centerXAnchor constraintEqualToAnchor:tagView.centerXAnchor],
+            [tagLabel.centerYAnchor constraintEqualToAnchor:tagView.centerYAnchor]
+        ]];
+        
+        // Update offset for next tag
+        xOffset += tagWidth + tagSpacing;
+    }
+    
+    // If we limited the tags, add a +X more indicator
+    if (sortedTags.count > maxTags) {
+        NSString *moreText = [NSString stringWithFormat:@"+%lu more", (unsigned long)(sortedTags.count - maxTags)];
+        
+        UIView *moreView = [[UIView alloc] init];
+        moreView.backgroundColor = [UIColor systemGrayColor];
+        moreView.layer.cornerRadius = tagHeight / 2;
+        [self.tagsScrollView addSubview:moreView];
+        [self.tagViews addObject:moreView];
+        
+        UILabel *moreLabel = [[UILabel alloc] init];
+        moreLabel.text = moreText;
+        moreLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        moreLabel.textColor = [UIColor whiteColor];
+        moreLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        [moreView addSubview:moreLabel];
+        
+        CGSize textSize = [moreText boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, tagHeight)
+                                               options:NSStringDrawingUsesLineFragmentOrigin
+                                            attributes:@{NSFontAttributeName: moreLabel.font}
+                                               context:nil].size;
+        
+        CGFloat moreWidth = textSize.width + 16;
+        moreView.frame = CGRectMake(xOffset, 0, moreWidth, tagHeight);
+        
+        [NSLayoutConstraint activateConstraints:@[
+            [moreLabel.centerXAnchor constraintEqualToAnchor:moreView.centerXAnchor],
+            [moreLabel.centerYAnchor constraintEqualToAnchor:moreView.centerYAnchor]
+        ]];
+        
+        xOffset += moreWidth + tagSpacing;
+    }
+    
+    // Set content size of scroll view
+    self.tagsScrollView.contentSize = CGSizeMake(xOffset, tagHeight);
 }
 
 @end
@@ -335,6 +376,7 @@
 @property(atomic) AFURLSessionManager *afManager;
 @property(nonatomic, strong) WFWorkflowProgressView *progressView;
 @property(nonatomic, strong) NSMutableDictionary *filters;
+@property(nonatomic, strong) NSMutableSet *activeTagFilters;
 
 // Data structure for organized sections
 @property(nonatomic, strong) NSMutableArray<NSString *> *categories;
@@ -385,6 +427,9 @@
     // Title for the view controller
     self.title = localize(@"launcher.menu.modpacks", nil);
     
+    // Initialize tag filter set
+    self.activeTagFilters = [NSMutableSet new];
+    
     // Setup category filter - segmented control
     UISegmentedControl *segment = [[UISegmentedControl alloc] initWithItems:@[
         localize(@"All", nil),
@@ -414,6 +459,20 @@
     self.progressView = [[NSClassFromString(@"WFWorkflowProgressView") alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
     self.progressView.resolvedTintColor = self.view.tintColor;
     [self.progressView addTarget:self action:@selector(actionCancelDownload) forControlEvents:UIControlEventTouchUpInside];
+    
+    // Add tag filter button to navigation
+    UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
+                                        initWithImage:[UIImage systemImageNamed:@"tag"]
+                                        style:UIBarButtonItemStylePlain 
+                                        target:self 
+                                        action:@selector(showTagFilterMenu:)];
+    
+    UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] 
+                                   initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                   target:self 
+                                   action:@selector(actionClose)];
+    
+    self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
     
     // Initialize modrinth API
     self.modrinth = [ModrinthAPI new];
@@ -495,6 +554,68 @@
     [self updateSearchResults];
 }
 
+- (void)showTagFilterMenu:(UIBarButtonItem *)sender {
+    // Create a set of all available tags
+    NSMutableSet *allTagsSet = [NSMutableSet new];
+    
+    // Get all tags from all modpacks
+    for (NSArray *categoryModpacks in self.organizedModpacks) {
+        for (NSDictionary *modpack in categoryModpacks) {
+            NSArray *categories = modpack[@"categories"] ?: @[];
+            [allTagsSet addObjectsFromArray:categories];
+        }
+    }
+    
+    // Convert to sorted array
+    NSArray *allTags = [[allTagsSet allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    
+    // Create alert controller for tag selection
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:localize(@"Filter by Tags", nil)
+                                                                            message:localize(@"Select tags to filter modpacks", nil)
+                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    // Add actions for each tag
+    for (NSString *tag in allTags) {
+        BOOL isSelected = [self.activeTagFilters containsObject:tag];
+        NSString *title = isSelected ? [NSString stringWithFormat:@"✓ %@", tag] : tag;
+        
+        UIAlertAction *action = [UIAlertAction actionWithTitle:title
+                                                         style:UIAlertActionStyleDefault
+                                                       handler:^(UIAlertAction * _Nonnull action) {
+            // Toggle tag selection
+            if (isSelected) {
+                [self.activeTagFilters removeObject:tag];
+            } else {
+                [self.activeTagFilters addObject:tag];
+            }
+            
+            // Apply filters
+            [self applyTagFilters];
+        }];
+        
+        [alertController addAction:action];
+    }
+    
+    // Add clear filters option
+    UIAlertAction *clearAction = [UIAlertAction actionWithTitle:localize(@"Clear All Filters", nil)
+                                                         style:UIAlertActionStyleDestructive
+                                                       handler:^(UIAlertAction * _Nonnull action) {
+        [self.activeTagFilters removeAllObjects];
+        [self applyTagFilters];
+    }];
+    [alertController addAction:clearAction];
+    
+    // Add cancel option
+    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                                          style:UIAlertActionStyleCancel
+                                                        handler:nil];
+    [alertController addAction:cancelAction];
+    
+    // Present the alert
+    alertController.popoverPresentationController.barButtonItem = sender;
+    [self presentViewController:alertController animated:YES completion:nil];
+}
+
 #pragma mark - Data Loading
 
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
@@ -534,40 +655,11 @@
     [self loadSearchResultsWithPrevList:NO];
 }
 
-#pragma mark - UISearchResultsUpdating
-
-- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    // Update search results text without filtering yet (will be debounced)
-    self.searchText = searchController.searchBar.text;
-    
-    // Debounce the search to prevent excessive updates while typing
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performFilteringWithCurrentSearchText) object:nil];
-    [self performSelector:@selector(performFilteringWithCurrentSearchText) withObject:nil afterDelay:0.5];
-}
-
-- (void)performFilteringWithCurrentSearchText {
-    // If we're currently loading data, don't do anything
-    if (self.isDataLoading) {
-        return;
-    }
-    
-    // If search is active with non-empty text, filter results
-    if (self.searchController.isActive && self.searchText.length > 0) {
-        [self filterModpacksWithSearchText:self.searchText];
-    } else {
-        // Reset filtered results to match original
-        [self resetFilteredModpacks];
-    }
-    
-    // Reload the table view to show filtered results
-    [self.tableView reloadData];
-}
-
 #pragma mark - UI State Management
 
 - (void)switchToLoadingState {
     UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:indicator];
+    self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithCustomView:indicator]];
     [indicator startAnimating];
     self.navigationController.modalInPresentation = YES;
     self.tableView.allowsSelection = NO;
@@ -576,9 +668,25 @@
 }
 
 - (void)switchToReadyState {
-    UIActivityIndicatorView *indicator = (id)self.navigationItem.rightBarButtonItem.customView;
+    UIActivityIndicatorView *indicator = (id)self.navigationItem.rightBarButtonItems[0].customView;
     [indicator stopAnimating];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(actionClose)];
+    
+    UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] 
+                                   initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                   target:self 
+                                   action:@selector(actionClose)];
+                                   
+    UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
+                                        initWithImage:[UIImage systemImageNamed:@"tag"]
+                                        style:UIBarButtonItemStylePlain 
+                                        target:self 
+                                        action:@selector(showTagFilterMenu:)];
+                                        
+    if (self.activeTagFilters.count > 0) {
+        tagFilterButton.tintColor = [UIColor systemBlueColor];
+    }
+    
+    self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
     self.navigationController.modalInPresentation = NO;
     self.tableView.allowsSelection = YES;
     [self.refreshControl endRefreshing];
@@ -586,7 +694,16 @@
     self.isDataLoading = NO;
 }
 
-#pragma mark - Data Organization
+- (void)updateFilterIndicators {
+    // Update navigation title to indicate active filters
+    if (self.activeTagFilters.count > 0) {
+        self.navigationItem.rightBarButtonItems[1].tintColor = [UIColor systemBlueColor];
+    } else {
+        self.navigationItem.rightBarButtonItems[1].tintColor = nil; // Default tint
+    }
+}
+
+#pragma mark - Data Organization and Filtering
 
 - (void)organizeModpacksByCategory:(NSArray *)modpacks {
     [self.dataLock lock];
@@ -754,6 +871,217 @@
     [self.filteredModpacks[otherIndex] addObjectsFromArray:newModpacks];
     
     [self.dataLock unlock];
+}
+
+- (void)filterModpacksWithSearchText:(NSString *)searchText {
+    [self.dataLock lock];
+    
+    // Clear existing filtered results
+    [self.filteredModpacks removeAllObjects];
+    
+    // For each category, filter the modpacks
+    for (NSUInteger i = 0; i < self.organizedModpacks.count; i++) {
+        NSMutableArray *categoryModpacks = self.organizedModpacks[i];
+        NSMutableArray *filteredCategoryModpacks = [NSMutableArray array];
+        
+        // Filter by title, description, or tags
+        for (NSDictionary *modpack in categoryModpacks) {
+            NSString *title = modpack[@"title"] ?: @"";
+            NSString *description = modpack[@"description"] ?: @"";
+            NSArray *categories = modpack[@"categories"] ?: @[];
+            
+            // Check if search text appears in title or description
+            BOOL matchesTextContent = [title localizedCaseInsensitiveContainsString:searchText] ||
+                                     [description localizedCaseInsensitiveContainsString:searchText];
+            
+            // Check if search text matches any tag/category
+            BOOL matchesTags = NO;
+            for (NSString *tag in categories) {
+                if ([tag localizedCaseInsensitiveContainsString:searchText]) {
+                    matchesTags = YES;
+                    break;
+                }
+            }
+            
+            // Include if it matches any criteria
+            if (matchesTextContent || matchesTags) {
+                [filteredCategoryModpacks addObject:modpack];
+            }
+        }
+        
+        // Add this category's filtered results
+        [self.filteredModpacks addObject:filteredCategoryModpacks];
+        
+        // Expand any category with matching results
+        if (filteredCategoryModpacks.count > 0 && i < self.visibilityList.count) {
+            self.visibilityList[i] = @YES;
+        }
+    }
+    
+    [self.dataLock unlock];
+}
+
+- (void)resetFilteredModpacks {
+    [self.dataLock lock];
+    
+    // Clear and recreate filtered lists from original lists
+    [self.filteredModpacks removeAllObjects];
+    
+    for (NSMutableArray *categoryModpacks in self.organizedModpacks) {
+        [self.filteredModpacks addObject:[categoryModpacks mutableCopy]];
+    }
+    
+    [self.dataLock unlock];
+}
+
+- (void)applyTagFilters {
+    // If no active filters, just reset to original content
+    if (self.activeTagFilters.count == 0) {
+        [self resetFilteredModpacks];
+        [self.tableView reloadData];
+        [self updateFilterIndicators];
+        return;
+    }
+    
+    [self.dataLock lock];
+    
+    // Clear existing filtered results
+    [self.filteredModpacks removeAllObjects];
+    
+    // For each category, filter the modpacks
+    for (NSUInteger i = 0; i < self.organizedModpacks.count; i++) {
+        NSMutableArray *categoryModpacks = self.organizedModpacks[i];
+        NSMutableArray *filteredCategoryModpacks = [NSMutableArray array];
+        
+        // Filter by tags
+        for (NSDictionary *modpack in categoryModpacks) {
+            NSArray *modpackTags = modpack[@"categories"] ?: @[];
+            
+            // Check if modpack has at least one of the active tag filters
+            BOOL matchesFilters = NO;
+            for (NSString *tag in modpackTags) {
+                if ([self.activeTagFilters containsObject:tag]) {
+                    matchesFilters = YES;
+                    break;
+                }
+            }
+            
+            if (matchesFilters) {
+                [filteredCategoryModpacks addObject:modpack];
+            }
+        }
+        
+        // Add this category's filtered results
+        [self.filteredModpacks addObject:filteredCategoryModpacks];
+        
+        // Expand any category with matching results
+        if (filteredCategoryModpacks.count > 0 && i < self.visibilityList.count) {
+            self.visibilityList[i] = @YES;
+        }
+    }
+    
+    [self.dataLock unlock];
+    
+    // Reload the table view
+    [self.tableView reloadData];
+    
+    // Update the UI to show active filters
+    [self updateFilterIndicators];
+}
+
+- (void)performCombinedFiltering {
+    // If we're currently loading data, don't do anything
+    if (self.isDataLoading) {
+        return;
+    }
+    
+    // If we have both active text search and tag filters, apply both
+    if (self.searchController.isActive && self.searchText.length > 0 && self.activeTagFilters.count > 0) {
+        [self applyTextSearchAndTagFilters];
+    }
+    // If we only have text search
+    else if (self.searchController.isActive && self.searchText.length > 0) {
+        [self filterModpacksWithSearchText:self.searchText];
+    }
+    // If we only have tag filters
+    else if (self.activeTagFilters.count > 0) {
+        [self applyTagFilters];
+    }
+    // If we have neither
+    else {
+        [self resetFilteredModpacks];
+    }
+    
+    // Reload the table view
+    [self.tableView reloadData];
+}
+
+- (void)applyTextSearchAndTagFilters {
+    [self.dataLock lock];
+    
+    // Clear existing filtered results
+    [self.filteredModpacks removeAllObjects];
+    
+    // For each category, filter the modpacks
+    for (NSUInteger i = 0; i < self.organizedModpacks.count; i++) {
+        NSMutableArray *categoryModpacks = self.organizedModpacks[i];
+        NSMutableArray *filteredCategoryModpacks = [NSMutableArray array];
+        
+        // Filter by both text and tags
+        for (NSDictionary *modpack in categoryModpacks) {
+            NSString *title = modpack[@"title"] ?: @"";
+            NSString *description = modpack[@"description"] ?: @"";
+            NSArray *modpackTags = modpack[@"categories"] ?: @[];
+            
+            // Check if search text appears in title or description
+            BOOL matchesTextContent = [title localizedCaseInsensitiveContainsString:self.searchText] ||
+                                     [description localizedCaseInsensitiveContainsString:self.searchText];
+            
+            // Check if search text matches any tag
+            BOOL matchesTextInTags = NO;
+            for (NSString *tag in modpackTags) {
+                if ([tag localizedCaseInsensitiveContainsString:self.searchText]) {
+                    matchesTextInTags = YES;
+                    break;
+                }
+            }
+            
+            // Check if modpack has at least one of the active tag filters
+            BOOL matchesTagFilters = NO;
+            for (NSString *tag in modpackTags) {
+                if ([self.activeTagFilters containsObject:tag]) {
+                    matchesTagFilters = YES;
+                    break;
+                }
+            }
+            
+            // Include if it matches text search AND tag filters
+            if ((matchesTextContent || matchesTextInTags) && matchesTagFilters) {
+                [filteredCategoryModpacks addObject:modpack];
+            }
+        }
+        
+        // Add this category's filtered results
+        [self.filteredModpacks addObject:filteredCategoryModpacks];
+        
+        // Expand any category with matching results
+        if (filteredCategoryModpacks.count > 0 && i < self.visibilityList.count) {
+            self.visibilityList[i] = @YES;
+        }
+    }
+    
+    [self.dataLock unlock];
+}
+
+#pragma mark - UISearchResultsUpdating
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    // Update search results text
+    self.searchText = searchController.searchBar.text;
+    
+    // Debounce the search to prevent excessive updates while typing
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performCombinedFiltering) object:nil];
+    [self performSelector:@selector(performCombinedFiltering) withObject:nil afterDelay:0.5];
 }
 
 #pragma mark - UIContextMenu
@@ -1124,55 +1452,6 @@
     UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:self];
     cell.interactions = @[interaction];
     [interaction _presentMenuAtLocation:CGPointZero];
-}
-
-#pragma mark - Filtering Methods
-
-- (void)filterModpacksWithSearchText:(NSString *)searchText {
-    [self.dataLock lock];
-    
-    // Clear existing filtered results
-    [self.filteredModpacks removeAllObjects];
-    
-    // For each category, filter the modpacks
-    for (NSUInteger i = 0; i < self.organizedModpacks.count; i++) {
-        NSMutableArray *categoryModpacks = self.organizedModpacks[i];
-        NSMutableArray *filteredCategoryModpacks = [NSMutableArray array];
-        
-        // Filter by title or description
-        for (NSDictionary *modpack in categoryModpacks) {
-            NSString *title = modpack[@"title"] ?: @"";
-            NSString *description = modpack[@"description"] ?: @"";
-            
-            if ([title localizedCaseInsensitiveContainsString:searchText] ||
-                [description localizedCaseInsensitiveContainsString:searchText]) {
-                [filteredCategoryModpacks addObject:modpack];
-            }
-        }
-        
-        // Add this category's filtered results
-        [self.filteredModpacks addObject:filteredCategoryModpacks];
-        
-        // Expand any category with matching results
-        if (filteredCategoryModpacks.count > 0 && i < self.visibilityList.count) {
-            self.visibilityList[i] = @YES;
-        }
-    }
-    
-    [self.dataLock unlock];
-}
-
-- (void)resetFilteredModpacks {
-    [self.dataLock lock];
-    
-    // Clear and recreate filtered lists from original lists
-    [self.filteredModpacks removeAllObjects];
-    
-    for (NSMutableArray *categoryModpacks in self.organizedModpacks) {
-        [self.filteredModpacks addObject:[categoryModpacks mutableCopy]];
-    }
-    
-    [self.dataLock unlock];
 }
 
 @end
