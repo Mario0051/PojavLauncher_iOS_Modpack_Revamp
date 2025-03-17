@@ -22,6 +22,7 @@
         self.versionLabel = [[UILabel alloc] init];
         self.versionLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
         self.versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        self.versionLabel.lineBreakMode = NSLineBreakByTruncatingTail; // Add truncation for long text
         [self.contentView addSubview:self.versionLabel];
         
         // Release type tag background
@@ -35,26 +36,28 @@
         self.releaseTypeLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
         self.releaseTypeLabel.textColor = [UIColor whiteColor];
         self.releaseTypeLabel.textAlignment = NSTextAlignmentCenter;
+        self.releaseTypeLabel.adjustsFontSizeToFitWidth = YES; // Allow font to adjust for long text
+        self.releaseTypeLabel.minimumScaleFactor = 0.8; // Minimum scale factor to ensure readability
         self.releaseTypeLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [self.releaseTypeTagView addSubview:self.releaseTypeLabel];
         
         // Add disclosure indicator
         self.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
         
-        // Constraints for version label
+        // Version label - now with fixed trailing constraint, independent of tag view
         [NSLayoutConstraint activateConstraints:@[
             [self.versionLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
             [self.versionLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:10],
-            [self.versionLabel.trailingAnchor constraintEqualToAnchor:self.releaseTypeTagView.leadingAnchor constant:-8],
+            [self.versionLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.contentView.trailingAnchor constant:-120], // Fixed space from trailing edge
             [self.versionLabel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-10]
         ]];
         
-        // Constraints for tag view
+        // Tag view with FIXED size
         [NSLayoutConstraint activateConstraints:@[
             [self.releaseTypeTagView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-44], // Account for disclosure indicator
             [self.releaseTypeTagView.centerYAnchor constraintEqualToAnchor:self.contentView.centerYAnchor],
-            [self.releaseTypeTagView.widthAnchor constraintGreaterThanOrEqualToConstant:60], // Reduced from 80
-            [self.releaseTypeTagView.heightAnchor constraintEqualToConstant:20] // Reduced from 24
+            [self.releaseTypeTagView.widthAnchor constraintEqualToConstant:70], // Fixed width instead of minimum
+            [self.releaseTypeTagView.heightAnchor constraintEqualToConstant:20]
         ]];
         
         // Constraints for release type label
