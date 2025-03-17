@@ -600,41 +600,67 @@
         categorizedModpacks[category] = [NSMutableArray array];
     }
     
-    // Assign modpacks to categories based on some criteria
-    // This is a simplified example - in real implementation, you'd want to 
-    // use actual modpack categories from the API response
+    // Define expanded keywords for better categorization
+    NSDictionary *categoryKeywords = @{
+        localize(@"Magic Modpacks", nil): @[@"magic", @"wizard", @"spell", @"arcane", @"mage", @"witch", @"sorcery", @"mystical", @"enchant", @"thaumcraft", @"blood magic", @"botania"],
+        
+        localize(@"Tech Modpacks", nil): @[@"tech", @"machine", @"redstone", @"industrial", @"energy", @"power", @"mechanism", @"factory", @"automation", @"engineer", @"buildcraft", @"immersive engineering", @"thermal", @"computercraft", @"create"],
+        
+        localize(@"Adventure Modpacks", nil): @[@"adventure", @"quest", @"explore", @"journey", @"dungeon", @"rpg", @"dimension", @"battle", @"biome", @"structure", @"twilight forest", @"aether"]
+    };
+    
+    // Assign modpacks to categories based on keywords
     for (NSDictionary *modpack in modpacks) {
-        NSString *title = modpack[@"title"];
-        NSString *description = modpack[@"description"];
+        NSString *title = [modpack[@"title"] ?: @"" lowercaseString];
+        NSString *description = [modpack[@"description"] ?: @"" lowercaseString];
+        NSArray *tags = modpack[@"categories"] ?: @[];
         
-        // Simple categorization based on title/description keywords
-        // In a real implementation, use category data from the API
-        NSString *category;
+        // Start with a score for each category
+        NSMutableDictionary *categoryScores = [NSMutableDictionary dictionary];
+        for (NSString *category in defaultCategories) {
+            categoryScores[category] = @0;
+        }
         
-        if ([title containsString:@"Magic"] || 
-            [description containsString:@"Magic"] ||
-            [title containsString:@"Wizard"] ||
-            [description containsString:@"Wizard"]) {
-            category = localize(@"Magic Modpacks", nil);
+        // Calculate a score for each category based on keyword matching
+        for (NSString *category in categoryKeywords) {
+            NSArray *keywords = categoryKeywords[category];
+            int score = 0;
+            
+            for (NSString *keyword in keywords) {
+                if ([title containsString:keyword] || [description containsString:keyword]) {
+                    score += 2;
+                }
+                
+                // Check if the keyword appears in any of the modpack's categories/tags
+                for (NSString *tag in tags) {
+                    if ([[tag lowercaseString] containsString:keyword]) {
+                        score += 3; // Tags are more reliable indicators than text matching
+                    }
+                }
+            }
+            
+            categoryScores[category] = @(score);
         }
-        else if ([title containsString:@"Tech"] || 
-                [description containsString:@"Tech"] ||
-                [title containsString:@"Machine"] ||
-                [description containsString:@"Machine"]) {
-            category = localize(@"Tech Modpacks", nil);
+        
+        // Find the category with the highest score
+        NSString *bestCategory = localize(@"Other Modpacks", nil);
+        int highestScore = 0;
+        
+        for (NSString *category in categoryScores) {
+            int score = [categoryScores[category] intValue];
+            if (score > highestScore) {
+                highestScore = score;
+                bestCategory = category;
+            }
         }
-        else if ([title containsString:@"Adventure"] || 
-                [description containsString:@"Adventure"] ||
-                [title containsString:@"Quest"] ||
-                [description containsString:@"Quest"]) {
-            category = localize(@"Adventure Modpacks", nil);
-        }
-        else {
-            category = localize(@"Other Modpacks", nil);
-        }
+        
+        // If no category had a score, use the default "Other"
+        NSString *category = (highestScore > 0) ? bestCategory : localize(@"Other Modpacks", nil);
         
         // Add to appropriate category
         [categorizedModpacks[category] addObject:modpack];
+        
+        NSLog(@"[ModpackInstall] Categorized '%@' as '%@' with score %d", modpack[@"title"], category, highestScore);
     }
     
     // Feature the first few modpacks regardless of category
@@ -656,6 +682,27 @@
             [self.organizedModpacks addObject:modpacksInCategory];
             [self.filteredModpacks addObject:[modpacksInCategory mutableCopy]];
         }
+    }
+    
+    // After building categories, log what we have
+    NSLog(@"[ModpackInstall] Built %lu categories:", (unsigned long)self.categories.count);
+    for (NSUInteger i = 0; i < self.categories.count; i++) {
+        NSString *category = self.categories[i];
+        NSMutableArray *modpacksInCategory = self.organizedModpacks[i];
+        NSLog(@"[ModpackInstall]   - %@: %lu modpacks, expanded: %@", 
+              category, 
+              (unsigned long)modpacksInCategory.count,
+              [self.visibilityList[i] boolValue] ? @"YES" : @"NO");
+    }
+    
+    // If no categories were created (which shouldn't happen), add a fallback
+    if (self.categories.count == 0) {
+        [self.categories addObject:localize(@"All Modpacks", nil)];
+        [self.visibilityList addObject:@YES];
+        [self.organizedModpacks addObject:[modpacks mutableCopy]];
+        [self.filteredModpacks addObject:[modpacks mutableCopy]];
+        
+        NSLog(@"[ModpackInstall] Using fallback category with all %lu modpacks", (unsigned long)modpacks.count);
     }
     
     [self.dataLock unlock];
@@ -728,22 +775,37 @@
         return 0;
     }
     
+    // If the section is collapsed, don't show any rows
+    if (!self.visibilityList[section].boolValue) {
+        [self.dataLock unlock];
+        return 0;
+    }
+    
     NSInteger rows = 0;
     
-    if (self.visibilityList[section].boolValue) {
-        if (self.searchController.isActive && self.searchText.length > 0) {
-            if (section < self.filteredModpacks.count) {
-                rows = self.filteredModpacks[section].count;
-            }
-        } else {
-            if (section < self.organizedModpacks.count) {
-                rows = self.organizedModpacks[section].count;
-            }
+    if (self.searchController.isActive && self.searchText.length > 0) {
+        if (section < self.filteredModpacks.count) {
+            rows = self.filteredModpacks[section].count;
+        }
+    } else {
+        if (section < self.organizedModpacks.count) {
+            rows = self.organizedModpacks[section].count;
         }
     }
     
     [self.dataLock unlock];
-    return rows > 0 ? rows : 1; // Always show at least one row (for "No results" message)
+    
+    // Better handling of empty categories
+    if (rows == 0 && self.categories.count == 1) {
+        // If we only have one category and it's empty, show a "No results" message
+        return 1;
+    } else if (rows == 0) {
+        // If this particular category is empty, don't show any rows
+        return 0;
+    } else {
+        // Return the actual number of rows
+        return rows;
+    }
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
