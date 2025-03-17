@@ -21,25 +21,22 @@
 
 @implementation ForgeInstallViewController
 
-// Override to completely disable sticky headers
-- (BOOL)tableView:(UITableView *)tableView shouldUpdateFocusInContext:(UITableViewFocusUpdateContext *)context {
-    return NO;
-}
-
 #pragma mark - Lifecycle Methods
+
+// Initialize with plain style to avoid sticky headers
+- (instancetype)initWithStyle:(UITableViewStyle)style {
+    return [super initWithStyle:UITableViewStylePlain];
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    // Force plain style to prevent sticky headers
-    self.tableView.style = UITableViewStylePlain;
-    
-    // Additional configuration to ensure headers don't stick
+    // Configure table view to prevent sticky headers
     if (@available(iOS 15.0, *)) {
         self.tableView.sectionHeaderTopPadding = 0;
     }
     
-    // Set this property to prevent headers from sticking to the top
+    // Additional settings to prevent header stickiness
     self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     
     // Setup segmented control for vendor selection
@@ -338,18 +335,13 @@
 
 #pragma mark - UITableViewDataSource
 
-// Override this to provide complete control over sticky header behavior
-+ (NSArray<NSString *> *)sectionIndexTitlesForTableView:(UITableView *)tableView {
-    return @[];
-}
-
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return self.versionList.count;
 }
 
 // Custom non-sticky header view implementation
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    // Create a completely custom view to prevent sticky behavior
+    // Create a completely custom view for header
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 56.0)];
     headerView.backgroundColor = [UIColor systemGroupedBackgroundColor];
     
@@ -416,13 +408,19 @@
     }
 }
 
-// Add method to define taller header height
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 56.0; // Increased from the default
+// Override style for headers to prevent stickiness
+- (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
+    // Ensure the header doesn't stick
+    view.layer.zPosition = 0;
 }
 
+// Prevent default behavior for section headers
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    return 56.0; // Consistent height
+}
+
+// The title is still needed for accessibility
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    // This is still needed for accessibility even though we use custom views
     NSString *mcVersion = self.versionList[section];
     
     if ([mcVersion hasPrefix:@"1."]) {
@@ -465,6 +463,16 @@
 }
 
 #pragma mark - UITableViewDelegate
+
+// Disable sticky headers completely
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    // Reset transforms of any header views that might be trying to stick
+    for (UIView *view in self.tableView.subviews) {
+        if ([NSStringFromClass([view class]) containsString:@"HeaderView"]) {
+            view.transform = CGAffineTransformIdentity;
+        }
+    }
+}
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
