@@ -197,8 +197,12 @@
         self.tableView.sectionHeaderTopPadding = 0;
     }
     
-    // Additional settings to prevent header stickiness
-    self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    // Configure proper insets to respect the navigation bar and search bar
+    self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAutomatic;
+    
+    // Ensure the table view doesn't scroll under the navigation bar
+    self.extendedLayoutIncludesOpaqueBars = NO;
+    self.edgesForExtendedLayout = UIRectEdgeNone;
     
     // Register custom cell and header view
     [self.tableView registerClass:[ForgeVersionCell class] forCellReuseIdentifier:@"ForgeVersionCell"];
