@@ -415,7 +415,6 @@
     if (section != NSNotFound) {
         // Save content offset before modifying the table
         CGPoint savedOffset = self.tableView.contentOffset;
-        CGFloat savedHeight = self.tableView.contentSize.height;
         
         // Toggle section visibility
         self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
@@ -427,35 +426,14 @@
                 CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
         }];
         
-        // Use beginUpdates/endUpdates to keep animations smooth without full reload
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
+        // Disable animations for section reload to avoid scrolling
+        [UIView performWithoutAnimation:^{
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] 
+                         withRowAnimation:UITableViewRowAnimationNone];
+        }];
         
-        [self.tableView beginUpdates];
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationNone];
-        [self.tableView endUpdates];
-        
-        [CATransaction commit];
-        
-        // Restore the scroll position properly after the update is complete
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // Calculate adjustment for content size changes
-            CGFloat heightDifference = self.tableView.contentSize.height - savedHeight;
-            CGPoint newOffset = savedOffset;
-            
-            // Apply offset with adjustment if content expanded and we're scrolled past the changed section
-            if (self.visibilityList[section].boolValue) {
-                // Check if the section header is above the visible area
-                CGRect sectionRect = [self.tableView rectForSection:section];
-                if (sectionRect.origin.y < savedOffset.y) {
-                    // Adjust offset to account for new rows
-                    newOffset.y += heightDifference;
-                }
-            }
-            
-            // Apply the final offset
-            [self.tableView setContentOffset:newOffset animated:NO];
-        });
+        // Simply restore the exact same content offset without any adjustments
+        [self.tableView setContentOffset:savedOffset animated:NO];
     }
 }
 
