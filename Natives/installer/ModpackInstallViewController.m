@@ -510,6 +510,8 @@
     [self loadSearchResultsWithPrevList:NO];
 }
 
+#pragma mark - UISearchResultsUpdating
+
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
     // Update search results text without filtering yet (will be debounced)
     self.searchText = searchController.searchBar.text;
@@ -517,6 +519,24 @@
     // Debounce the search to prevent excessive updates while typing
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performFilteringWithCurrentSearchText) object:nil];
     [self performSelector:@selector(performFilteringWithCurrentSearchText) withObject:nil afterDelay:0.5];
+}
+
+- (void)performFilteringWithCurrentSearchText {
+    // If we're currently loading data, don't do anything
+    if (self.isDataLoading) {
+        return;
+    }
+    
+    // If search is active with non-empty text, filter results
+    if (self.searchController.isActive && self.searchText.length > 0) {
+        [self filterModpacksWithSearchText:self.searchText];
+    } else {
+        // Reset filtered results to match original
+        [self resetFilteredModpacks];
+    }
+    
+    // Reload the table view to show filtered results
+    [self.tableView reloadData];
 }
 
 #pragma mark - UI State Management
@@ -1020,34 +1040,7 @@
     [interaction _presentMenuAtLocation:CGPointZero];
 }
 
-#pragma mark - UISearchResultsUpdating
-
-- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    // Store the search text
-    self.searchText = searchController.searchBar.text;
-    
-    // Debounce search updates to avoid excessive filtering while typing
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performFilteringWithCurrentSearchText) object:nil];
-    [self performSelector:@selector(performFilteringWithCurrentSearchText) withObject:nil afterDelay:0.5];
-}
-
-- (void)performFilteringWithCurrentSearchText {
-    // If we're currently loading data, don't do anything
-    if (self.isDataLoading) {
-        return;
-    }
-    
-    // If search is active with non-empty text, filter results
-    if (self.searchController.isActive && self.searchText.length > 0) {
-        [self filterModpacksWithSearchText:self.searchText];
-    } else {
-        // Reset filtered results to match original
-        [self resetFilteredModpacks];
-    }
-    
-    // Reload the table view to show filtered results
-    [self.tableView reloadData];
-}
+#pragma mark - Filtering Methods
 
 - (void)filterModpacksWithSearchText:(NSString *)searchText {
     [self.dataLock lock];
