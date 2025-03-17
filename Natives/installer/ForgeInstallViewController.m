@@ -21,15 +21,26 @@
 
 @implementation ForgeInstallViewController
 
+// Override to completely disable sticky headers
+- (BOOL)tableView:(UITableView *)tableView shouldUpdateFocusInContext:(UITableViewFocusUpdateContext *)context {
+    return NO;
+}
+
 #pragma mark - Lifecycle Methods
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    // Disable sticky section headers in iOS 15+
+    // Force plain style to prevent sticky headers
+    self.tableView.style = UITableViewStylePlain;
+    
+    // Additional configuration to ensure headers don't stick
     if (@available(iOS 15.0, *)) {
         self.tableView.sectionHeaderTopPadding = 0;
     }
+    
+    // Set this property to prevent headers from sticking to the top
+    self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
     
     // Setup segmented control for vendor selection
     UISegmentedControl *segment = [[UISegmentedControl alloc] initWithItems:@[@"Forge", @"NeoForge"]];
@@ -326,6 +337,11 @@
 }
 
 #pragma mark - UITableViewDataSource
+
+// Override this to provide complete control over sticky header behavior
++ (NSArray<NSString *> *)sectionIndexTitlesForTableView:(UITableView *)tableView {
+    return @[];
+}
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     return self.versionList.count;
