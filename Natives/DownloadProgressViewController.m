@@ -208,13 +208,15 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Create a dictionary to track files by their base name
     NSMutableDictionary *fileMap = [NSMutableDictionary dictionary];
     
-    // First pass: group files by base name and filter out extraction entries
+    // First pass: group files by base name and track process entries
+    NSMutableArray *processEntries = [NSMutableArray array];
+    
     for (NSString *filePath in fileListCopy) {
-        // Skip extraction entries completely
+        // Track extraction and setup entries separately
         if ([filePath hasPrefix:@"Extracting"] || 
             [filePath hasPrefix:@"Setting"] || 
             [filePath hasPrefix:@"Installing"]) {
-            // Don't add these to the filtered list
+            [processEntries addObject:filePath];
             continue;
         }
         
@@ -233,6 +235,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         }
     }
     
+    // Add all processing entries to the filtered list first
+    [self.filteredFileList addObjectsFromArray:processEntries];
+    
     // Add all unique paths to the filtered list
     NSArray *uniquePaths = [fileMap allValues];
     for (NSString *uniquePath in uniquePaths) {
@@ -241,11 +246,27 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     
     // Sort the filtered list for consistent display
     [self.filteredFileList sortUsingComparator:^NSComparisonResult(NSString *path1, NSString *path2) {
-        // Keep the Complete entry at the top
-        if ([path1 isEqualToString:@"Complete"]) {
+        // Processing entries (Extracting, Setting, Installing) come first
+        BOOL isProcess1 = [path1 hasPrefix:@"Extracting"] || 
+                          [path1 hasPrefix:@"Setting"] || 
+                          [path1 hasPrefix:@"Installing"];
+        BOOL isProcess2 = [path2 hasPrefix:@"Extracting"] || 
+                          [path2 hasPrefix:@"Setting"] || 
+                          [path2 hasPrefix:@"Installing"];
+                          
+        if (isProcess1 && !isProcess2) {
             return NSOrderedAscending;
-        } else if ([path2 isEqualToString:@"Complete"]) {
+        } else if (!isProcess1 && isProcess2) {
             return NSOrderedDescending;
+        } else if (isProcess1 && isProcess2) {
+            return [path1 compare:path2]; // Sort processing entries among themselves
+        }
+        
+        // Keep the Complete entry at the end
+        if ([path1 isEqualToString:@"Complete"]) {
+            return NSOrderedDescending;
+        } else if ([path2 isEqualToString:@"Complete"]) {
+            return NSOrderedAscending;
         }
         
         // For regular files, sort alphabetically
@@ -389,22 +410,35 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Format size as MB/MB for file downloads
     NSString *sizeText;
     if (taskType == DownloadTaskTypeFile && progress.totalUnitCount > 0) {
-        double completedMB = progress.completedUnitCount / 1024.0 / 1024.0;
-        double totalMB = progress.totalUnitCount / 1024.0 / 1024.0;
+        double completedBytes = progress.completedUnitCount;
+        double totalBytes = progress.totalUnitCount;
         
-        // Format with appropriate precision based on size
-        if (totalMB < 1.0) {
-            // Use KB for small files
-            double completedKB = progress.completedUnitCount / 1024.0;
-            double totalKB = progress.totalUnitCount / 1024.0;
-            sizeText = [NSString stringWithFormat:@"%.0fKB/%.0fKB", completedKB, totalKB];
-        } else if (totalMB < 10.0) {
-            // More precision for smaller files
-            sizeText = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
-        } else if (totalMB < 100.0) {
-            sizeText = [NSString stringWithFormat:@"%.1fMB/%.1fMB", completedMB, totalMB];
+        // Detect if progress might have a placeholder value
+        BOOL isPlaceholder = (totalBytes == 1 || totalBytes == 1000000) && completedBytes > totalBytes;
+        
+        if (isPlaceholder) {
+            // For placeholder values, just show percentage
+            int percentage = (int)((completedBytes / (completedBytes + 1000000)) * 100);
+            sizeText = [NSString stringWithFormat:@"Downloading... %d%%", percentage];
         } else {
-            sizeText = [NSString stringWithFormat:@"%.0fMB/%.0fMB", completedMB, totalMB];
+            // Normal formatting with real size data
+            double completedMB = completedBytes / 1024.0 / 1024.0;
+            double totalMB = totalBytes / 1024.0 / 1024.0;
+            
+            // Format with appropriate precision based on size
+            if (totalMB < 1.0) {
+                // Use KB for small files
+                double completedKB = completedBytes / 1024.0;
+                double totalKB = totalBytes / 1024.0;
+                sizeText = [NSString stringWithFormat:@"%.0fKB/%.0fKB", completedKB, totalKB];
+            } else if (totalMB < 10.0) {
+                // More precision for smaller files
+                sizeText = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
+            } else if (totalMB < 100.0) {
+                sizeText = [NSString stringWithFormat:@"%.1fMB/%.1fMB", completedMB, totalMB];
+            } else {
+                sizeText = [NSString stringWithFormat:@"%.0fMB/%.0fMB", completedMB, totalMB];
+            }
         }
     } else if (taskType == DownloadTaskTypeExtraction) {
         // Show extraction progress percentage
@@ -461,8 +495,18 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             progressLabel.font = [UIFont systemFontOfSize:14];
             cell.accessoryView = progressLabel;
         }
-        int percentage = (int)(progress.fractionCompleted * 100);
-        progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+        
+        // Check if we have valid progress information
+        if (progress.totalUnitCount > 0 && progress.completedUnitCount <= progress.totalUnitCount) {
+            int percentage = (int)(progress.fractionCompleted * 100);
+            progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+        } else if (progress.completedUnitCount > 0) {
+            // Handle the case where completedUnitCount > totalUnitCount (placeholder value case)
+            int estimatedPercentage = (int)((progress.completedUnitCount / (progress.completedUnitCount + 1000000)) * 100);
+            progressLabel.text = [NSString stringWithFormat:@"~%d%%", estimatedPercentage];
+        } else {
+            progressLabel.text = @"0%";
+        }
     }
 }
 
