@@ -8,82 +8,12 @@
 #import "PLProfiles.h"
 #import "UIKit+hook.h"
 #import "utils.h"
-#import "LauncherPreferences.h" // Added import for getPrefObject
+#import "LauncherPreferences.h"
 
 // External functions from utils.h
 extern void showDialog(NSString *title, NSString *message);
 
 @implementation ModrinthAPI
-
-- (instancetype)init {
-    return [super initWithURL:@"https://api.modrinth.com/v2"];
-}
-
-- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, NSString *> *)searchFilters previousPageResult:(NSMutableArray *)modrinthSearchResult {
-    int limit = 50;
-
-    NSMutableString *facetString = [NSMutableString new];
-    [facetString appendString:@"["];
-    [facetString appendFormat:@"[\"project_type:%@\"]", searchFilters[@"isModpack"].boolValue ? @"modpack" : @"mod"];
-    if (searchFilters[@"mcVersion"].length > 0) {
-        [facetString appendFormat:@",[\"versions:%@\"]", searchFilters[@"mcVersion"]];
-    }
-    [facetString appendString:@"]"];
-
-    NSDictionary *params = @{
-        @"facets": facetString,
-        @"query": [searchFilters[@"name"] stringByReplacingOccurrencesOfString:@" " withString:@"+"],
-        @"limit": @(limit),
-        @"index": @"relevance",
-        @"offset": @(modrinthSearchResult.count)
-    };
-    NSDictionary *response = [self getEndpoint:@"search" params:params];
-    if (!response) {
-        return nil;
-    }
-
-    NSMutableArray *result = modrinthSearchResult ?: [NSMutableArray new];
-    for (NSDictionary *hit in response[@"hits"]) {
-        BOOL isModpack = [hit[@"project_type"] isEqualToString:@"modpack"];
-        [result addObject:@{
-            @"apiSource": @(1), // Constant MODRINTH
-            @"isModpack": @(isModpack),
-            @"id": hit[@"project_id"],
-            @"title": hit[@"title"],
-            @"description": hit[@"description"],
-            @"imageUrl": hit[@"icon_url"]
-        }.mutableCopy];
-    }
-    self.reachedLastPage = result.count >= [response[@"total_hits"] unsignedLongValue];
-    return result;
-}
-
-- (void)loadDetailsOfMod:(NSMutableDictionary *)item {
-    NSArray *response = [self getEndpoint:[NSString stringWithFormat:@"project/%@/version", item[@"id"]] params:nil];
-    if (!response) {
-        return;
-    }
-    NSArray<NSString *> *names = [response valueForKey:@"name"];
-    NSMutableArray<NSString *> *mcNames = [NSMutableArray new];
-    NSMutableArray<NSString *> *urls = [NSMutableArray new];
-    NSMutableArray<NSString *> *hashes = [NSMutableArray new];
-    NSMutableArray<NSString *> *sizes = [NSMutableArray new];
-    [response enumerateObjectsUsingBlock:
-  ^(NSDictionary *version, NSUInteger i, BOOL *stop) {
-        NSDictionary *file = [version[@"files"] firstObject];
-        mcNames[i] = [version[@"game_versions"] firstObject];
-        sizes[i] = file[@"size"];
-        urls[i] = file[@"url"];
-        NSDictionary *hashesMap = file[@"hashes"];
-        hashes[i] = hashesMap[@"sha1"] ?: [NSNull null];
-    }];
-    item[@"versionNames"] = names;
-    item[@"mcVersionNames"] = mcNames;
-    item[@"versionSizes"] = sizes;
-    item[@"versionUrls"] = urls;
-    item[@"versionHashes"] = hashes;
-    item[@"versionDetailsLoaded"] = @(YES);
-}
 
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
     NSError *error;
@@ -104,6 +34,15 @@ extern void showDialog(NSString *title, NSString *message);
     if (error) {
         [downloader finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create destination directory: %@", error.localizedDescription]];
         return;
+    }
+
+    // First, determine the size of the archive to help with progress reporting
+    unsigned long long archiveSize = 0;
+    NSError *fileError;
+    NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:packagePath error:&fileError];
+    if (!fileError) {
+        archiveSize = [fileAttributes fileSize];
+        NSLog(@"[ModrinthAPI] Modpack archive size: %llu bytes", archiveSize);
     }
 
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
@@ -144,7 +83,21 @@ extern void showDialog(NSString *title, NSString *message);
     // Store the modpack dependencies for later use in Forge/NeoForge installation
     downloader.metadata[@"modpackDependencies"] = indexDict[@"dependencies"];
     
-    downloader.progress.totalUnitCount = [files count];
+    // Calculate total download size for all files
+    unsigned long long totalFileSize = 0;
+    for (NSDictionary *indexFile in files) {
+        if ([indexFile isKindOfClass:[NSDictionary class]] && indexFile[@"fileSize"]) {
+            totalFileSize += [indexFile[@"fileSize"] unsignedLongLongValue];
+        }
+    }
+    
+    // Add extraction size estimate (use the archive size as a base)
+    totalFileSize += archiveSize;
+    
+    // Set total unit count with more accurate estimate
+    downloader.progress.totalUnitCount = totalFileSize > 0 ? totalFileSize : files.count * 1000000;
+    
+    NSLog(@"[ModrinthAPI] Total estimated download size: %llu bytes for %lu files", totalFileSize, (unsigned long)files.count);
     
     // Track pending downloads to ensure we complete properly
     __block NSInteger pendingDownloads = files.count;
@@ -261,8 +214,7 @@ extern void showDialog(NSString *title, NSString *message);
                                                                 failure:fileFailure];
         
         if (task) {
-            // Add to file list with the unique display name
-            [downloader.fileList addObject:displayName];
+            // Task was created and added to file list
             [task resume];
         } else if (!downloader.progress.cancelled) {
             pendingDownloads--;
@@ -292,8 +244,22 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Add extraction filename to track progress
     [downloader.fileList addObject:@"Extracting modpack..."];
+    
+    // Create a progress object with a meaningful weight based on archive size
+    NSUInteger extractionWeight = 0;
+    NSError *fileError;
+    NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:packagePath error:&fileError];
+    if (!fileError) {
+        extractionWeight = (NSUInteger)[fileAttributes fileSize] / 2; // Use half the archive size as the weight
+    } else {
+        extractionWeight = 10000000; // 10MB default if we can't determine file size
+    }
+    
+    NSLog(@"[ModrinthAPI] Creating extraction progress with weight: %lu bytes", (unsigned long)extractionWeight);
+    
     NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
     [downloader.progressList addObject:extractionProgress];
+    [downloader.progress addChild:extractionProgress withPendingUnitCount:extractionWeight];
     
     NSLog(@"[ModrinthAPI] Beginning extraction of modpack to %@", destPath);
     
