@@ -511,8 +511,12 @@
 }
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateSearchResults) object:nil];
-    [self performSelector:@selector(updateSearchResults) withObject:nil afterDelay:0.5];
+    // Update search results text without filtering yet (will be debounced)
+    self.searchText = searchController.searchBar.text;
+    
+    // Debounce the search to prevent excessive updates while typing
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performFilteringWithCurrentSearchText) object:nil];
+    [self performSelector:@selector(performFilteringWithCurrentSearchText) withObject:nil afterDelay:0.5];
 }
 
 #pragma mark - UI State Management
@@ -1022,13 +1026,19 @@
     // Store the search text
     self.searchText = searchController.searchBar.text;
     
+    // Debounce search updates to avoid excessive filtering while typing
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performFilteringWithCurrentSearchText) object:nil];
+    [self performSelector:@selector(performFilteringWithCurrentSearchText) withObject:nil afterDelay:0.5];
+}
+
+- (void)performFilteringWithCurrentSearchText {
     // If we're currently loading data, don't do anything
     if (self.isDataLoading) {
         return;
     }
     
     // If search is active with non-empty text, filter results
-    if (searchController.isActive && self.searchText.length > 0) {
+    if (self.searchController.isActive && self.searchText.length > 0) {
         [self filterModpacksWithSearchText:self.searchText];
     } else {
         // Reset filtered results to match original
