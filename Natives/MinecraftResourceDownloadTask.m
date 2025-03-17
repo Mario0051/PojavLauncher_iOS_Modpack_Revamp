@@ -12,7 +12,7 @@
 #import "utils.h"
 
 @interface MinecraftResourceDownloadTask ()
-@property AFURLSessionManager* manager;
+@property(nonatomic, readwrite) AFURLSessionManager* manager;
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -50,14 +50,36 @@
     NSString *name = altName ?: path.lastPathComponent;
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:url]];
     __block NSProgress *progress;
+    __block BOOL sizeUpdated = NO;
+    
+    // Log detailed file information for debugging
+    NSLog(@"[MCDL] Creating download task for %@, size: %lu, path: %@", name, (unsigned long)size, path);
+    
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-        NSLog(@"[MCDL] Downloading %@", name);
+        NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
         progress = [self.manager downloadProgressForTask:task];
-        if (!size && task) {
-            [self addDownloadTaskToProgress:task size:response.expectedContentLength];
+
+        // Add to progress tracking if we have size information
+        if (size > 0) {
+            [self addDownloadTaskToProgress:task size:size];
             [self.fileList addObject:name];
+        } 
+        // If no size provided, but response has size info
+        else if (response.expectedContentLength > 0) {
+            NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
+            [self addDownloadTaskToProgress:task size:actualSize];
+            [self.fileList addObject:name];
+            sizeUpdated = YES;
+            NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
         }
+        // If still no size, use a minimum value but we'll update it later
+        else {
+            [self addDownloadTaskToProgress:task size:1000000]; // Use 1MB as placeholder
+            [self.fileList addObject:name];
+            NSLog(@"[MCDL] No size available for %@, using placeholder", name);
+        }
+        
         [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         [NSFileManager.defaultManager removeItemAtPath:path error:nil];
         return [NSURL fileURLWithPath:path];
@@ -65,6 +87,7 @@
         if (self.progress.cancelled) {
             // Ignore any further errors
         } else if (error != nil) {
+            NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
             if (failure) {
                 failure(error);
             } else {
@@ -80,15 +103,32 @@
                 [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
             }
         } else {
-            progress.totalUnitCount = progress.completedUnitCount;
+            // If we didn't have an accurate size initially and didn't update it from the response
+            if (!sizeUpdated && size == 0 && progress) {
+                // Get the actual file size for more accurate progress reporting
+                NSError *fileError;
+                NSDictionary *fileAttrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&fileError];
+                if (!fileError && fileAttrs) {
+                    NSUInteger fileSize = [fileAttrs fileSize];
+                    NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
+                    
+                    // Update progress with actual file size
+                    if (fileSize > 0 && fileSize != progress.totalUnitCount) {
+                        // Add the difference to total progress
+                        self.progress.totalUnitCount += (fileSize - progress.totalUnitCount);
+                        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                        progress.totalUnitCount = fileSize;
+                    }
+                }
+            }
+            
+            // Ensure progress is marked as complete
+            progress.completedUnitCount = progress.totalUnitCount;
+            
+            NSLog(@"[MCDL] Download completed for %@", name);
             if (success) success();
         }
     }];
-
-    if (size && task) {
-        [self addDownloadTaskToProgress:task size:size];
-        [self.fileList addObject:name];
-    }
 
     return task;
 }
@@ -112,13 +152,11 @@
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
 }
 
-- (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSInteger)size {
+- (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size {
     NSProgress *progress = [self.manager downloadProgressForTask:task];
-    NSUInteger fileSize = size>0 ? size : 1;
+    NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
     progress.kind = NSProgressKindFile;
-    if (size > 0) {
-        progress.totalUnitCount = fileSize;
-    }
+    progress.totalUnitCount = fileSize;
     [self.progressList addObject:progress];
     [self.progress addChild:progress withPendingUnitCount:fileSize];
     self.progress.totalUnitCount += fileSize;
