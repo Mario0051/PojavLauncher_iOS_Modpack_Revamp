@@ -181,22 +181,46 @@
 }
 
 - (UIColor *)colorForTag:(NSString *)tag {
-    // Map tags to specific colors for consistency
+    // Enhanced category color mapping with semantically appropriate colors
     NSDictionary *tagColors = @{
-        @"adventure": [UIColor systemGreenColor],
-        @"magic": [UIColor systemBlueColor],
-        @"tech": [UIColor systemOrangeColor],
-        @"large": [UIColor systemPurpleColor],
-        @"small": [UIColor systemTealColor],
-        @"quest": [UIColor systemIndigoColor],
-        @"fabric": [UIColor systemPinkColor],
-        @"forge": [UIColor systemBrownColor],
-        @"challenge": [UIColor systemRedColor]
+        // Core gameplay categories
+        @"adventure": [UIColor systemGreenColor],          // Green: exploration, nature
+        @"challenging": [UIColor systemRedColor],          // Red: danger, difficulty
+        @"combat": [UIColor systemOrangeColor],            // Orange: action, intensity
+        @"kitchen sink": [UIColor systemPurpleColor],      // Purple: variety, abundance
+        @"lightweight": [UIColor systemTealColor],         // Teal: light, breezy
+        @"magic": [UIColor systemBlueColor],               // Blue: mystical, arcane
+        @"multiplayer": [UIColor systemIndigoColor],       // Indigo: social, connectivity
+        @"optimization": [UIColor systemCyanColor],        // Cyan: efficiency, performance
+        @"quests": [UIColor systemYellowColor],            // Yellow: rewards, achievements
+        @"technology": [UIColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:1.0], // Gray: industrial, mechanical
+        
+        // Additional categories for better coverage
+        @"building": [UIColor colorWithRed:0.76 green:0.60 blue:0.42 alpha:1.0], // Brown: construction
+        @"exploration": [UIColor systemGreenColor],        // Same as adventure
+        @"survival": [UIColor systemOrangeColor],          // Survival-oriented
+        @"rpg": [UIColor systemPinkColor],                 // Pink: role-playing, fantasy
+        @"skyblock": [UIColor colorWithRed:0.53 green:0.81 blue:0.92 alpha:1.0], // Light blue: sky theme
+        @"mini game": [UIColor systemYellowColor],         // Mini-games like quests
+        @"modded": [UIColor systemPurpleColor],            // General modded category
+        @"fabric": [UIColor colorWithRed:0.31 green:0.31 blue:0.31 alpha:1.0],  // Dark gray: Fabric loader
+        @"forge": [UIColor colorWithRed:0.60 green:0.40 blue:0.20 alpha:1.0],   // Bronze: Forge loader
+        @"vanilla+": [UIColor colorWithRed:0.82 green:0.71 blue:0.55 alpha:1.0] // Vanilla enhanced
     };
     
-    // Try to find a predefined color for known tags
+    // Convert tag to lowercase for case-insensitive matching
+    NSString *lowercaseTag = [tag lowercaseString];
+    
+    // First try exact match
+    for (NSString *key in tagColors) {
+        if ([lowercaseTag isEqualToString:key]) {
+            return tagColors[key];
+        }
+    }
+    
+    // Then try contains matching
     for (NSString *key in tagColors.allKeys) {
-        if ([tag.lowercaseString containsString:key]) {
+        if ([lowercaseTag containsString:key] || [key containsString:lowercaseTag]) {
             return tagColors[key];
         }
     }
