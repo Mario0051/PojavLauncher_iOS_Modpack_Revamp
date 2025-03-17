@@ -133,7 +133,7 @@
         @"lightweight": [UIColor systemTealColor],         // Teal: light, breezy
         @"magic": [UIColor systemBlueColor],               // Blue: mystical, arcane
         @"multiplayer": [UIColor systemIndigoColor],       // Indigo: social, connectivity
-        @"optimization": [UIColor systemCyanColor],        // Cyan: efficiency, performance
+        @"optimization": [UIColor colorWithRed:0.0 green:0.8 blue:0.9 alpha:1.0], // Cyan: efficiency, performance
         @"quests": [UIColor systemYellowColor],            // Yellow: rewards, achievements
         @"technology": [UIColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:1.0], // Gray: industrial, mechanical
         
@@ -493,13 +493,19 @@
     // Monitor search active state changes
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(searchActiveChanged:)
-                                                 name:UISearchControllerDidPresentSearchResultsNotification
+                                                 name:@"UISearchControllerDidBeginSearchNotification"
                                                object:self.searchController];
     
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(searchActiveChanged:)
-                                                 name:UISearchControllerDidDismissSearchResultsNotification
+                                                 name:@"UISearchControllerDidEndSearchNotification"
                                                object:self.searchController];
+    
+    // Also observe the searchController's active property directly
+    [self.searchController addObserver:self
+                            forKeyPath:@"active"
+                               options:NSKeyValueObservingOptionNew
+                               context:NULL];
     
     // Setup refresh control
     self.refreshControl = [[UIRefreshControl alloc] init];
@@ -549,23 +555,53 @@
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+    
+    // Remove KVO observer
+    @try {
+        [self.searchController removeObserver:self forKeyPath:@"active"];
+    } @catch (NSException *exception) {
+        // Handle any exception that might occur during removal
+        NSLog(@"Exception removing observer: %@", exception);
+    }
 }
 
 #pragma mark - Search State Handling
 
 - (void)searchActiveChanged:(NSNotification *)notification {
     // Check if search is becoming active or inactive
-    if ([notification.name isEqualToString:UISearchControllerDidPresentSearchResultsNotification]) {
+    if ([notification.name isEqualToString:@"UISearchControllerDidBeginSearchNotification"]) {
         self.isSearchActive = YES;
         
         // When search becomes active, create unified search results
         [self updateUnifiedSearchResults];
         
-    } else if ([notification.name isEqualToString:UISearchControllerDidDismissSearchResultsNotification]) {
+    } else if ([notification.name isEqualToString:@"UISearchControllerDidEndSearchNotification"]) {
         self.isSearchActive = NO;
         
         // When search is dismissed, reload table to restore category view
         [self.tableView reloadData];
+    }
+}
+
+// Add KVO observation for search controller's active property
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
+    if (object == self.searchController && [keyPath isEqualToString:@"active"]) {
+        BOOL isActive = [[change objectForKey:NSKeyValueChangeNewKey] boolValue];
+        
+        // Only update if the state has changed
+        if (isActive != self.isSearchActive) {
+            self.isSearchActive = isActive;
+            
+            if (isActive) {
+                // When search becomes active, create unified search results
+                [self updateUnifiedSearchResults];
+            } else {
+                // When search is dismissed, reload table to restore category view
+                [self.tableView reloadData];
+            }
+        }
+    } else {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     }
 }
 
