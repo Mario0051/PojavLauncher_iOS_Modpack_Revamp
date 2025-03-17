@@ -8,7 +8,7 @@
 #import "MinecraftResourceDownloadTask.h"
 #import "MinecraftResourceUtils.h"
 #import "ios_uikit_bridge.h"
-#import "PLProfiles.h" // Updated import to use header file instead of implementation file
+#import "PLProfiles.h"
 #import "utils.h"
 
 @interface MinecraftResourceDownloadTask ()
@@ -319,7 +319,7 @@
 
 #pragma mark - Modpack installation
 
-- (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+ (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     [self prepareForDownload];
     
     // Set flag in metadata that this is a modpack installation
@@ -337,9 +337,14 @@
     NSString *sanitizedName = [[name lowercaseString] stringByReplacingOccurrencesOfString:@" " withString:@"_"];
     NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", sanitizedName];
     
-    // Create a destination path for the modpack - use PLProfiles to get the correct path
+    // Get the game directory for this modpack
     NSString *gameDir = [PLProfiles uniqueGameDirForProfileName:name];
+    
+    // Get the full absolute path where we'll extract the modpack
     NSString *destPath = [PLProfiles fullPathForProfileWithName:name gameDir:gameDir];
+    
+    // Store the game directory in metadata for proper profile creation
+    self.metadata[@"gameDir"] = gameDir;
 
     // Create a wrapped success callback that transitions to extraction phase
     void(^modpackSuccess)(void) = ^{
