@@ -26,6 +26,11 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     
+    // Disable sticky section headers in iOS 15+
+    if (@available(iOS 15.0, *)) {
+        self.tableView.sectionHeaderTopPadding = 0;
+    }
+    
     // Setup segmented control for vendor selection
     UISegmentedControl *segment = [[UISegmentedControl alloc] initWithItems:@[@"Forge", @"NeoForge"]];
     segment.selectedSegmentIndex = 0;
@@ -326,93 +331,51 @@
     return self.versionList.count;
 }
 
+// Custom non-sticky header view implementation
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    UITableViewHeaderFooterView *view = [self.tableView dequeueReusableHeaderFooterViewWithIdentifier:@"section"];
-    if (!view) {
-        view = [[UITableViewHeaderFooterView alloc] initWithReuseIdentifier:@"section"];
-        
-        // Configure the visual appearance for better touch feedback
-        view.contentView.backgroundColor = [UIColor systemGroupedBackgroundColor];
-        
-        // Configure the text label - don't modify constraints
-        view.textLabel.font = [UIFont boldSystemFontOfSize:16];
-        
-        // Ensure the entire header is interactive
-        view.userInteractionEnabled = YES;
-        
-        // Add tap gesture recognizer to the entire header view
-        UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(tableViewDidSelectSection:)];
-        [view addGestureRecognizer:tapGesture];
-        
-        // Add a disclosure indicator
-        UIImageView *disclosureIndicator = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
-        disclosureIndicator.tag = 1001;
-        disclosureIndicator.tintColor = [UIColor systemGrayColor];
-        [view.contentView addSubview:disclosureIndicator];
-        
-        // Position the indicator using frame-based layout instead of constraints
-        disclosureIndicator.frame = CGRectMake(0, 0, 20, 20);
-        disclosureIndicator.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin;
+    // Create a completely custom view to prevent sticky behavior
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, tableView.bounds.size.width, 56.0)];
+    headerView.backgroundColor = [UIColor systemGroupedBackgroundColor];
+    
+    // Add a tap gesture recognizer for section expansion
+    UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleHeaderTap:)];
+    [headerView addGestureRecognizer:tapGesture];
+    
+    // Store the section index in the view's tag
+    headerView.tag = section;
+    
+    // Add a label for the section title
+    UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectMake(15, 0, headerView.bounds.size.width - 60, headerView.bounds.size.height)];
+    titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    
+    // Apply the section title
+    NSString *mcVersion = self.versionList[section];
+    if ([mcVersion hasPrefix:@"1."]) {
+        titleLabel.text = [NSString stringWithFormat:@"Minecraft %@", mcVersion];
+    } else {
+        titleLabel.text = mcVersion;
     }
     
-    // Update disclosure indicator position and rotation
-    UIImageView *indicator = [view viewWithTag:1001];
-    indicator.center = CGPointMake(view.contentView.bounds.size.width - 25, view.contentView.bounds.size.height / 2);
+    [headerView addSubview:titleLabel];
+    
+    // Add a disclosure indicator
+    UIImageView *indicator = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+    indicator.tintColor = [UIColor systemGrayColor];
+    indicator.frame = CGRectMake(headerView.bounds.size.width - 30, (headerView.bounds.size.height - 20) / 2, 20, 20);
     indicator.transform = self.visibilityList[section].boolValue ? 
         CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
+    indicator.tag = 1001;
+    [headerView addSubview:indicator];
     
-    return view;
+    return headerView;
 }
 
-// Add method to define taller header height
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 56.0; // Increased from the default (~22-44 depending on system)
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    NSString *mcVersion = self.versionList[section];
+// Handler for tapping on the custom header
+- (void)handleHeaderTap:(UITapGestureRecognizer *)gesture {
+    NSInteger section = gesture.view.tag;
     
-    // Enhance the section title for better readability
-    if ([mcVersion hasPrefix:@"1."]) {
-        return [NSString stringWithFormat:@"Minecraft %@", mcVersion];
-    } else {
-        return mcVersion;
-    }
-}
-
-- (void)tableViewDidSelectSection:(UITapGestureRecognizer *)sender {
-    UITableViewHeaderFooterView *view = (id)sender.view;
-    
-    // Add visual feedback for the tap
-    UIView *flashView = [[UIView alloc] initWithFrame:view.bounds];
-    flashView.backgroundColor = [UIColor systemGrayColor];
-    flashView.alpha = 0.3;
-    [view insertSubview:flashView atIndex:0];
-    
-    [UIView animateWithDuration:0.15 animations:^{
-        flashView.alpha = 0.0;
-    } completion:^(BOOL finished) {
-        [flashView removeFromSuperview];
-    }];
-    
-    NSString *sectionTitle = view.textLabel.text;
-    
-    // Extract the actual Minecraft version from the enhanced section title
-    NSString *mcVersion = sectionTitle;
-    if ([sectionTitle hasPrefix:@"Minecraft "]) {
-        mcVersion = [sectionTitle substringFromIndex:10]; // Remove "Minecraft " prefix
-    }
-    
-    // Find the section by doing exact match on the version string
-    NSInteger section = NSNotFound;
-    for (NSInteger i = 0; i < self.versionList.count; i++) {
-        if ([self.versionList[i] isEqualToString:mcVersion]) {
-            section = i;
-            break;
-        }
-    }
-    
-    if (section != NSNotFound) {
+    // Check if the section is valid
+    if (section >= 0 && section < self.visibilityList.count) {
         // Save content offset before modifying the table
         CGPoint savedOffset = self.tableView.contentOffset;
         
@@ -420,7 +383,7 @@
         self.visibilityList[section] = @(!self.visibilityList[section].boolValue);
         
         // Animate the disclosure indicator
-        UIImageView *indicator = [view viewWithTag:1001];
+        UIImageView *indicator = [gesture.view viewWithTag:1001];
         [UIView animateWithDuration:0.3 animations:^{
             indicator.transform = self.visibilityList[section].boolValue ? 
                 CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
@@ -434,6 +397,22 @@
         
         // Simply restore the exact same content offset without any adjustments
         [self.tableView setContentOffset:savedOffset animated:NO];
+    }
+}
+
+// Add method to define taller header height
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    return 56.0; // Increased from the default
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    // This is still needed for accessibility even though we use custom views
+    NSString *mcVersion = self.versionList[section];
+    
+    if ([mcVersion hasPrefix:@"1."]) {
+        return [NSString stringWithFormat:@"Minecraft %@", mcVersion];
+    } else {
+        return mcVersion;
     }
 }
 
