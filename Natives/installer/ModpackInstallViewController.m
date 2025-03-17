@@ -179,6 +179,31 @@
     return [UIColor colorWithHue:hue saturation:0.75 brightness:0.85 alpha:1.0];
 }
 
+// Helper method to capitalize first letter of each word in a tag
+- (NSString *)formatTagName:(NSString *)tagName {
+    if (tagName.length == 0) return @"";
+    
+    NSMutableString *formattedTag = [NSMutableString string];
+    NSArray *words = [tagName componentsSeparatedByString:@" "];
+    
+    for (NSString *word in words) {
+        if (word.length > 0) {
+            // Capitalize first letter, keep rest lowercase
+            NSString *firstLetter = [[word substringToIndex:1] uppercaseString];
+            NSString *restOfWord = word.length > 1 ? [[word substringFromIndex:1] lowercaseString] : @"";
+            [formattedTag appendString:firstLetter];
+            [formattedTag appendString:restOfWord];
+            
+            // Add space if not the last word
+            if (![word isEqual:[words lastObject]]) {
+                [formattedTag appendString:@" "];
+            }
+        }
+    }
+    
+    return formattedTag;
+}
+
 - (void)setTags:(NSArray<NSString *> *)tags {
     // Clear existing tags first
     for (UIView *tagView in self.tagViews) {
@@ -214,16 +239,19 @@
         [self.tagsScrollView addSubview:tagView];
         [self.tagViews addObject:tagView];
         
+        // Format tag text with proper capitalization
+        NSString *formattedTag = [self formatTagName:tag];
+        
         // Create tag label
         UILabel *tagLabel = [[UILabel alloc] init];
-        tagLabel.text = tag;
+        tagLabel.text = formattedTag;
         tagLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
         tagLabel.textColor = [UIColor whiteColor];
         tagLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [tagView addSubview:tagLabel];
         
         // Size the tag based on text content
-        CGSize textSize = [tag boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, tagHeight)
+        CGSize textSize = [formattedTag boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, tagHeight)
                                            options:NSStringDrawingUsesLineFragmentOrigin
                                         attributes:@{NSFontAttributeName: tagLabel.font}
                                            context:nil].size;
@@ -384,10 +412,18 @@
 @property(nonatomic, strong) NSMutableArray<NSMutableArray *> *organizedModpacks;
 @property(nonatomic, strong) NSMutableArray<NSMutableArray *> *filteredModpacks;
 
+// Unified search results array (for search mode)
+@property(nonatomic, strong) NSMutableArray *unifiedSearchResults;
+@property(nonatomic, assign) BOOL isSearchActive;
+
 // Tracking for current operations
 @property(nonatomic, strong) NSIndexPath *currentDownloadIndexPath;
 @property(atomic, assign) BOOL isDataLoading;
 @property(nonatomic, strong) NSLock *dataLock;
+
+// Infinite scroll support
+@property(nonatomic, assign) BOOL isLoadingMoreResults;
+@property(nonatomic, assign) BOOL hasMoreResults;
 @end
 
 @implementation ModpackInstallViewController
@@ -430,6 +466,11 @@
     // Initialize tag filter set
     self.activeTagFilters = [NSMutableSet new];
     
+    // Initialize unified search results array
+    self.unifiedSearchResults = [NSMutableArray new];
+    self.isSearchActive = NO;
+    self.hasMoreResults = YES;
+    
     // Setup category filter - segmented control
     UISegmentedControl *segment = [[UISegmentedControl alloc] initWithItems:@[
         localize(@"All", nil),
@@ -448,6 +489,17 @@
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
+    
+    // Monitor search active state changes
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(searchActiveChanged:)
+                                                 name:UISearchControllerDidPresentSearchResultsNotification
+                                               object:self.searchController];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(searchActiveChanged:)
+                                                 name:UISearchControllerDidDismissSearchResultsNotification
+                                               object:self.searchController];
     
     // Setup refresh control
     self.refreshControl = [[UIRefreshControl alloc] init];
@@ -495,6 +547,93 @@
     [self updateSearchResults];
 }
 
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+#pragma mark - Search State Handling
+
+- (void)searchActiveChanged:(NSNotification *)notification {
+    // Check if search is becoming active or inactive
+    if ([notification.name isEqualToString:UISearchControllerDidPresentSearchResultsNotification]) {
+        self.isSearchActive = YES;
+        
+        // When search becomes active, create unified search results
+        [self updateUnifiedSearchResults];
+        
+    } else if ([notification.name isEqualToString:UISearchControllerDidDismissSearchResultsNotification]) {
+        self.isSearchActive = NO;
+        
+        // When search is dismissed, reload table to restore category view
+        [self.tableView reloadData];
+    }
+}
+
+- (void)updateUnifiedSearchResults {
+    [self.dataLock lock];
+    
+    // Clear the existing unified search results
+    [self.unifiedSearchResults removeAllObjects];
+    
+    // If we have active filters (tags or search text), apply them
+    if (self.searchText.length > 0 || self.activeTagFilters.count > 0) {
+        // Combine all modpacks from all categories into one array for filtering
+        NSMutableArray *allModpacks = [NSMutableArray array];
+        for (NSArray *categoryModpacks in self.organizedModpacks) {
+            [allModpacks addObjectsFromArray:categoryModpacks];
+        }
+        
+        // Apply filters
+        for (NSDictionary *modpack in allModpacks) {
+            NSString *title = modpack[@"title"] ?: @"";
+            NSString *description = modpack[@"description"] ?: @"";
+            NSArray *categories = modpack[@"categories"] ?: @[];
+            
+            // Check if search text appears in title or description
+            BOOL matchesTextContent = (self.searchText.length == 0) || 
+                                     [title localizedCaseInsensitiveContainsString:self.searchText] ||
+                                     [description localizedCaseInsensitiveContainsString:self.searchText];
+            
+            // Check if search text matches any tag/category
+            BOOL matchesTextInTags = NO;
+            if (self.searchText.length > 0) {
+                for (NSString *tag in categories) {
+                    if ([tag localizedCaseInsensitiveContainsString:self.searchText]) {
+                        matchesTextInTags = YES;
+                        break;
+                    }
+                }
+            }
+            
+            // Check if modpack has at least one of the active tag filters
+            BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
+            if (!matchesTagFilters) {
+                for (NSString *tag in categories) {
+                    if ([self.activeTagFilters containsObject:tag]) {
+                        matchesTagFilters = YES;
+                        break;
+                    }
+                }
+            }
+            
+            // Include if it matches all applicable filters
+            if ((matchesTextContent || matchesTextInTags) && matchesTagFilters) {
+                [self.unifiedSearchResults addObject:modpack];
+            }
+        }
+    } else {
+        // If no active filters, include all modpacks
+        for (NSArray *categoryModpacks in self.organizedModpacks) {
+            [self.unifiedSearchResults addObjectsFromArray:categoryModpacks];
+        }
+    }
+    
+    [self.dataLock unlock];
+    
+    // Reload the table view with the unified results
+    [self.tableView reloadData];
+}
+
 #pragma mark - Action Methods
 
 - (void)actionCancelDownload {
@@ -527,6 +666,7 @@
     [self.filteredModpacks removeAllObjects];
     [self.categories removeAllObjects];
     [self.visibilityList removeAllObjects];
+    [self.unifiedSearchResults removeAllObjects];
     
     // Update filter based on segment
     NSString *sortMethod;
@@ -545,11 +685,24 @@
     // Update the filter
     self.filters[@"sortMethod"] = sortMethod;
     
+    // Reset pagination state
+    self.hasMoreResults = YES;
+    
     // Reload data with new filter
     [self updateSearchResults];
 }
 
 - (void)refreshModpacks {
+    // Reset pagination state
+    self.hasMoreResults = YES;
+    
+    // Clear the current results
+    [self.organizedModpacks removeAllObjects];
+    [self.filteredModpacks removeAllObjects];
+    [self.categories removeAllObjects];
+    [self.visibilityList removeAllObjects];
+    [self.unifiedSearchResults removeAllObjects];
+    
     // Reload with current filter settings
     [self updateSearchResults];
 }
@@ -566,8 +719,21 @@
         }
     }
     
-    // Convert to sorted array
-    NSArray *allTags = [[allTagsSet allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    // Format tag names with proper capitalization
+    NSMutableDictionary *formattedTagMap = [NSMutableDictionary dictionary];
+    for (NSString *tag in allTagsSet) {
+        // Use the ModpackVersionCell helper to format tag names consistently
+        ModpackVersionCell *dummyCell = [[ModpackVersionCell alloc] init];
+        NSString *formattedTag = [dummyCell formatTagName:tag];
+        formattedTagMap[tag] = formattedTag;
+    }
+    
+    // Convert to sorted array using formatted names
+    NSArray *allTags = [[allTagsSet allObjects] sortedArrayUsingComparator:^NSComparisonResult(NSString *tag1, NSString *tag2) {
+        NSString *formattedTag1 = formattedTagMap[tag1];
+        NSString *formattedTag2 = formattedTagMap[tag2];
+        return [formattedTag1 localizedCaseInsensitiveCompare:formattedTag2];
+    }];
     
     // Create alert controller for tag selection
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:localize(@"Filter by Tags", nil)
@@ -577,7 +743,8 @@
     // Add actions for each tag
     for (NSString *tag in allTags) {
         BOOL isSelected = [self.activeTagFilters containsObject:tag];
-        NSString *title = isSelected ? [NSString stringWithFormat:@"✓ %@", tag] : tag;
+        NSString *formattedTag = formattedTagMap[tag];
+        NSString *title = isSelected ? [NSString stringWithFormat:@"✓ %@", formattedTag] : formattedTag;
         
         UIAlertAction *action = [UIAlertAction actionWithTitle:title
                                                          style:UIAlertActionStyleDefault
@@ -589,8 +756,12 @@
                 [self.activeTagFilters addObject:tag];
             }
             
-            // Apply filters
-            [self applyTagFilters];
+            // Apply filters without dismissing the menu
+            [self updateUnifiedSearchResults];
+            [self updateFilterIndicators];
+            
+            // Show the tag menu again with updated selection state
+            [self showTagFilterMenu:sender];
         }];
         
         [alertController addAction:action];
@@ -601,15 +772,16 @@
                                                          style:UIAlertActionStyleDestructive
                                                        handler:^(UIAlertAction * _Nonnull action) {
         [self.activeTagFilters removeAllObjects];
-        [self applyTagFilters];
+        [self updateUnifiedSearchResults];
+        [self updateFilterIndicators];
     }];
     [alertController addAction:clearAction];
     
-    // Add cancel option
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                                          style:UIAlertActionStyleCancel
-                                                        handler:nil];
-    [alertController addAction:cancelAction];
+    // Add done option to close the menu
+    UIAlertAction *doneAction = [UIAlertAction actionWithTitle:localize(@"Done", nil)
+                                                        style:UIAlertActionStyleCancel
+                                                      handler:nil];
+    [alertController addAction:doneAction];
     
     // Present the alert
     alertController.popoverPresentationController.barButtonItem = sender;
@@ -629,6 +801,9 @@
         self.filters[@"name"] = name;
         NSMutableArray *newResults = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.organizedModpacks : nil];
         
+        // Check for pagination status
+        self.hasMoreResults = !self.modrinth.reachedLastPage;
+        
         if (newResults) {
             // If we're not appending, reorganize completely
             if (!prevList) {
@@ -638,12 +813,19 @@
                 [self updateOrganizedModpacks:newResults];
             }
             
+            // Update unified search results if search is active
+            if (self.isSearchActive) {
+                [self updateUnifiedSearchResults];
+            }
+            
             dispatch_async(dispatch_get_main_queue(), ^{
+                self.isLoadingMoreResults = NO;
                 [self switchToReadyState];
                 [self.tableView reloadData];
             });
         } else {
             dispatch_async(dispatch_get_main_queue(), ^{
+                self.isLoadingMoreResults = NO;
                 showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
                 [self actionClose];
             });
@@ -653,6 +835,15 @@
 
 - (void)updateSearchResults {
     [self loadSearchResultsWithPrevList:NO];
+}
+
+- (void)loadMoreResults {
+    if (self.isLoadingMoreResults || !self.hasMoreResults) {
+        return;
+    }
+    
+    self.isLoadingMoreResults = YES;
+    [self loadSearchResultsWithPrevList:YES];
 }
 
 #pragma mark - UI State Management
@@ -800,8 +991,6 @@
         
         // Add to appropriate category
         [categorizedModpacks[category] addObject:modpack];
-        
-        NSLog(@"[ModpackInstall] Categorized '%@' as '%@' with score %d", modpack[@"title"], category, highestScore);
     }
     
     // Feature the first few modpacks regardless of category
@@ -825,25 +1014,12 @@
         }
     }
     
-    // After building categories, log what we have
-    NSLog(@"[ModpackInstall] Built %lu categories:", (unsigned long)self.categories.count);
-    for (NSUInteger i = 0; i < self.categories.count; i++) {
-        NSString *category = self.categories[i];
-        NSMutableArray *modpacksInCategory = self.organizedModpacks[i];
-        NSLog(@"[ModpackInstall]   - %@: %lu modpacks, expanded: %@", 
-              category, 
-              (unsigned long)modpacksInCategory.count,
-              [self.visibilityList[i] boolValue] ? @"YES" : @"NO");
-    }
-    
     // If no categories were created (which shouldn't happen), add a fallback
     if (self.categories.count == 0) {
         [self.categories addObject:localize(@"All Modpacks", nil)];
         [self.visibilityList addObject:@YES];
         [self.organizedModpacks addObject:[modpacks mutableCopy]];
         [self.filteredModpacks addObject:[modpacks mutableCopy]];
-        
-        NSLog(@"[ModpackInstall] Using fallback category with all %lu modpacks", (unsigned long)modpacks.count);
     }
     
     [self.dataLock unlock];
@@ -853,7 +1029,6 @@
     [self.dataLock lock];
     
     // For simplicity, we'll just add all new modpacks to the "Other" category
-    // In a real implementation, you'd categorize them properly
     NSString *otherCategory = localize(@"Other Modpacks", nil);
     
     // Find or create the "Other" category
@@ -870,203 +1045,44 @@
     [self.organizedModpacks[otherIndex] addObjectsFromArray:newModpacks];
     [self.filteredModpacks[otherIndex] addObjectsFromArray:newModpacks];
     
-    [self.dataLock unlock];
-}
-
-- (void)filterModpacksWithSearchText:(NSString *)searchText {
-    [self.dataLock lock];
-    
-    // Clear existing filtered results
-    [self.filteredModpacks removeAllObjects];
-    
-    // For each category, filter the modpacks
-    for (NSUInteger i = 0; i < self.organizedModpacks.count; i++) {
-        NSMutableArray *categoryModpacks = self.organizedModpacks[i];
-        NSMutableArray *filteredCategoryModpacks = [NSMutableArray array];
-        
-        // Filter by title, description, or tags
-        for (NSDictionary *modpack in categoryModpacks) {
+    // For search mode, also append to unified search results if they match the current criteria
+    if (self.isSearchActive) {
+        for (NSDictionary *modpack in newModpacks) {
             NSString *title = modpack[@"title"] ?: @"";
             NSString *description = modpack[@"description"] ?: @"";
             NSArray *categories = modpack[@"categories"] ?: @[];
             
             // Check if search text appears in title or description
-            BOOL matchesTextContent = [title localizedCaseInsensitiveContainsString:searchText] ||
-                                     [description localizedCaseInsensitiveContainsString:searchText];
+            BOOL matchesTextContent = (self.searchText.length == 0) || 
+                                      [title localizedCaseInsensitiveContainsString:self.searchText] ||
+                                      [description localizedCaseInsensitiveContainsString:self.searchText];
             
             // Check if search text matches any tag/category
-            BOOL matchesTags = NO;
-            for (NSString *tag in categories) {
-                if ([tag localizedCaseInsensitiveContainsString:searchText]) {
-                    matchesTags = YES;
-                    break;
-                }
-            }
-            
-            // Include if it matches any criteria
-            if (matchesTextContent || matchesTags) {
-                [filteredCategoryModpacks addObject:modpack];
-            }
-        }
-        
-        // Add this category's filtered results
-        [self.filteredModpacks addObject:filteredCategoryModpacks];
-        
-        // Expand any category with matching results
-        if (filteredCategoryModpacks.count > 0 && i < self.visibilityList.count) {
-            self.visibilityList[i] = @YES;
-        }
-    }
-    
-    [self.dataLock unlock];
-}
-
-- (void)resetFilteredModpacks {
-    [self.dataLock lock];
-    
-    // Clear and recreate filtered lists from original lists
-    [self.filteredModpacks removeAllObjects];
-    
-    for (NSMutableArray *categoryModpacks in self.organizedModpacks) {
-        [self.filteredModpacks addObject:[categoryModpacks mutableCopy]];
-    }
-    
-    [self.dataLock unlock];
-}
-
-- (void)applyTagFilters {
-    // If no active filters, just reset to original content
-    if (self.activeTagFilters.count == 0) {
-        [self resetFilteredModpacks];
-        [self.tableView reloadData];
-        [self updateFilterIndicators];
-        return;
-    }
-    
-    [self.dataLock lock];
-    
-    // Clear existing filtered results
-    [self.filteredModpacks removeAllObjects];
-    
-    // For each category, filter the modpacks
-    for (NSUInteger i = 0; i < self.organizedModpacks.count; i++) {
-        NSMutableArray *categoryModpacks = self.organizedModpacks[i];
-        NSMutableArray *filteredCategoryModpacks = [NSMutableArray array];
-        
-        // Filter by tags
-        for (NSDictionary *modpack in categoryModpacks) {
-            NSArray *modpackTags = modpack[@"categories"] ?: @[];
-            
-            // Check if modpack has at least one of the active tag filters
-            BOOL matchesFilters = NO;
-            for (NSString *tag in modpackTags) {
-                if ([self.activeTagFilters containsObject:tag]) {
-                    matchesFilters = YES;
-                    break;
-                }
-            }
-            
-            if (matchesFilters) {
-                [filteredCategoryModpacks addObject:modpack];
-            }
-        }
-        
-        // Add this category's filtered results
-        [self.filteredModpacks addObject:filteredCategoryModpacks];
-        
-        // Expand any category with matching results
-        if (filteredCategoryModpacks.count > 0 && i < self.visibilityList.count) {
-            self.visibilityList[i] = @YES;
-        }
-    }
-    
-    [self.dataLock unlock];
-    
-    // Reload the table view
-    [self.tableView reloadData];
-    
-    // Update the UI to show active filters
-    [self updateFilterIndicators];
-}
-
-- (void)performCombinedFiltering {
-    // If we're currently loading data, don't do anything
-    if (self.isDataLoading) {
-        return;
-    }
-    
-    // If we have both active text search and tag filters, apply both
-    if (self.searchController.isActive && self.searchText.length > 0 && self.activeTagFilters.count > 0) {
-        [self applyTextSearchAndTagFilters];
-    }
-    // If we only have text search
-    else if (self.searchController.isActive && self.searchText.length > 0) {
-        [self filterModpacksWithSearchText:self.searchText];
-    }
-    // If we only have tag filters
-    else if (self.activeTagFilters.count > 0) {
-        [self applyTagFilters];
-    }
-    // If we have neither
-    else {
-        [self resetFilteredModpacks];
-    }
-    
-    // Reload the table view
-    [self.tableView reloadData];
-}
-
-- (void)applyTextSearchAndTagFilters {
-    [self.dataLock lock];
-    
-    // Clear existing filtered results
-    [self.filteredModpacks removeAllObjects];
-    
-    // For each category, filter the modpacks
-    for (NSUInteger i = 0; i < self.organizedModpacks.count; i++) {
-        NSMutableArray *categoryModpacks = self.organizedModpacks[i];
-        NSMutableArray *filteredCategoryModpacks = [NSMutableArray array];
-        
-        // Filter by both text and tags
-        for (NSDictionary *modpack in categoryModpacks) {
-            NSString *title = modpack[@"title"] ?: @"";
-            NSString *description = modpack[@"description"] ?: @"";
-            NSArray *modpackTags = modpack[@"categories"] ?: @[];
-            
-            // Check if search text appears in title or description
-            BOOL matchesTextContent = [title localizedCaseInsensitiveContainsString:self.searchText] ||
-                                     [description localizedCaseInsensitiveContainsString:self.searchText];
-            
-            // Check if search text matches any tag
             BOOL matchesTextInTags = NO;
-            for (NSString *tag in modpackTags) {
-                if ([tag localizedCaseInsensitiveContainsString:self.searchText]) {
-                    matchesTextInTags = YES;
-                    break;
+            if (self.searchText.length > 0) {
+                for (NSString *tag in categories) {
+                    if ([tag localizedCaseInsensitiveContainsString:self.searchText]) {
+                        matchesTextInTags = YES;
+                        break;
+                    }
                 }
             }
             
             // Check if modpack has at least one of the active tag filters
-            BOOL matchesTagFilters = NO;
-            for (NSString *tag in modpackTags) {
-                if ([self.activeTagFilters containsObject:tag]) {
-                    matchesTagFilters = YES;
-                    break;
+            BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
+            if (!matchesTagFilters) {
+                for (NSString *tag in categories) {
+                    if ([self.activeTagFilters containsObject:tag]) {
+                        matchesTagFilters = YES;
+                        break;
+                    }
                 }
             }
             
-            // Include if it matches text search AND tag filters
+            // Include if it matches all applicable filters
             if ((matchesTextContent || matchesTextInTags) && matchesTagFilters) {
-                [filteredCategoryModpacks addObject:modpack];
+                [self.unifiedSearchResults addObject:modpack];
             }
-        }
-        
-        // Add this category's filtered results
-        [self.filteredModpacks addObject:filteredCategoryModpacks];
-        
-        // Expand any category with matching results
-        if (filteredCategoryModpacks.count > 0 && i < self.visibilityList.count) {
-            self.visibilityList[i] = @YES;
         }
     }
     
@@ -1080,8 +1096,8 @@
     self.searchText = searchController.searchBar.text;
     
     // Debounce the search to prevent excessive updates while typing
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performCombinedFiltering) object:nil];
-    [self performSelector:@selector(performCombinedFiltering) withObject:nil afterDelay:0.5];
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateUnifiedSearchResults) object:nil];
+    [self performSelector:@selector(updateUnifiedSearchResults) withObject:nil afterDelay:0.5];
 }
 
 #pragma mark - UIContextMenu
@@ -1100,11 +1116,32 @@
     return style;
 }
 
+#pragma mark - UIScrollViewDelegate
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    // Check if we're near the bottom of the table view and should load more
+    CGFloat currentOffset = scrollView.contentOffset.y;
+    CGFloat contentHeight = scrollView.contentSize.height;
+    CGFloat frameHeight = scrollView.frame.size.height;
+    
+    // When we're 400 points from the bottom, consider loading more
+    CGFloat bottomEdge = contentHeight - (currentOffset + frameHeight);
+    
+    if (bottomEdge < 400 && !self.isLoadingMoreResults && self.hasMoreResults && self.isSearchActive) {
+        [self loadMoreResults];
+    }
+}
+
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     if (self.isDataLoading) {
         return 1; // Show a single section with loading indicator
+    }
+    
+    // When in search mode, show a single section
+    if (self.isSearchActive) {
+        return 1;
     }
     
     [self.dataLock lock];
@@ -1117,6 +1154,24 @@
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.isDataLoading) {
         return 1; // Show a single loading row
+    }
+    
+    // When in search mode, show unified search results
+    if (self.isSearchActive) {
+        NSInteger count = self.unifiedSearchResults.count;
+        
+        // If we have no results but might get more, show a loading indicator
+        if (count == 0 && self.hasMoreResults) {
+            return 1;
+        }
+        
+        // If we have results and might get more, add 1 for the loading indicator
+        if (count > 0 && self.hasMoreResults) {
+            return count + 1;
+        }
+        
+        // Otherwise just show the results (or a "no results" row if empty)
+        return MAX(count, 1);
     }
     
     [self.dataLock lock];
@@ -1135,14 +1190,8 @@
     
     NSInteger rows = 0;
     
-    if (self.searchController.isActive && self.searchText.length > 0) {
-        if (section < self.filteredModpacks.count) {
-            rows = self.filteredModpacks[section].count;
-        }
-    } else {
-        if (section < self.organizedModpacks.count) {
-            rows = self.organizedModpacks[section].count;
-        }
+    if (section < self.organizedModpacks.count) {
+        rows = self.organizedModpacks[section].count;
     }
     
     [self.dataLock unlock];
@@ -1161,11 +1210,25 @@
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    // When in search mode with results, don't show section headers
+    if (self.isSearchActive && self.unifiedSearchResults.count > 0) {
+        return nil;
+    }
+    
     ModpackCategoryHeaderView *headerView = [tableView dequeueReusableHeaderFooterViewWithIdentifier:@"ModpackCategoryHeader"];
     
     // Return a loading header if data is still loading
     if (self.isDataLoading) {
         headerView.titleLabel.text = localize(@"Loading modpacks...", nil);
+        headerView.isExpanded = NO;
+        headerView.expandCollapseButton.tag = section;
+        [headerView.expandCollapseButton removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
+        return headerView;
+    }
+    
+    // In search mode with no results, show a "No Results" header
+    if (self.isSearchActive && self.unifiedSearchResults.count == 0) {
+        headerView.titleLabel.text = localize(@"No Results", nil);
         headerView.isExpanded = NO;
         headerView.expandCollapseButton.tag = section;
         [headerView.expandCollapseButton removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
@@ -1205,6 +1268,15 @@
     return headerView;
 }
 
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    // When in search mode with results, don't show section headers
+    if (self.isSearchActive && self.unifiedSearchResults.count > 0) {
+        return 0.0;
+    }
+    
+    return 60.0;
+}
+
 - (void)toggleSection:(UIButton *)sender {
     if (self.isDataLoading) {
         return;
@@ -1225,10 +1297,6 @@
     } else {
         [self.dataLock unlock];
     }
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    return 60.0;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -1253,23 +1321,83 @@
         return cell;
     }
     
+    // SEARCH MODE: Show unified search results
+    if (self.isSearchActive) {
+        // If we're showing the loading indicator row
+        if (self.hasMoreResults && indexPath.row == self.unifiedSearchResults.count) {
+            cell.titleLabel.text = localize(@"Loading more results...", nil);
+            cell.subtitleLabel.text = @"";
+            [cell setTags:@[]];
+            cell.accessoryType = UITableViewCellAccessoryNone;
+            
+            // Add activity indicator as accessory view
+            UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+            [activityIndicator startAnimating];
+            cell.accessoryView = activityIndicator;
+            
+            // Trigger loading more results if not already loading
+            if (!self.isLoadingMoreResults) {
+                [self loadMoreResults];
+            }
+            
+            return cell;
+        }
+        
+        // If we have no results
+        if (self.unifiedSearchResults.count == 0) {
+            cell.titleLabel.text = localize(@"No modpacks found", nil);
+            cell.subtitleLabel.text = localize(@"Try changing your search criteria", nil);
+            [cell setTags:@[]];
+            cell.accessoryType = UITableViewCellAccessoryNone;
+            cell.modpackIconView.image = [UIImage systemImageNamed:@"cube.box"];
+            cell.modpackIconView.tintColor = [UIColor systemGray3Color];
+            
+            return cell;
+        }
+        
+        // Regular result row
+        NSDictionary *modpack = self.unifiedSearchResults[indexPath.row];
+        
+        // Update the cell with modpack data
+        cell.titleLabel.text = modpack[@"title"] ?: @"Unknown";
+        cell.subtitleLabel.text = modpack[@"description"] ?: @"";
+        
+        // Set tags from categories
+        [cell setTags:modpack[@"categories"] ?: @[]];
+        
+        // Set modpack icon
+        UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
+        NSString *imageUrl = modpack[@"imageUrl"] ?: @"";
+        if (imageUrl.length > 0) {
+            [cell.modpackIconView setImageWithURL:[NSURL URLWithString:imageUrl] 
+                                placeholderImage:fallbackImage];
+        } else {
+            cell.modpackIconView.image = fallbackImage;
+        }
+        
+        // Set accessory based on whether details are loaded
+        BOOL detailsLoaded = [modpack[@"versionDetailsLoaded"] boolValue];
+        cell.accessoryType = detailsLoaded ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
+        if (!detailsLoaded) {
+            UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+            [activityIndicator startAnimating];
+            cell.accessoryView = activityIndicator;
+        } else {
+            cell.accessoryView = nil;
+        }
+        
+        return cell;
+    }
+    
+    // CATEGORY MODE: Show categorized results
     [self.dataLock lock];
     
     // Add bounds checking
-    BOOL outOfBounds = NO;
-    NSArray *currentList;
+    BOOL outOfBounds = (indexPath.section >= self.organizedModpacks.count || 
+                      (indexPath.section < self.organizedModpacks.count && 
+                       indexPath.row >= [self.organizedModpacks[indexPath.section] count]));
     
-    if (self.searchController.isActive && self.searchText.length > 0) {
-        currentList = self.filteredModpacks;
-    } else {
-        currentList = self.organizedModpacks;
-    }
-    
-    outOfBounds = (indexPath.section >= currentList.count || 
-                  (indexPath.section < currentList.count && 
-                   indexPath.row >= [currentList[indexPath.section] count]));
-    
-    if (outOfBounds || [currentList[indexPath.section] count] == 0) {
+    if (outOfBounds || [self.organizedModpacks[indexPath.section] count] == 0) {
         [self.dataLock unlock];
         
         // Return an empty state cell
@@ -1284,7 +1412,7 @@
     }
     
     // Get the modpack data
-    NSDictionary *modpack = currentList[indexPath.section][indexPath.row];
+    NSDictionary *modpack = self.organizedModpacks[indexPath.section][indexPath.row];
     
     // Make a copy to use after releasing the lock
     NSString *title = [modpack[@"title"] copy] ?: @"Unknown";
@@ -1329,46 +1457,51 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     
-    // Skip if data is still loading or if no sections
-    if (self.isDataLoading || self.categories.count == 0) {
+    // Skip if data is still loading
+    if (self.isDataLoading) {
         return;
     }
     
-    [self.dataLock lock];
+    // Skip if this is the "loading more" row in search mode
+    if (self.isSearchActive && self.hasMoreResults && indexPath.row == self.unifiedSearchResults.count) {
+        return;
+    }
     
-    // Check bounds and get modpack list
-    NSArray *currentList;
-    if (self.searchController.isActive && self.searchText.length > 0) {
-        currentList = self.filteredModpacks;
+    NSDictionary *modpack = nil;
+    
+    // Get the modpack based on whether we're in search mode or category mode
+    if (self.isSearchActive) {
+        // Check bounds
+        if (indexPath.row >= self.unifiedSearchResults.count || self.unifiedSearchResults.count == 0) {
+            return;
+        }
+        
+        modpack = self.unifiedSearchResults[indexPath.row];
     } else {
-        currentList = self.organizedModpacks;
-    }
-    
-    // Add bounds checking
-    BOOL outOfBounds = (indexPath.section >= currentList.count || 
-                      (indexPath.section < currentList.count && 
-                       indexPath.row >= [currentList[indexPath.section] count]));
-    
-    if (outOfBounds || [currentList[indexPath.section] count] == 0) {
+        [self.dataLock lock];
+        
+        // Check bounds for category mode
+        if (indexPath.section >= self.organizedModpacks.count || 
+            indexPath.row >= [self.organizedModpacks[indexPath.section] count] || 
+            self.organizedModpacks.count == 0) {
+            [self.dataLock unlock];
+            return;
+        }
+        
+        modpack = self.organizedModpacks[indexPath.section][indexPath.row];
         [self.dataLock unlock];
-        return;
     }
-    
-    // Get the modpack
-    NSDictionary *modpack = currentList[indexPath.section][indexPath.row];
     
     // Check if details already loaded
     if ([modpack[@"versionDetailsLoaded"] boolValue]) {
-        // Make a copy to use after releasing the lock
+        // Make a copy to use
         NSDictionary *modpackCopy = [modpack copy];
-        [self.dataLock unlock];
         
         // Show version selection menu
         [self showVersionMenu:modpackCopy atIndexPath:indexPath];
     } else {
-        // Make a copy and unlock
+        // Make a copy
         NSMutableDictionary *modpackCopy = [modpack mutableCopy];
-        [self.dataLock unlock];
         
         // Load details first
         [self loadModpackDetails:modpackCopy atIndexPath:indexPath];
@@ -1395,6 +1528,7 @@
             // Update data model - find the modpack in all lists and update it
             [self.dataLock lock];
             
+            // Update in organized lists
             for (NSMutableArray *category in self.organizedModpacks) {
                 for (NSInteger i = 0; i < category.count; i++) {
                     if ([category[i][@"id"] isEqual:modpack[@"id"]]) {
@@ -1403,11 +1537,19 @@
                 }
             }
             
+            // Update in filtered lists
             for (NSMutableArray *category in self.filteredModpacks) {
                 for (NSInteger i = 0; i < category.count; i++) {
                     if ([category[i][@"id"] isEqual:modpack[@"id"]]) {
                         category[i] = modpack;
                     }
+                }
+            }
+            
+            // Update in unified search results
+            for (NSInteger i = 0; i < self.unifiedSearchResults.count; i++) {
+                if ([self.unifiedSearchResults[i][@"id"] isEqual:modpack[@"id"]]) {
+                    self.unifiedSearchResults[i] = modpack;
                 }
             }
             
