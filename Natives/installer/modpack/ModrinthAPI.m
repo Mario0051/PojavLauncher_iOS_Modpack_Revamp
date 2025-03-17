@@ -8,6 +8,7 @@
 #import "PLProfiles.h"
 #import "UIKit+hook.h"
 #import "utils.h"
+#import "LauncherPreferences.h" // Added import for getPrefObject
 
 // External functions from utils.h
 extern void showDialog(NSString *title, NSString *message);
