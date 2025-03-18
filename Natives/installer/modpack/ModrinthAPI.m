@@ -15,6 +15,36 @@ extern void showDialog(NSString *title, NSString *message);
 
 @implementation ModrinthAPI
 
+// Helper function to convert WebP URLs to supported formats
+- (NSString *)convertWebPUrl:(NSString *)imageUrl {
+    if (!imageUrl || imageUrl.length == 0) {
+        return imageUrl;
+    }
+    
+    // Handle WebP format by requesting PNG instead
+    if ([imageUrl.lowercaseString hasSuffix:@".webp"]) {
+        // Try one of several approaches:
+        
+        // 1. For Modrinth CDN: Add format=png parameter
+        if ([imageUrl containsString:@"cdn.modrinth.com"]) {
+            // Check if URL already has parameters
+            if ([imageUrl containsString:@"?"]) {
+                return [imageUrl stringByAppendingString:@"&format=png"];
+            } else {
+                return [imageUrl stringByAppendingString:@"?format=png"];
+            }
+        }
+        
+        // 2. For other services: Try changing extension
+        return [imageUrl stringByReplacingOccurrencesOfString:@".webp" 
+                                                   withString:@".png" 
+                                                      options:NSCaseInsensitiveSearch 
+                                                        range:NSMakeRange(0, imageUrl.length)];
+    }
+    
+    return imageUrl;
+}
+
 - (instancetype)init {
     return [super initWithURL:@"https://api.modrinth.com/v2"];
 }
@@ -116,6 +146,9 @@ extern void showDialog(NSString *title, NSString *message);
         } else {
             // Make sure icon URL is properly formatted (no escaped slashes)
             iconUrl = [iconUrl stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+            
+            // Apply WebP conversion
+            iconUrl = [self convertWebPUrl:iconUrl];
             NSLog(@"[ModrinthAPI] Project %@ has icon URL: %@", projectId, iconUrl);
         }
         
@@ -180,6 +213,9 @@ extern void showDialog(NSString *title, NSString *message);
         if (projectDetails[@"icon_url"] && [projectDetails[@"icon_url"] isKindOfClass:[NSString class]]) {
             NSString *newIconUrl = projectDetails[@"icon_url"];
             newIconUrl = [newIconUrl stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+            
+            // Convert WebP URLs
+            newIconUrl = [self convertWebPUrl:newIconUrl];
             
             // Only update if we have a valid URL
             if (newIconUrl.length > 0) {
