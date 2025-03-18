@@ -543,10 +543,10 @@
     self.isDataLoading = NO;
     self.dataLock = [[NSLock alloc] init];
     
-    // Setup default filters
+    // Setup default filters - change from " " to empty string to avoid unnecessary searches
     self.filters = @{
         @"isModpack": @(YES),
-        @"name": @" ",
+        @"name": @"",
         @"sortMethod": @"relevance" // Default sort method
     }.mutableCopy;
     
@@ -726,17 +726,31 @@
 #pragma mark - Data Loading
 
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
-    NSString *name = self.searchController.searchBar.text;
+    // Get current search text, ensure it's not nil
+    NSString *name = self.searchController.searchBar.text ?: @"";
     
     // Only update filters if the search text has changed (to avoid unnecessary API calls)
+    // Also ensure we're not in the middle of appending (prevList == YES)
     if (!prevList && self.filters[@"name"] && [self.filters[@"name"] isEqual:name]) {
         return;
     }
 
     [self switchToLoadingState];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Create a copy of the filters for this specific search operation to avoid thread safety issues
+        NSMutableDictionary *searchFilters = [NSMutableDictionary dictionaryWithDictionary:self.filters];
+        searchFilters[@"name"] = name;
+        
+        // Update main filters with current search text (in background thread)
         self.filters[@"name"] = name;
-        NSMutableArray *newResults = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.unifiedSearchResults : nil];
+        
+        // Log the search parameters for debugging
+        NSLog(@"[ModpackInstall] Searching with filters: %@, appending: %@", 
+              searchFilters, prevList ? @"YES" : @"NO");
+        
+        // Perform the search, using the previous results if appending
+        NSMutableArray *newResults = [self.modrinth searchModWithFilters:searchFilters 
+                                             previousPageResult:prevList ? self.unifiedSearchResults : nil];
         
         // Check for pagination status
         self.hasMoreResults = !self.modrinth.reachedLastPage;
@@ -776,10 +790,13 @@
 }
 
 - (void)updateSearchResults {
+    // Reset pagination state to ensure we get fresh results
+    self.hasMoreResults = YES;
     [self loadSearchResultsWithPrevList:NO];
 }
 
 - (void)loadMoreResults {
+    // Only proceed if we're not already loading and have more results to fetch
     if (self.isLoadingMoreResults || !self.hasMoreResults) {
         return;
     }
@@ -1182,7 +1199,7 @@
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
     // Update search results text
-    self.searchText = searchController.searchBar.text;
+    self.searchText = searchController.searchBar.text ?: @"";
     
     // Make sure isSearchActive is set if the search controller is active
     if (searchController.active && !self.isSearchActive) {
