@@ -1529,7 +1529,7 @@
     return 100.0; // Increased height to accommodate tags
 }
 
-Copy- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     ModpackVersionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ModpackVersionCell" forIndexPath:indexPath];
     
     // If data is loading, return a placeholder cell
@@ -1704,6 +1704,9 @@ Copy- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPat
     UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
     
     if (imageUrl.length > 0) {
+        // Convert WebP URLs to supported formats
+        imageUrl = [cell convertWebPUrl:imageUrl];
+        
         // Create an absolute URL if it's not already
         NSURL *iconURL = [NSURL URLWithString:imageUrl];
         
