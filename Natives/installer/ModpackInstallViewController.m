@@ -23,6 +23,36 @@
 
 @implementation ModpackVersionCell
 
+// Helper method for WebP URL conversion
+- (NSString *)convertWebPUrl:(NSString *)imageUrl {
+    if (!imageUrl || imageUrl.length == 0) {
+        return imageUrl;
+    }
+    
+    // Handle WebP format by requesting PNG instead
+    if ([imageUrl.lowercaseString hasSuffix:@".webp"]) {
+        // Try one of several approaches:
+        
+        // 1. For Modrinth CDN: Add format=png parameter
+        if ([imageUrl containsString:@"cdn.modrinth.com"]) {
+            // Check if URL already has parameters
+            if ([imageUrl containsString:@"?"]) {
+                return [imageUrl stringByAppendingString:@"&format=png"];
+            } else {
+                return [imageUrl stringByAppendingString:@"?format=png"];
+            }
+        }
+        
+        // 2. For other services: Try changing extension
+        return [imageUrl stringByReplacingOccurrencesOfString:@".webp" 
+                                                   withString:@".png" 
+                                                      options:NSCaseInsensitiveSearch 
+                                                        range:NSMakeRange(0, imageUrl.length)];
+    }
+    
+    return imageUrl;
+}
+
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
     if (self) {
