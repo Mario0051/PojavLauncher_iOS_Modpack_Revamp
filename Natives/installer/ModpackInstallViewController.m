@@ -115,11 +115,22 @@
 - (void)prepareForReuse {
     [super prepareForReuse];
     
+    // Reset the image view to avoid image flicker between cells
+    [self.modpackIconView cancelImageDownloadTask];
+    self.modpackIconView.image = nil;
+    
+    // Reset the title and subtitle to ensure they're cleared for reuse
+    self.titleLabel.text = nil;
+    self.subtitleLabel.text = nil;
+    
     // Clear existing tag views
     for (UIView *tagView in self.tagViews) {
         [tagView removeFromSuperview];
     }
     [self.tagViews removeAllObjects];
+    
+    // Reset the scroll view content size
+    self.tagsScrollView.contentSize = CGSizeZero;
 }
 
 - (UIColor *)colorForTag:(NSString *)tag {
@@ -1550,13 +1561,53 @@
         // Set tags from categories
         [cell setTags:modpack[@"categories"] ?: @[]];
         
-        // Set modpack icon
+        // Set modpack icon with improved image loading
+        cell.modpackIconView.image = nil; // Reset image first to avoid stale images
         UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
         NSString *imageUrl = modpack[@"imageUrl"] ?: @"";
+        
         if (imageUrl.length > 0) {
-            [cell.modpackIconView setImageWithURL:[NSURL URLWithString:imageUrl] 
-                                placeholderImage:fallbackImage];
+            // Create an absolute URL if it's not already
+            NSURL *iconURL = [NSURL URLWithString:imageUrl];
+            
+            // Add URL logging to help diagnose issues
+            NSLog(@"[ModpackInstall] Loading image for %@ from URL: %@", modpack[@"title"], iconURL);
+            
+            // Use the shared image downloader from AFNetworking with clear cache policy
+            NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:iconURL];
+            [request setHTTPShouldHandleCookies:NO];
+            [request setCachePolicy:NSURLRequestReloadIgnoringLocalCacheData]; // Force reload, ignore cache
+            
+            // Set a specific timeout to avoid long waits
+            [request setTimeoutInterval:15.0];
+            
+            // Cancel any previous image requests for this cell to prevent wrong images
+            [cell.modpackIconView cancelImageDownloadTask];
+            
+            // Use the AFNetworking category with our custom request
+            [cell.modpackIconView setImageWithURLRequest:request 
+                                        placeholderImage:fallbackImage 
+                                                 success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
+                                                     // Apply the image with a fade-in animation
+                                                     [UIView transitionWithView:cell.modpackIconView
+                                                                       duration:0.3
+                                                                        options:UIViewAnimationOptionTransitionCrossDissolve
+                                                                     animations:^{
+                                                                         cell.modpackIconView.image = image;
+                                                                     } completion:nil];
+                                                     
+                                                     // Log success for debugging
+                                                     NSLog(@"[ModpackInstall] Successfully loaded image for %@", modpack[@"title"]);
+                                                 } 
+                                                 failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
+                                                     // Log error for debugging
+                                                     NSLog(@"[ModpackInstall] Failed to load image for %@: %@", modpack[@"title"], error.localizedDescription);
+                                                     
+                                                     // Ensure fallback image is set
+                                                     cell.modpackIconView.image = fallbackImage;
+                                                 }];
         } else {
+            // If no URL, use fallback immediately
             cell.modpackIconView.image = fallbackImage;
         }
         
@@ -1615,12 +1666,52 @@
     // Set tags from categories
     [cell setTags:categories];
     
-    // Set modpack icon
+    // Set modpack icon with improved image loading
+    cell.modpackIconView.image = nil; // Reset image first to avoid stale images
     UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
+    
     if (imageUrl.length > 0) {
-        [cell.modpackIconView setImageWithURL:[NSURL URLWithString:imageUrl] 
-                             placeholderImage:fallbackImage];
+        // Create an absolute URL if it's not already
+        NSURL *iconURL = [NSURL URLWithString:imageUrl];
+        
+        // Add URL logging to help diagnose issues
+        NSLog(@"[ModpackInstall] Loading image for %@ from URL: %@", title, iconURL);
+        
+        // Use the shared image downloader from AFNetworking with clear cache policy
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:iconURL];
+        [request setHTTPShouldHandleCookies:NO];
+        [request setCachePolicy:NSURLRequestReloadIgnoringLocalCacheData]; // Force reload, ignore cache
+        
+        // Set a specific timeout to avoid long waits
+        [request setTimeoutInterval:15.0];
+        
+        // Cancel any previous image requests for this cell to prevent wrong images
+        [cell.modpackIconView cancelImageDownloadTask];
+        
+        // Use the AFNetworking category with our custom request
+        [cell.modpackIconView setImageWithURLRequest:request 
+                                    placeholderImage:fallbackImage 
+                                             success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
+                                                 // Apply the image with a fade-in animation
+                                                 [UIView transitionWithView:cell.modpackIconView
+                                                                   duration:0.3
+                                                                    options:UIViewAnimationOptionTransitionCrossDissolve
+                                                                 animations:^{
+                                                                     cell.modpackIconView.image = image;
+                                                                 } completion:nil];
+                                                 
+                                                 // Log success for debugging
+                                                 NSLog(@"[ModpackInstall] Successfully loaded image for %@", title);
+                                             } 
+                                             failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
+                                                 // Log error for debugging
+                                                 NSLog(@"[ModpackInstall] Failed to load image for %@: %@", title, error.localizedDescription);
+                                                 
+                                                 // Ensure fallback image is set
+                                                 cell.modpackIconView.image = fallbackImage;
+                                             }];
     } else {
+        // If no URL, use fallback immediately
         cell.modpackIconView.image = fallbackImage;
     }
     
@@ -1739,6 +1830,34 @@
             }
             
             [self.dataLock unlock];
+            
+            // If icon URL has been updated, reload image
+            if (modpack[@"imageUrl"]) {
+                // Create an absolute URL if it's not already
+                NSURL *iconURL = [NSURL URLWithString:modpack[@"imageUrl"]];
+                NSLog(@"[ModpackInstall] Reloading updated image for %@ from URL: %@", modpack[@"title"], iconURL);
+                
+                // Use the shared image downloader from AFNetworking with clear cache policy
+                NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:iconURL];
+                [request setHTTPShouldHandleCookies:NO];
+                [request setCachePolicy:NSURLRequestReloadIgnoringLocalCacheData]; // Force reload, ignore cache
+                [request setTimeoutInterval:15.0];
+                
+                // Cancel any previous image tasks
+                [cell.modpackIconView cancelImageDownloadTask];
+                
+                // Load the updated image
+                [cell.modpackIconView setImageWithURLRequest:request 
+                                           placeholderImage:cell.modpackIconView.image ?: [UIImage imageNamed:@"DefaultProfile"]
+                                                    success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
+                                                        [UIView transitionWithView:cell.modpackIconView
+                                                                          duration:0.3
+                                                                           options:UIViewAnimationOptionTransitionCrossDissolve
+                                                                        animations:^{
+                                                                            cell.modpackIconView.image = image;
+                                                                        } completion:nil];
+                                                    } failure:nil];
+            }
             
             // If tags have been updated, refresh the cell
             [cell setTags:modpack[@"categories"] ?: @[]];
