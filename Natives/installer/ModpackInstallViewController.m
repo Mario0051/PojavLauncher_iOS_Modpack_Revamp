@@ -728,12 +728,6 @@
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
     // Get current search text, ensure it's not nil
     NSString *name = self.searchController.searchBar.text ?: @"";
-    
-    // Only update filters if the search text has changed (to avoid unnecessary API calls)
-    // Also ensure we're not in the middle of appending (prevList == YES)
-    if (!prevList && self.filters[@"name"] && [self.filters[@"name"] isEqual:name]) {
-        return;
-    }
 
     [self switchToLoadingState];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
