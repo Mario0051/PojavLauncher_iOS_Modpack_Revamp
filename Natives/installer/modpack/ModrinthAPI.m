@@ -106,7 +106,19 @@ extern void showDialog(NSString *title, NSString *message);
         NSString *projectId = hit[@"project_id"] ?: @"";
         NSString *title = hit[@"title"] ?: @"Unknown";
         NSString *description = hit[@"description"] ?: @"";
-        NSString *iconUrl = hit[@"icon_url"] ?: @"";
+        NSString *iconUrl = hit[@"icon_url"];
+        
+        // Ensure we have a valid icon URL, use a fallback URL if missing
+        if (!iconUrl || ![iconUrl isKindOfClass:[NSString class]] || iconUrl.length == 0) {
+            // Use a placeholder URL or default image path
+            iconUrl = @"";
+            NSLog(@"[ModrinthAPI] No icon URL for project %@, using empty string", projectId);
+        } else {
+            // Make sure icon URL is properly formatted (no escaped slashes)
+            iconUrl = [iconUrl stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+            NSLog(@"[ModrinthAPI] Project %@ has icon URL: %@", projectId, iconUrl);
+        }
+        
         BOOL isModpackItem = [hit[@"project_type"] isKindOfClass:[NSString class]] && 
                              [hit[@"project_type"] isEqualToString:@"modpack"];
         
@@ -164,6 +176,18 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Extract additional metadata if available
     if (projectDetails) {
+        // Check for updated icon URL and update if available
+        if (projectDetails[@"icon_url"] && [projectDetails[@"icon_url"] isKindOfClass:[NSString class]]) {
+            NSString *newIconUrl = projectDetails[@"icon_url"];
+            newIconUrl = [newIconUrl stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+            
+            // Only update if we have a valid URL
+            if (newIconUrl.length > 0) {
+                item[@"imageUrl"] = newIconUrl;
+                NSLog(@"[ModrinthAPI] Updated icon URL for project %@: %@", projectId, newIconUrl);
+            }
+        }
+        
         // Get complete categories list
         if (projectDetails[@"categories"] && [projectDetails[@"categories"] isKindOfClass:[NSArray class]]) {
             item[@"categories"] = projectDetails[@"categories"];
@@ -190,7 +214,7 @@ extern void showDialog(NSString *title, NSString *message);
         }
     }
     
-    // Now load version data (as before)
+    // Now load version data
     NSString *endpoint = [NSString stringWithFormat:@"project/%@/version", projectId];
     NSArray *response = [self getEndpoint:endpoint params:nil];
     
@@ -248,7 +272,8 @@ extern void showDialog(NSString *title, NSString *message);
             
             // Get download URL
             if (file[@"url"] && [file[@"url"] isKindOfClass:[NSString class]]) {
-                urls[i] = file[@"url"];
+                NSString *fileUrl = [file[@"url"] stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+                urls[i] = fileUrl;
             }
             
             // Get hash
