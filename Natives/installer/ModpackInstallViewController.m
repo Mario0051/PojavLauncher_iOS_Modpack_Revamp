@@ -900,11 +900,26 @@
         localize(@"Adventure Modpacks", nil): @[@"adventure", @"quest", @"explore", @"journey", @"dungeon", @"rpg", @"dimension", @"battle", @"biome", @"structure", @"twilight forest", @"aether"]
     };
     
+    // Create a safe copy of modpacks to iterate through
+    NSArray *safeModpacks = [modpacks copy];
+    
     // Assign modpacks to categories based on keywords
-    for (NSDictionary *modpack in modpacks) {
+    for (id modpackObj in safeModpacks) {
+        if (![modpackObj isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        
+        NSDictionary *modpack = (NSDictionary *)modpackObj;
+        
         NSString *title = [[modpack[@"title"] ?: @"" lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         NSString *description = [[modpack[@"description"] ?: @"" lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        NSArray *tags = modpack[@"categories"] ?: @[];
+        
+        // Ensure tags is an array
+        id tagsObj = modpack[@"categories"];
+        NSArray *tags = [tagsObj isKindOfClass:[NSArray class]] ? tagsObj : @[];
+        
+        // Create a safe copy of tags to iterate through
+        NSArray *safeTags = [tags copy];
         
         // Start with a score for each category
         NSMutableDictionary *categoryScores = [NSMutableDictionary dictionary];
@@ -931,7 +946,12 @@
                 }
                 
                 // Check if the keyword appears in any of the modpack's categories/tags
-                for (NSString *tag in tags) {
+                for (id tagObj in safeTags) {
+                    if (![tagObj isKindOfClass:[NSString class]]) {
+                        continue;
+                    }
+                    
+                    NSString *tag = (NSString *)tagObj;
                     NSString *lowercaseTag = [[tag lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
                     if ([lowercaseTag isEqualToString:keyword]) {
                         score += 5; // Exact tag match gets high score
@@ -1023,7 +1043,10 @@
     
     // For search mode, also append to unified search results if they match the current criteria
     if (self.isSearchActive) {
-        for (id modpackObj in newModpacks) {
+        // Create a safe copy of newModpacks to iterate through
+        NSArray *safeModpacks = [newModpacks copy];
+        
+        for (id modpackObj in safeModpacks) {
             // Ensure the modpack is a dictionary
             if (![modpackObj isKindOfClass:[NSDictionary class]]) {
                 continue;
@@ -1039,6 +1062,9 @@
             id categoriesObj = modpack[@"categories"];
             NSArray *categories = [categoriesObj isKindOfClass:[NSArray class]] ? categoriesObj : @[];
             
+            // Create a safe copy of categories to iterate through
+            NSArray *safeCategories = [categories copy];
+            
             // Check if search text appears in title or description
             BOOL matchesTextContent = (self.searchText.length == 0) || 
                                       [title localizedCaseInsensitiveContainsString:self.searchText] ||
@@ -1047,7 +1073,7 @@
             // Check if search text matches any tag/category
             BOOL matchesTextInTags = NO;
             if (self.searchText.length > 0) {
-                for (id tagObj in categories) {
+                for (id tagObj in safeCategories) {
                     // Ensure tag is a string
                     if (![tagObj isKindOfClass:[NSString class]]) {
                         continue;
@@ -1064,14 +1090,17 @@
             // Check if modpack has at least one of the active tag filters
             BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
             if (!matchesTagFilters) {
-                for (id tagObj in categories) {
+                // Create a safe copy of activeTagFilters to avoid potential mutations
+                NSSet *safeActiveTagFilters = [self.activeTagFilters copy];
+                
+                for (id tagObj in safeCategories) {
                     // Ensure tag is a string
                     if (![tagObj isKindOfClass:[NSString class]]) {
                         continue;
                     }
                     
                     NSString *tag = (NSString *)tagObj;
-                    if ([self.activeTagFilters containsObject:[tag lowercaseString]]) {
+                    if ([safeActiveTagFilters containsObject:[tag lowercaseString]]) {
                         matchesTagFilters = YES;
                         break;
                     }
@@ -1138,21 +1167,36 @@
     if (self.searchText.length > 0 || self.activeTagFilters.count > 0) {
         // Combine all modpacks from all categories into one array for filtering
         NSMutableArray *allModpacks = [NSMutableArray array];
-        for (NSArray *categoryModpacks in self.organizedModpacks) {
+        
+        // Create a copy of organizedModpacks to avoid mutation issues
+        NSArray *safeOrganizedModpacks = [self.organizedModpacks copy];
+        
+        for (NSArray *categoryModpacks in safeOrganizedModpacks) {
             if ([categoryModpacks isKindOfClass:[NSArray class]]) {
                 [allModpacks addObjectsFromArray:categoryModpacks];
             }
         }
         
         // Apply filters
-        for (NSDictionary *modpack in allModpacks) {
-            if (![modpack isKindOfClass:[NSDictionary class]]) {
+        // Create a copy of allModpacks to avoid mutation issues
+        NSArray *safeAllModpacks = [allModpacks copy];
+        
+        for (id modpackObj in safeAllModpacks) {
+            if (![modpackObj isKindOfClass:[NSDictionary class]]) {
                 continue; // Skip invalid modpacks
             }
             
+            NSDictionary *modpack = (NSDictionary *)modpackObj;
+            
             NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"";
             NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
-            NSArray *categories = [modpack[@"categories"] isKindOfClass:[NSArray class]] ? modpack[@"categories"] : @[];
+            
+            // Ensure categories is an array
+            id categoriesObj = modpack[@"categories"];
+            NSArray *categories = [categoriesObj isKindOfClass:[NSArray class]] ? categoriesObj : @[];
+            
+            // Create a safe copy of the categories array
+            NSArray *safeCategories = [categories copy];
             
             // Check if search text appears in title or description
             BOOL matchesTextContent = (self.searchText.length == 0) || 
@@ -1162,9 +1206,14 @@
             // Check if search text matches any tag/category
             BOOL matchesTextInTags = NO;
             if (self.searchText.length > 0) {
-                for (NSString *tag in categories) {
-                    if ([tag isKindOfClass:[NSString class]] && 
-                        [tag localizedCaseInsensitiveContainsString:self.searchText]) {
+                for (id tagObj in safeCategories) {
+                    // Ensure tag is a string
+                    if (![tagObj isKindOfClass:[NSString class]]) {
+                        continue;
+                    }
+                    
+                    NSString *tag = (NSString *)tagObj;
+                    if ([tag localizedCaseInsensitiveContainsString:self.searchText]) {
                         matchesTextInTags = YES;
                         break;
                     }
@@ -1174,9 +1223,17 @@
             // Check if modpack has at least one of the active tag filters
             BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
             if (!matchesTagFilters) {
-                for (NSString *tag in categories) {
-                    if ([tag isKindOfClass:[NSString class]] && 
-                        [self.activeTagFilters containsObject:[tag lowercaseString]]) {
+                // Create a safe copy of activeTagFilters
+                NSSet *safeActiveTagFilters = [self.activeTagFilters copy];
+                
+                for (id tagObj in safeCategories) {
+                    // Ensure tag is a string
+                    if (![tagObj isKindOfClass:[NSString class]]) {
+                        continue;
+                    }
+                    
+                    NSString *tag = (NSString *)tagObj;
+                    if ([safeActiveTagFilters containsObject:[tag lowercaseString]]) {
                         matchesTagFilters = YES;
                         break;
                     }
@@ -1211,7 +1268,10 @@
         }
     } else {
         // If no active filters, include all modpacks
-        for (NSArray *categoryModpacks in self.organizedModpacks) {
+        // Create a copy of organizedModpacks to avoid mutation issues
+        NSArray *safeOrganizedModpacks = [self.organizedModpacks copy];
+        
+        for (NSArray *categoryModpacks in safeOrganizedModpacks) {
             if ([categoryModpacks isKindOfClass:[NSArray class]]) {
                 [self.unifiedSearchResults addObjectsFromArray:categoryModpacks];
             }
