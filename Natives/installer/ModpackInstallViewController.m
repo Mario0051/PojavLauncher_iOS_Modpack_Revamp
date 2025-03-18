@@ -546,7 +546,8 @@
     // Setup default filters
     self.filters = @{
         @"isModpack": @(YES),
-        @"name": @" "
+        @"name": @" ",
+        @"sortMethod": @"relevance" // Default sort method
     }.mutableCopy;
     
     // Load initial data
@@ -563,119 +564,6 @@
         // Handle any exception that might occur during removal
         NSLog(@"Exception removing observer: %@", exception);
     }
-}
-
-#pragma mark - Search State Handling
-
-- (void)searchActiveChanged:(NSNotification *)notification {
-    // Check if search is becoming active or inactive
-    if ([notification.name isEqualToString:@"UISearchControllerDidBeginSearchNotification"]) {
-        self.isSearchActive = YES;
-        
-        // When search becomes active, create unified search results
-        [self updateUnifiedSearchResults];
-        
-    } else if ([notification.name isEqualToString:@"UISearchControllerDidEndSearchNotification"]) {
-        self.isSearchActive = NO;
-        
-        // When search is dismissed, reload table to restore category view
-        [self.tableView reloadData];
-    }
-}
-
-// Add KVO observation for search controller's active property
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
-    if (object == self.searchController && [keyPath isEqualToString:@"active"]) {
-        BOOL isActive = [[change objectForKey:NSKeyValueChangeNewKey] boolValue];
-        
-        // Only update if the state has changed
-        if (isActive != self.isSearchActive) {
-            self.isSearchActive = isActive;
-            
-            if (isActive) {
-                // When search becomes active, create unified search results
-                [self updateUnifiedSearchResults];
-            } else {
-                // When search is dismissed, reload table to restore category view
-                [self.tableView reloadData];
-            }
-        }
-    } else {
-        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
-    }
-}
-
-- (void)updateUnifiedSearchResults {
-    [self.dataLock lock];
-    
-    // Clear the existing unified search results
-    [self.unifiedSearchResults removeAllObjects];
-    
-    // If we have active filters (tags or search text), apply them
-    if (self.searchText.length > 0 || self.activeTagFilters.count > 0) {
-        // Combine all modpacks from all categories into one array for filtering
-        NSMutableArray *allModpacks = [NSMutableArray array];
-        for (NSArray *categoryModpacks in self.organizedModpacks) {
-            if ([categoryModpacks isKindOfClass:[NSArray class]]) {
-                [allModpacks addObjectsFromArray:categoryModpacks];
-            }
-        }
-        
-        // Apply filters
-        for (NSDictionary *modpack in allModpacks) {
-            if (![modpack isKindOfClass:[NSDictionary class]]) {
-                continue; // Skip invalid modpacks
-            }
-            
-            NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"";
-            NSArray *categories = [modpack[@"categories"] isKindOfClass:[NSArray class]] ? modpack[@"categories"] : @[];
-            
-            // Check if search text appears in title only (not description)
-            BOOL matchesTextContent = (self.searchText.length == 0) || 
-                                     [title localizedCaseInsensitiveContainsString:self.searchText];
-            
-            // Check if search text matches any tag/category
-            BOOL matchesTextInTags = NO;
-            if (self.searchText.length > 0) {
-                for (NSString *tag in categories) {
-                    if ([tag isKindOfClass:[NSString class]] && 
-                        [tag localizedCaseInsensitiveContainsString:self.searchText]) {
-                        matchesTextInTags = YES;
-                        break;
-                    }
-                }
-            }
-            
-            // Check if modpack has at least one of the active tag filters
-            BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
-            if (!matchesTagFilters) {
-                for (NSString *tag in categories) {
-                    if ([tag isKindOfClass:[NSString class]] && 
-                        [self.activeTagFilters containsObject:tag]) {
-                        matchesTagFilters = YES;
-                        break;
-                    }
-                }
-            }
-            
-            // Include if it matches all applicable filters
-            if ((matchesTextContent || matchesTextInTags) && matchesTagFilters) {
-                [self.unifiedSearchResults addObject:modpack];
-            }
-        }
-    } else {
-        // If no active filters, include all modpacks
-        for (NSArray *categoryModpacks in self.organizedModpacks) {
-            if ([categoryModpacks isKindOfClass:[NSArray class]]) {
-                [self.unifiedSearchResults addObjectsFromArray:categoryModpacks];
-            }
-        }
-    }
-    
-    [self.dataLock unlock];
-    
-    // Reload the table view with the unified results
-    [self.tableView reloadData];
 }
 
 #pragma mark - Action Methods
@@ -759,7 +647,10 @@
     for (NSArray *categoryModpacks in self.organizedModpacks) {
         for (NSDictionary *modpack in categoryModpacks) {
             NSArray *categories = modpack[@"categories"] ?: @[];
-            [allTagsSet addObjectsFromArray:categories];
+            for (NSString *category in categories) {
+                // Store lowercase version for case-insensitive matching
+                [allTagsSet addObject:[category lowercaseString]];
+            }
         }
     }
     
@@ -836,33 +727,36 @@
 
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
     NSString *name = self.searchController.searchBar.text;
-    if (!prevList && [self.filters[@"name"] isEqualToString:name]) {
+    
+    // Only update filters if the search text has changed (to avoid unnecessary API calls)
+    if (!prevList && self.filters[@"name"] && [self.filters[@"name"] isEqual:name]) {
         return;
     }
 
     [self switchToLoadingState];
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         self.filters[@"name"] = name;
-        NSMutableArray *newResults = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.organizedModpacks : nil];
+        NSMutableArray *newResults = [self.modrinth searchModWithFilters:self.filters previousPageResult:prevList ? self.unifiedSearchResults : nil];
         
         // Check for pagination status
         self.hasMoreResults = !self.modrinth.reachedLastPage;
         
         if (newResults) {
-            // If we're not appending, reorganize completely
-            if (!prevList) {
-                [self organizeModpacksByCategory:newResults];
-            } else {
-                // If appending, just update our existing organization
-                [self updateOrganizedModpacks:newResults];
-            }
-            
-            // Update unified search results if search is active
-            if (self.isSearchActive) {
-                [self updateUnifiedSearchResults];
-            }
-            
+            // Ensure UI updates happen on main thread
             dispatch_async(dispatch_get_main_queue(), ^{
+                // If we're not appending, reorganize completely
+                if (!prevList) {
+                    [self organizeModpacksByCategory:newResults];
+                } else {
+                    // If appending, just update our existing organization
+                    [self updateOrganizedModpacks:newResults];
+                }
+                
+                // Update unified search results if search is active
+                if (self.isSearchActive) {
+                    [self updateUnifiedSearchResults];
+                }
+                
                 self.isLoadingMoreResults = NO;
                 [self switchToReadyState];
                 [self.tableView reloadData];
@@ -870,8 +764,12 @@
         } else {
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.isLoadingMoreResults = NO;
-                showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
-                [self actionClose];
+                if (self.modrinth.lastError) {
+                    showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                } else {
+                    showDialog(localize(@"Error", nil), @"Could not load modpacks. Please check your network connection.");
+                }
+                [self switchToReadyState];
             });
         }
     });
@@ -987,8 +885,8 @@
     
     // Assign modpacks to categories based on keywords
     for (NSDictionary *modpack in modpacks) {
-        NSString *title = [modpack[@"title"] ?: @"" lowercaseString];
-        NSString *description = [modpack[@"description"] ?: @"" lowercaseString];
+        NSString *title = [[modpack[@"title"] ?: @"" lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSString *description = [[modpack[@"description"] ?: @"" lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         NSArray *tags = modpack[@"categories"] ?: @[];
         
         // Start with a score for each category
@@ -1003,14 +901,25 @@
             int score = 0;
             
             for (NSString *keyword in keywords) {
-                if ([title containsString:keyword] || [description containsString:keyword]) {
+                // Full word match gets higher score than partial match
+                if ([title isEqualToString:keyword] || 
+                    [[title componentsSeparatedByString:@" "] containsObject:keyword]) {
+                    score += 5;
+                } else if ([title containsString:keyword]) {
                     score += 2;
+                }
+                
+                if ([description containsString:keyword]) {
+                    score += 1;
                 }
                 
                 // Check if the keyword appears in any of the modpack's categories/tags
                 for (NSString *tag in tags) {
-                    if ([[tag lowercaseString] containsString:keyword]) {
-                        score += 3; // Tags are more reliable indicators than text matching
+                    NSString *lowercaseTag = [[tag lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                    if ([lowercaseTag isEqualToString:keyword]) {
+                        score += 5; // Exact tag match gets high score
+                    } else if ([lowercaseTag containsString:keyword]) {
+                        score += 3; // Partial tag match still valuable
                     }
                 }
             }
@@ -1116,7 +1025,7 @@
             BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
             if (!matchesTagFilters) {
                 for (NSString *tag in categories) {
-                    if ([self.activeTagFilters containsObject:tag]) {
+                    if ([self.activeTagFilters containsObject:[tag lowercaseString]]) {
                         matchesTagFilters = YES;
                         break;
                     }
@@ -1131,6 +1040,142 @@
     }
     
     [self.dataLock unlock];
+}
+
+#pragma mark - Search State Handling
+
+- (void)searchActiveChanged:(NSNotification *)notification {
+    // Check if search is becoming active or inactive
+    if ([notification.name isEqualToString:@"UISearchControllerDidBeginSearchNotification"]) {
+        self.isSearchActive = YES;
+        
+        // When search becomes active, create unified search results
+        [self updateUnifiedSearchResults];
+        
+    } else if ([notification.name isEqualToString:@"UISearchControllerDidEndSearchNotification"]) {
+        self.isSearchActive = NO;
+        
+        // When search is dismissed, reload table to restore category view
+        [self.tableView reloadData];
+    }
+}
+
+// Add KVO observation for search controller's active property
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
+    if (object == self.searchController && [keyPath isEqualToString:@"active"]) {
+        BOOL isActive = [[change objectForKey:NSKeyValueChangeNewKey] boolValue];
+        
+        // Only update if the state has changed
+        if (isActive != self.isSearchActive) {
+            self.isSearchActive = isActive;
+            
+            if (isActive) {
+                // When search becomes active, create unified search results
+                [self updateUnifiedSearchResults];
+            } else {
+                // When search is dismissed, reload table to restore category view
+                [self.tableView reloadData];
+            }
+        }
+    } else {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+    }
+}
+
+- (void)updateUnifiedSearchResults {
+    [self.dataLock lock];
+    
+    // Clear the existing unified search results
+    [self.unifiedSearchResults removeAllObjects];
+    
+    // If we have active filters (tags or search text), apply them
+    if (self.searchText.length > 0 || self.activeTagFilters.count > 0) {
+        // Combine all modpacks from all categories into one array for filtering
+        NSMutableArray *allModpacks = [NSMutableArray array];
+        for (NSArray *categoryModpacks in self.organizedModpacks) {
+            if ([categoryModpacks isKindOfClass:[NSArray class]]) {
+                [allModpacks addObjectsFromArray:categoryModpacks];
+            }
+        }
+        
+        // Apply filters
+        for (NSDictionary *modpack in allModpacks) {
+            if (![modpack isKindOfClass:[NSDictionary class]]) {
+                continue; // Skip invalid modpacks
+            }
+            
+            NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"";
+            NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
+            NSArray *categories = [modpack[@"categories"] isKindOfClass:[NSArray class]] ? modpack[@"categories"] : @[];
+            
+            // Check if search text appears in title or description
+            BOOL matchesTextContent = (self.searchText.length == 0) || 
+                                      [title localizedCaseInsensitiveContainsString:self.searchText] ||
+                                      [description localizedCaseInsensitiveContainsString:self.searchText];
+            
+            // Check if search text matches any tag/category
+            BOOL matchesTextInTags = NO;
+            if (self.searchText.length > 0) {
+                for (NSString *tag in categories) {
+                    if ([tag isKindOfClass:[NSString class]] && 
+                        [tag localizedCaseInsensitiveContainsString:self.searchText]) {
+                        matchesTextInTags = YES;
+                        break;
+                    }
+                }
+            }
+            
+            // Check if modpack has at least one of the active tag filters
+            BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
+            if (!matchesTagFilters) {
+                for (NSString *tag in categories) {
+                    if ([tag isKindOfClass:[NSString class]] && 
+                        [self.activeTagFilters containsObject:[tag lowercaseString]]) {
+                        matchesTagFilters = YES;
+                        break;
+                    }
+                }
+            }
+            
+            // Include if it matches all applicable filters
+            if ((matchesTextContent || matchesTextInTags) && matchesTagFilters) {
+                [self.unifiedSearchResults addObject:modpack];
+            }
+        }
+        
+        // Sort results by relevance to search query if text search is active
+        if (self.searchText.length > 0) {
+            [self.unifiedSearchResults sortUsingComparator:^NSComparisonResult(NSDictionary *modpack1, NSDictionary *modpack2) {
+                NSString *title1 = modpack1[@"title"] ?: @"";
+                NSString *title2 = modpack2[@"title"] ?: @"";
+                
+                // If one title contains the search text exactly but the other doesn't, prioritize the exact match
+                BOOL title1ContainsExact = [title1 localizedCaseInsensitiveContainsString:self.searchText];
+                BOOL title2ContainsExact = [title2 localizedCaseInsensitiveContainsString:self.searchText];
+                
+                if (title1ContainsExact && !title2ContainsExact) {
+                    return NSOrderedAscending;
+                } else if (!title1ContainsExact && title2ContainsExact) {
+                    return NSOrderedDescending;
+                }
+                
+                // Otherwise, sort alphabetically
+                return [title1 localizedCaseInsensitiveCompare:title2];
+            }];
+        }
+    } else {
+        // If no active filters, include all modpacks
+        for (NSArray *categoryModpacks in self.organizedModpacks) {
+            if ([categoryModpacks isKindOfClass:[NSArray class]]) {
+                [self.unifiedSearchResults addObjectsFromArray:categoryModpacks];
+            }
+        }
+    }
+    
+    [self.dataLock unlock];
+    
+    // Reload the table view with the unified results
+    [self.tableView reloadData];
 }
 
 #pragma mark - UISearchResultsUpdating
@@ -1149,22 +1194,6 @@
     [self performSelector:@selector(updateUnifiedSearchResults) withObject:nil afterDelay:0.5];
 }
 
-#pragma mark - UIContextMenu
-
-- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location
-{
-    return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu * _Nullable(NSArray<UIMenuElement *> * _Nonnull suggestedActions) {
-        return self.currentMenu;
-    }];
-}
-
-- (_UIContextMenuStyle *)_contextMenuInteraction:(UIContextMenuInteraction *)interaction styleForMenuWithConfiguration:(UIContextMenuConfiguration *)configuration
-{
-    _UIContextMenuStyle *style = [_UIContextMenuStyle defaultStyle];
-    style.preferredLayout = 3; // _UIContextMenuLayoutCompactMenu
-    return style;
-}
-
 #pragma mark - UIScrollViewDelegate
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
@@ -1179,6 +1208,22 @@
     if (bottomEdge < 400 && !self.isLoadingMoreResults && self.hasMoreResults && self.isSearchActive) {
         [self loadMoreResults];
     }
+}
+
+#pragma mark - UIContextMenu
+
+- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction configurationForMenuAtLocation:(CGPoint)location
+{
+    return [UIContextMenuConfiguration configurationWithIdentifier:nil previewProvider:nil actionProvider:^UIMenu * _Nullable(NSArray<UIMenuElement *> * _Nonnull suggestedActions) {
+        return self.currentMenu;
+    }];
+}
+
+- (_UIContextMenuStyle *)_contextMenuInteraction:(UIContextMenuInteraction *)interaction styleForMenuWithConfiguration:(UIContextMenuConfiguration *)configuration
+{
+    _UIContextMenuStyle *style = [_UIContextMenuStyle defaultStyle];
+    style.preferredLayout = 3; // _UIContextMenuLayoutCompactMenu
+    return style;
 }
 
 #pragma mark - UITableViewDataSource
