@@ -996,6 +996,12 @@
 }
 
 - (void)updateOrganizedModpacks:(NSArray *)newModpacks {
+    // Validate input to prevent crashes
+    if (!newModpacks || ![newModpacks isKindOfClass:[NSArray class]]) {
+        NSLog(@"[ModpackInstall] Warning: updateOrganizedModpacks called with invalid array");
+        return;
+    }
+    
     [self.dataLock lock];
     
     // For simplicity, we'll just add all new modpacks to the "Other" category
@@ -1017,10 +1023,21 @@
     
     // For search mode, also append to unified search results if they match the current criteria
     if (self.isSearchActive) {
-        for (NSDictionary *modpack in newModpacks) {
-            NSString *title = modpack[@"title"] ?: @"";
-            NSString *description = modpack[@"description"] ?: @"";
-            NSArray *categories = modpack[@"categories"] ?: @[];
+        for (id modpackObj in newModpacks) {
+            // Ensure the modpack is a dictionary
+            if (![modpackObj isKindOfClass:[NSDictionary class]]) {
+                continue;
+            }
+            
+            NSDictionary *modpack = (NSDictionary *)modpackObj;
+            
+            // Safely extract values with type checking
+            NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"";
+            NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
+            
+            // Ensure categories is an array
+            id categoriesObj = modpack[@"categories"];
+            NSArray *categories = [categoriesObj isKindOfClass:[NSArray class]] ? categoriesObj : @[];
             
             // Check if search text appears in title or description
             BOOL matchesTextContent = (self.searchText.length == 0) || 
@@ -1030,7 +1047,13 @@
             // Check if search text matches any tag/category
             BOOL matchesTextInTags = NO;
             if (self.searchText.length > 0) {
-                for (NSString *tag in categories) {
+                for (id tagObj in categories) {
+                    // Ensure tag is a string
+                    if (![tagObj isKindOfClass:[NSString class]]) {
+                        continue;
+                    }
+                    
+                    NSString *tag = (NSString *)tagObj;
                     if ([tag localizedCaseInsensitiveContainsString:self.searchText]) {
                         matchesTextInTags = YES;
                         break;
@@ -1041,7 +1064,13 @@
             // Check if modpack has at least one of the active tag filters
             BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
             if (!matchesTagFilters) {
-                for (NSString *tag in categories) {
+                for (id tagObj in categories) {
+                    // Ensure tag is a string
+                    if (![tagObj isKindOfClass:[NSString class]]) {
+                        continue;
+                    }
+                    
+                    NSString *tag = (NSString *)tagObj;
                     if ([self.activeTagFilters containsObject:[tag lowercaseString]]) {
                         matchesTagFilters = YES;
                         break;
