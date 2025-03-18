@@ -1131,6 +1131,11 @@
     // Update search results text
     self.searchText = searchController.searchBar.text;
     
+    // Make sure isSearchActive is set if the search controller is active
+    if (searchController.active && !self.isSearchActive) {
+        self.isSearchActive = YES;
+    }
+    
     // Debounce the search to prevent excessive updates while typing
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateUnifiedSearchResults) object:nil];
     [self performSelector:@selector(updateUnifiedSearchResults) withObject:nil afterDelay:0.5];
@@ -1246,8 +1251,8 @@
 }
 
 - (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    // When in search mode with results, don't show section headers
-    if (self.isSearchActive && self.unifiedSearchResults.count > 0) {
+    // When in search mode, never show section headers
+    if (self.isSearchActive) {
         return nil;
     }
     
@@ -1256,15 +1261,6 @@
     // Return a loading header if data is still loading
     if (self.isDataLoading) {
         headerView.titleLabel.text = localize(@"Loading modpacks...", nil);
-        headerView.isExpanded = NO;
-        headerView.expandCollapseButton.tag = section;
-        [headerView.expandCollapseButton removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
-        return headerView;
-    }
-    
-    // In search mode with no results, show a "No Results" header
-    if (self.isSearchActive && self.unifiedSearchResults.count == 0) {
-        headerView.titleLabel.text = localize(@"No Results", nil);
         headerView.isExpanded = NO;
         headerView.expandCollapseButton.tag = section;
         [headerView.expandCollapseButton removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
@@ -1305,8 +1301,8 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
-    // When in search mode with results, don't show section headers
-    if (self.isSearchActive && self.unifiedSearchResults.count > 0) {
+    // When in search mode, don't show section headers at all
+    if (self.isSearchActive) {
         return 0.0;
     }
     
