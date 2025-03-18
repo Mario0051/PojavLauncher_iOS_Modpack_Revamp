@@ -34,10 +34,8 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Safely handle boolean value
     BOOL isModpack = NO;
-    if (searchFilters[@"isModpack"]) {
-        if ([searchFilters[@"isModpack"] isKindOfClass:[NSNumber class]]) {
-            isModpack = [searchFilters[@"isModpack"] boolValue];
-        }
+    if (searchFilters[@"isModpack"] && [searchFilters[@"isModpack"] isKindOfClass:[NSNumber class]]) {
+        isModpack = [searchFilters[@"isModpack"] boolValue];
     }
     [facetString appendFormat:@"[\"project_type:%@\"]", isModpack ? @"modpack" : @"mod"];
     
@@ -51,12 +49,12 @@ extern void showDialog(NSString *title, NSString *message);
     NSMutableDictionary *params = [NSMutableDictionary dictionary];
     params[@"facets"] = facetString;
     
-    // Safely handle search query
+    // Safely handle search query - properly handle whitespace
     if (searchFilters[@"name"] && [searchFilters[@"name"] isKindOfClass:[NSString class]]) {
-        NSString *queryString = searchFilters[@"name"];
-        // Only replace if not empty or just whitespace
-        if (![queryString isEqualToString:@" "]) {
-            params[@"query"] = [queryString stringByReplacingOccurrencesOfString:@" " withString:@"+"];
+        NSString *queryString = [searchFilters[@"name"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (queryString.length > 0) {
+            // Use the trimmed string as is - AFNetworking will handle URL encoding
+            params[@"query"] = queryString;
         }
     }
     
@@ -70,11 +68,13 @@ extern void showDialog(NSString *title, NSString *message);
     }
     
     // Set offset for pagination
-    if (modrinthSearchResult) {
+    if (modrinthSearchResult && modrinthSearchResult.count > 0) {
         params[@"offset"] = @(modrinthSearchResult.count);
     } else {
         params[@"offset"] = @(0);
     }
+    
+    NSLog(@"[ModrinthAPI] Searching with params: %@", params);
     
     // Make the API request
     NSDictionary *response = [self getEndpoint:@"search" params:params];
@@ -93,6 +93,8 @@ extern void showDialog(NSString *title, NSString *message);
         self.reachedLastPage = YES;
         return result;
     }
+    
+    NSLog(@"[ModrinthAPI] Got %lu search results", (unsigned long)hits.count);
     
     // Process each hit with null checking
     for (NSDictionary *hit in hits) {
@@ -127,7 +129,14 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Check if we've reached the last page
     if ([response[@"total_hits"] isKindOfClass:[NSNumber class]]) {
-        self.reachedLastPage = result.count >= [response[@"total_hits"] unsignedLongValue];
+        NSInteger totalHits = [response[@"total_hits"] integerValue];
+        NSInteger offset = params[@"offset"] ? [params[@"offset"] integerValue] : 0;
+        NSInteger newCount = offset + hits.count;
+        self.reachedLastPage = (newCount >= totalHits) || (hits.count == 0);
+        
+        NSLog(@"[ModrinthAPI] Pagination: %ld/%ld (reached last page: %@)", 
+              (long)newCount, (long)totalHits, 
+              self.reachedLastPage ? @"YES" : @"NO");
     } else {
         self.reachedLastPage = YES; // Default to true if no total_hits
     }
