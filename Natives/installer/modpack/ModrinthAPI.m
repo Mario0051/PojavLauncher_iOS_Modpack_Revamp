@@ -61,7 +61,13 @@ extern void showDialog(NSString *title, NSString *message);
     }
     
     params[@"limit"] = @(limit);
-    params[@"index"] = @"relevance";
+    
+    // Handle sort method for improved search relevance
+    if (searchFilters[@"sortMethod"] && [searchFilters[@"sortMethod"] isKindOfClass:[NSString class]]) {
+        params[@"index"] = searchFilters[@"sortMethod"];
+    } else {
+        params[@"index"] = @"relevance";
+    }
     
     // Set offset for pagination
     if (modrinthSearchResult) {
@@ -813,6 +819,17 @@ extern void showDialog(NSString *title, NSString *message);
             [currentVC presentViewController:alert animated:YES completion:nil];
         }
     });
+}
+
+- (void)installModpackFromDetail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    // Pass details to LauncherNavigationController
+    NSDictionary* userInfo = @{
+        @"detail": modDetail,
+        @"index": @(selectedVersion)
+    };
+    [NSNotificationCenter.defaultCenter 
+        postNotificationName:@"InstallModpack" 
+        object:self userInfo:userInfo];
 }
 
 @end
