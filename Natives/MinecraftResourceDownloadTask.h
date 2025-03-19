@@ -34,10 +34,26 @@
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure;
 
+// Helper methods for progress tracking
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size;
-- (void)finishDownloadWithErrorString:(NSString *)error;
+- (void)prepareForDownload;
 
+// Error handling methods
+- (void)finishDownloadWithErrorString:(NSString *)error;
+- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file;
+
+// File validation methods
+- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName;
+- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess;
+- (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess;
+- (BOOL)checkAccessWithDialog:(BOOL)show;
+
+// Main download methods
 - (void)downloadVersion:(NSDictionary *)version;
+- (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success;
+- (void)downloadAssetMetadataWithSuccess:(void (^)(void))success;
+- (NSArray *)downloadClientLibraries;
+- (NSArray *)downloadClientAssets;
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
 
 @end
