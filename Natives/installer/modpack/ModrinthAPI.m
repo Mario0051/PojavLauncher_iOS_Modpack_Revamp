@@ -350,6 +350,19 @@ extern void showDialog(NSString *title, NSString *message);
         return;
     }
 
+    // Reset progress for the new phase - initialize with a value that will be replaced
+    downloader.progress.totalUnitCount = 1;
+    downloader.progress.completedUnitCount = 0;
+    if (downloader.textProgress) {
+        downloader.textProgress.totalUnitCount = 1;
+        downloader.textProgress.completedUnitCount = 0;
+    }
+
+    // Add a status entry to the file list
+    [downloader.fileList addObject:@"Reading modpack index..."];
+    NSProgress *indexProgress = [NSProgress progressWithTotalUnitCount:1];
+    [downloader.progressList addObject:indexProgress];
+
     NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
     if (!indexData) {
         // Try mrpack format (newer Modrinth format)
@@ -360,6 +373,9 @@ extern void showDialog(NSString *title, NSString *message);
         [downloader finishDownloadWithErrorString:@"Failed to find index.json in modpack"];
         return;
     }
+    
+    // Update progress for index reading
+    indexProgress.completedUnitCount = 1;
     
     NSDictionary* indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:kNilOptions error:&error];
     if (error) {
@@ -388,16 +404,41 @@ extern void showDialog(NSString *title, NSString *message);
     // Store the modpack dependencies for later use in Forge/NeoForge installation
     downloader.metadata[@"modpackDependencies"] = indexDict[@"dependencies"];
     
-    downloader.progress.totalUnitCount = [files count];
+    // Calculate total size for better progress tracking
+    unsigned long long totalSize = 0;
+    for (NSDictionary *indexFile in files) {
+        if ([indexFile isKindOfClass:[NSDictionary class]]) {
+            if (indexFile[@"fileSize"] && [indexFile[@"fileSize"] isKindOfClass:[NSNumber class]]) {
+                totalSize += [indexFile[@"fileSize"] unsignedLongLongValue];
+            }
+        }
+    }
+    
+    // Reset the progress tracking with actual file count and size
+    downloader.progress.totalUnitCount = totalSize > 0 ? totalSize : files.count;
+    downloader.progress.completedUnitCount = 0;
+    
+    if (downloader.textProgress) {
+        downloader.textProgress.totalUnitCount = downloader.progress.totalUnitCount;
+        downloader.textProgress.completedUnitCount = 0;
+    }
     
     // Track pending downloads to ensure we complete properly
     __block NSInteger pendingDownloads = files.count;
+    NSLog(@"[ModrinthAPI] Starting download of %ld mod files", (long)pendingDownloads);
+    
+    // Add overall status to file list
+    [downloader.fileList addObject:[NSString stringWithFormat:@"Downloading %ld files...", (long)files.count]];
+    NSProgress *overallProgress = [NSProgress progressWithTotalUnitCount:files.count];
+    overallProgress.completedUnitCount = 0;
+    [downloader.progressList addObject:overallProgress];
     
     for (NSDictionary *indexFile in files) {
         if (![indexFile isKindOfClass:[NSDictionary class]]) {
             NSLog(@"[ModrinthAPI] Skipping invalid file entry");
             pendingDownloads--;
             downloader.progress.completedUnitCount++;
+            overallProgress.completedUnitCount++;
             continue;
         }
         
@@ -406,6 +447,7 @@ extern void showDialog(NSString *title, NSString *message);
             NSLog(@"[ModrinthAPI] File has no download URLs: %@", indexFile[@"path"]);
             pendingDownloads--;
             downloader.progress.completedUnitCount++;
+            overallProgress.completedUnitCount++;
             continue;
         }
         
@@ -436,6 +478,9 @@ extern void showDialog(NSString *title, NSString *message);
         void(^fileSuccess)(void) = ^{
             pendingDownloads--;
             NSLog(@"[ModrinthAPI] Download completed: %@", relativePath);
+            
+            // Update the overall progress
+            overallProgress.completedUnitCount++;
             
             // If all downloads are complete, proceed to extraction
             if (pendingDownloads == 0) {
@@ -468,6 +513,9 @@ extern void showDialog(NSString *title, NSString *message);
                     NSLog(@"[ModrinthAPI] Retry failed for %@: %@", relativePath, retryError.localizedDescription);
                     pendingDownloads--;
                     
+                    // Update the overall progress
+                    overallProgress.completedUnitCount++;
+                    
                     // If all downloads are complete (including failures), proceed
                     if (pendingDownloads == 0) {
                         [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
@@ -479,6 +527,7 @@ extern void showDialog(NSString *title, NSString *message);
                 } else {
                     // If task creation fails, decrement pending count
                     pendingDownloads--;
+                    overallProgress.completedUnitCount++;
                     
                     // If all downloads are complete, proceed to extraction
                     if (pendingDownloads == 0) {
@@ -488,6 +537,7 @@ extern void showDialog(NSString *title, NSString *message);
             } else {
                 // Already retried, decrement pending count
                 pendingDownloads--;
+                overallProgress.completedUnitCount++;
                 
                 // If all downloads are complete, proceed to extraction
                 if (pendingDownloads == 0) {
@@ -510,7 +560,7 @@ extern void showDialog(NSString *title, NSString *message);
             [task resume];
         } else if (!downloader.progress.cancelled) {
             pendingDownloads--;
-            downloader.progress.completedUnitCount++;
+            overallProgress.completedUnitCount++;
             
             // If all downloads are complete, proceed to extraction
             if (pendingDownloads == 0) {
@@ -537,28 +587,38 @@ extern void showDialog(NSString *title, NSString *message);
     // Add extraction filename to track progress
     [downloader.fileList addObject:@"Extracting modpack..."];
     NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:100];
+    extractionProgress.completedUnitCount = 0;
     [downloader.progressList addObject:extractionProgress];
+    [downloader.progress addChild:extractionProgress withPendingUnitCount:100];
     
     NSLog(@"[ModrinthAPI] Beginning extraction of modpack to %@", destPath);
     
     // Extract overrides directory - this is the main content directory
+    extractionProgress.completedUnitCount = 10; // 10% for starting extraction
     [self extractDirectoryFromArchive:archive directory:@"overrides" toPath:destPath progress:extractionProgress];
-    extractionProgress.completedUnitCount = 50;
+    extractionProgress.completedUnitCount = 50; // 50% after overrides
     
     // Extract client-overrides directory if it exists
     [self extractDirectoryFromArchive:archive directory:@"client-overrides" toPath:destPath progress:extractionProgress];
-    extractionProgress.completedUnitCount = 75;
+    extractionProgress.completedUnitCount = 75; // 75% after client-overrides
     
     // Delete package cache
     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
 
     // Update extraction progress
-    extractionProgress.completedUnitCount = 90;
+    extractionProgress.completedUnitCount = 90; // 90% after cleanup
 
     // Download dependency client json (if available)
     NSDictionary<NSString *, NSString *> *depInfo = [ModpackUtils infoForDependencies:indexDict[@"dependencies"]];
     
     if (depInfo[@"json"]) {
+        // Add JSON download to file list
+        [downloader.fileList addObject:@"Downloading dependency JSON..."];
+        NSProgress *jsonProgress = [NSProgress progressWithTotalUnitCount:100];
+        jsonProgress.completedUnitCount = 0;
+        [downloader.progressList addObject:jsonProgress];
+        [downloader.progress addChild:jsonProgress withPendingUnitCount:50]; // Add to overall progress
+        
         NSString *jsonPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), depInfo[@"id"]];
         
         // Create directories for JSON
@@ -569,6 +629,9 @@ extern void showDialog(NSString *title, NSString *message);
         
         // Create a success callback that will run after JSON download completes
         void(^jsonSuccess)(void) = ^{
+            // Mark JSON download as complete
+            jsonProgress.completedUnitCount = 100;
+            
             // Mark extraction as complete
             extractionProgress.completedUnitCount = 100;
             
@@ -586,8 +649,13 @@ extern void showDialog(NSString *title, NSString *message);
                                                                 failure:^(NSError *jsonError) {
             NSLog(@"[ModrinthAPI] Failed to download JSON: %@", jsonError.localizedDescription);
             
-            // Still mark extraction as complete and finalize
+            // Still mark JSON download as complete
+            jsonProgress.completedUnitCount = 100;
+            
+            // Still mark extraction as complete
             extractionProgress.completedUnitCount = 100;
+            
+            // Still finalize the installation
             [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
         }];
         
@@ -595,6 +663,7 @@ extern void showDialog(NSString *title, NSString *message);
             [task resume];
         } else {
             // If task couldn't be created but file exists, still finalize
+            jsonProgress.completedUnitCount = 100;
             extractionProgress.completedUnitCount = 100;
             [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
         }
@@ -622,6 +691,16 @@ extern void showDialog(NSString *title, NSString *message);
                           indexDict:(NSDictionary *)indexDict
                             depInfo:(NSDictionary *)depInfo
                            destPath:(NSString *)destPath {
+    // Add setup progress to file list
+    [downloader.fileList addObject:@"Setting up modpack profile..."];
+    NSProgress *setupProgress = [NSProgress progressWithTotalUnitCount:100];
+    setupProgress.completedUnitCount = 0;
+    [downloader.progressList addObject:setupProgress];
+    [downloader.progress addChild:setupProgress withPendingUnitCount:50]; // Add to overall progress
+    
+    // Update setup progress
+    setupProgress.completedUnitCount = 25; // 25% started setup
+    
     // Get the profile name from indexDict, or use the directory name if not available
     NSString *profileName = indexDict[@"name"];
     if (!profileName || [profileName length] == 0) {
@@ -647,6 +726,9 @@ extern void showDialog(NSString *title, NSString *message);
         NSLog(@"[ModrinthAPI] Warning: Could not determine relative gameDir from destPath. Using: %@", gameDir);
     }
     
+    // Update setup progress
+    setupProgress.completedUnitCount = 50; // 50% determined paths
+    
     NSLog(@"[ModrinthAPI] Creating profile: %@ with gameDir: %@", profileName, gameDir);
     
     // Create the profile with the properly aligned gameDir
@@ -655,6 +737,9 @@ extern void showDialog(NSString *title, NSString *message);
         @"name": profileName,
         @"lastVersionId": depInfo[@"id"] ?: @"latest-release"
     } mutableCopy];
+    
+    // Update setup progress
+    setupProgress.completedUnitCount = 75; // 75% profile created
     
     // Safely handle the icon data
     NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
@@ -673,6 +758,9 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Save the profile changes to disk
     [PLProfiles.current save];
+    
+    // Update setup progress
+    setupProgress.completedUnitCount = 100; // 100% profile saved
     
     // Ensure metadata reflects completion and marks this as a modpack install
     if (!downloader.metadata) {
