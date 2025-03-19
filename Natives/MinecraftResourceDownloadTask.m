@@ -40,6 +40,24 @@
     return self;
 }
 
+- (void)prepareForDownload {
+    @synchronized(self) {
+        // Reset progress tracking
+        self.progress = [NSProgress new];
+        self.progress.totalUnitCount = 0; // Start with 0 and add as we go
+        self.progress.cancellable = YES;
+        
+        // Reset text progress for UI
+        self.textProgress = [NSProgress new];
+        self.textProgress.totalUnitCount = 0;
+        self.textProgress.cancellable = YES;
+        
+        // Reset tracking lists
+        [self.fileList removeAllObjects];
+        [self.progressList removeAllObjects];
+    }
+}
+
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
                                            size:(NSUInteger)size 
                                             sha:(NSString *)sha 
@@ -270,24 +288,13 @@
     if (!self.textProgress) {
         self.textProgress = [NSProgress progressWithTotalUnitCount:1];
     }
-    self.textProgress.totalUnitCount = self.progress
+    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+}
 
-- (void)prepareForDownload {
-    @synchronized(self) {
-        // Reset progress tracking
-        self.progress = [NSProgress new];
-        self.progress.totalUnitCount = 0; // Start with 0 and add as we go
-        self.progress.cancellable = YES;
-        
-        // Reset text progress for UI
-        self.textProgress = [NSProgress new];
-        self.textProgress.totalUnitCount = 0;
-        self.textProgress.cancellable = YES;
-        
-        // Reset tracking lists
-        [self.fileList removeAllObjects];
-        [self.progressList removeAllObjects];
-    }
+- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
+    NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
+    NSLog(@"[MCDL] Error: %@ %@", errorStr, NSThread.callStackSymbols);
+    [self finishDownloadWithErrorString:errorStr];
 }
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
@@ -305,13 +312,6 @@
     }
 }
 
-
-- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
-    NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
-    NSLog(@"[MCDL] Error: %@ %@", errorStr, NSThread.callStackSymbols);
-    [self finishDownloadWithErrorString:errorStr];
-}
-
 // Check if the account has permission to download
 - (BOOL)checkAccessWithDialog:(BOOL)show {
     // for now
@@ -326,7 +326,7 @@
     return accessible;
 }
 
-// Check SHA of the file
+// Check SHA of the file with logging option
 - (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
     if (sha.length == 0) {
         // When sha = skip, only check for file existence
@@ -360,6 +360,7 @@
     return check;
 }
 
+// Check SHA of the file respecting user preferences
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
     if (getPrefBool(@"general.check_sha")) {
         return [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:logSuccess];
@@ -368,6 +369,7 @@
     }
 }
 
+// Simplified SHA check with default logging behavior
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
     return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
 }
