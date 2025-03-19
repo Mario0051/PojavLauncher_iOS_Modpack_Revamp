@@ -486,6 +486,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
 
     // Additional performance optimizations
+    // NOTE: This flag MUST come before other experimental options
     margv[++margc] = "-XX:+UnlockExperimentalVMOptions";
     margv[++margc] = "-XX:+DisablePrimordialThreadGuardPages";
     margv[++margc] = "-XX:+UseFastAccessorMethods";  // Use faster method access
