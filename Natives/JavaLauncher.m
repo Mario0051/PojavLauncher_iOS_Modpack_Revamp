@@ -146,11 +146,8 @@ void init_loadDefaultEnv() {
     // Override OpenGL version to 4.1 for Zink
     setenv("MESA_GL_VERSION_OVERRIDE", "4.1", 1);
 
-    // Runs JVM in a separate thread
-    setenv("HACK_IGNORE_START_ON_FIRST_THREAD", "1", 1);
-    
-    // JIT compilation optimizations
-    setenv("JAVA_COMPILER", "NONE", 1); // Disable JIT for startup, will be re-enabled later
+    // Runs JVM in a separate thread - disabled to avoid conflicts with XstartOnFirstThread
+    // setenv("HACK_IGNORE_START_ON_FIRST_THREAD", "1", 1);
 }
 
 void init_loadCustomEnv() {
@@ -438,17 +435,11 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Xms128M";
     margv[++margc] = [NSString stringWithFormat:@"-Xmx%dM", allocmem].UTF8String;
     
-    // Memory management optimizations 
-    // Start with experimental options unlock - MUST be before G1GC settings
+    // Basic JVM optimizations - simplified from previous version
     margv[++margc] = "-XX:+UnlockExperimentalVMOptions";
-    // G1GC settings
     margv[++margc] = "-XX:+UseG1GC";  // Use G1 garbage collector for better performance
-    margv[++margc] = "-XX:G1NewSizePercent=20";  // Allocate more space for young generation
-    margv[++margc] = "-XX:G1ReservePercent=20";  // Reserve memory to avoid full GCs
-    margv[++margc] = "-XX:MaxGCPauseMillis=50";  // Target maximum GC pause time
-    margv[++margc] = "-XX:G1HeapRegionSize=4M";  // Optimize heap region size
-    margv[++margc] = "-XX:InitiatingHeapOccupancyPercent=15";  // Start GC earlier
-    margv[++margc] = "-XX:+DisableExplicitGC";  // Prevent System.gc() calls from triggering a full GC
+    margv[++margc] = "-XX:G1NewSizePercent=20";
+    margv[++margc] = "-XX:MaxGCPauseMillis=50";
     
     // System properties
     margv[++margc] = [NSString stringWithFormat:@"-Djava.library.path=%@/Frameworks", NSBundle.mainBundle.bundlePath].UTF8String;
@@ -459,9 +450,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Dorg.lwjgl.glfw.checkThread0=false";
     margv[++margc] = "-Dorg.lwjgl.system.allocator=system";
     margv[++margc] = "-Dlog4j2.formatMsgNoLookups=true";
-    
-    // Class data sharing - improves startup time
-    margv[++margc] = "-Xshare:auto";
     
     // String deduplication - reduces memory usage
     margv[++margc] = "-XX:+UseStringDeduplication";
@@ -489,32 +477,20 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
 
     // Additional performance optimizations
-    // NOTE: This flag MUST come before other experimental options
-    margv[++margc] = "-XX:+UnlockExperimentalVMOptions";
     margv[++margc] = "-XX:+DisablePrimordialThreadGuardPages";
-    margv[++margc] = "-XX:+OptimizeStringConcat";    // Optimize string concatenation
     
-    // Thread optimizations
-    margv[++margc] = "-XX:+UseParallelGC";
+    // Thread optimizations - removed UseParallelGC as it conflicts with G1GC
     margv[++margc] = "-XX:+UseThreadPriorities";
     
-    // Networking optimizations
-    margv[++margc] = "-Dsun.net.client.defaultConnectTimeout=10000";
-    margv[++margc] = "-Dsun.net.client.defaultReadTimeout=10000";
-
     // Disable Forge 1.16.x early progress window
     margv[++margc] = "-Dfml.earlyprogresswindow=false";
-    
-    // Code cache optimization to improve JIT performance
-    margv[++margc] = "-XX:ReservedCodeCacheSize=256M";
-    margv[++margc] = "-XX:InitialCodeCacheSize=64M";
-    
-    // JIT compilation policy
-    margv[++margc] = "-XX:+TieredCompilation";
-    margv[++margc] = "-XX:TieredStopAtLevel=1";  // Fast startup with minimal compilation
-    
-    // Fast startup optimization - will be removed below for normal operation
-    margv[++margc] = "-XX:CompileThreshold=10000";  // Wait longer before compiling methods
+
+    if (!getEntitlementValue(@"com.apple.developer.kernel.extended-virtual-addressing")) {
+        // In jailed environment, where extended virtual addressing entitlement isn't
+        // present (for free dev account), allocating compressed space fails.
+        margv[++margc] = "-XX:-UseCompressedClassPointers";
+        margv[++margc] = "-XX:-UseCompressedOops";
+    }
 
     // Load JLI library
     NSString *libjlipath8 = [NSString stringWithFormat:@"%@/lib/jli/libjli.dylib", javaHome]; // java 8
@@ -586,13 +562,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     NSString *cacio_classpath = [NSString stringWithFormat:@"-Xbootclasspath/%s:%@", isJava8 ? "p" : "a", cachedBootClasspath];
     margv[++margc] = cacio_classpath.UTF8String;
 
-    if (!getEntitlementValue(@"com.apple.developer.kernel.extended-virtual-addressing")) {
-        // In jailed environment, where extended virtual addressing entitlement isn't
-        // present (for free dev account), allocating compressed space fails.
-        // FIXME: does extended VA allow allocating compressed class space?
-        margv[++margc] = "-XX:-UseCompressedClassPointers";
-    }
-
     // Add custom JVM arguments from profile
     if ([launchTarget isKindOfClass:NSDictionary.class]) {
         for (NSString *arg in launchTarget[@"arguments"][@"jvm_processed"]) {
@@ -603,22 +572,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     // Add custom JVM flags from user settings
     init_loadCustomJvmFlags(&margc, (const char **)margv);
     NSLog(@"[Init] Found JLI lib");
-
-    // Remove startup-only optimizations (they're only useful during init)
-    for (int i = 0; i <= margc; i++) {
-        if (strcmp(margv[i], "-XX:TieredStopAtLevel=1") == 0) {
-            // Replace with full tiering
-            margv[i] = "-XX:TieredStopAtLevel=4";
-        }
-        else if (strcmp(margv[i], "-XX:CompileThreshold=10000") == 0) {
-            // Use default compile threshold
-            margv[i] = "-XX:CompileThreshold=1500";
-        }
-        else if (strcmp(margv[i], "JAVA_COMPILER=NONE") == 0) {
-            // Re-enable JIT compiler
-            margv[i] = "";
-        }
-    }
 
     // Prepare classpath
     NSString *classpath;
@@ -643,6 +596,9 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = [launchTarget UTF8String];
     }
 
+    // Add debug flags to diagnose initialization issues
+    margv[++margc] = "-verbose:class";
+
     pJLI_Launch = (JLI_Launch_func *)dlsym(libjli, "JLI_Launch");
 
     if (NULL == pJLI_Launch) {
@@ -651,6 +607,12 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
 
     NSLog(@"[Init] Calling JLI_Launch");
+
+    // Debug output JVM arguments for troubleshooting
+    NSLog(@"[Init] JVM Arguments:");
+    for (int i = 0; i <= margc; i++) {
+        NSLog(@"[Init] arg[%d]: %s", i, margv[i]);
+    }
 
     // Cr4shed known issue: exit after crash dump,
     // reset signal handler so that JVM can catch them
@@ -665,32 +627,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     
     // Free memory from caches that are no longer needed
     [fileExistsCache removeAllObjects];
-    
-    // Prefetch some commonly used files
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        void *mappedData = NULL;
-        size_t mappedSize = 0;
-        
-        // Prefetch main jar
-        NSString *mainJarPath = nil;
-        if (launchJar) {
-            mainJarPath = launchTarget;
-        } else if ([launchTarget isKindOfClass:NSDictionary.class]) {
-            mainJarPath = [NSString stringWithFormat:@"%s/versions/%@/%@.jar", 
-                           getenv("POJAV_GAME_DIR"), launchTarget[@"id"], launchTarget[@"id"]];
-        }
-        
-        if (mainJarPath) {
-            mapFileIntoMemory(mainJarPath.UTF8String, &mappedData, &mappedSize);
-            if (mappedData) {
-                // Keep in memory for a short time, then unmap
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), 
-                              dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-                    unmapFileFromMemory(mappedData, mappedSize);
-                });
-            }
-        }
-    });
 
     // Final JVM invocation
     return pJLI_Launch(++margc, margv,
