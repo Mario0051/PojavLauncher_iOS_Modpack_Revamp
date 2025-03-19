@@ -260,6 +260,14 @@
         progress = [NSProgress progressWithTotalUnitCount:1];
     }
     
+    // Check if this progress is already a child of another progress
+    // This can be done by checking a custom property we can associate with the progress
+    NSNumber *isTracked = objc_getAssociatedObject(progress, "isTrackedByTask");
+    if (isTracked && [isTracked boolValue]) {
+        NSLog(@"[MCDL] Warning: Progress is already being tracked, skipping");
+        return;
+    }
+    
     NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
     progress.kind = NSProgressKindFile;
     progress.totalUnitCount = fileSize;
@@ -280,8 +288,17 @@
     }
     
     if (!isCancelled) {
-        [self.progress addChild:progress withPendingUnitCount:fileSize];
-        self.progress.totalUnitCount += fileSize;
+        // Try-catch to handle case where progress is already a child
+        @try {
+            [self.progress addChild:progress withPendingUnitCount:fileSize];
+            self.progress.totalUnitCount += fileSize;
+            
+            // Mark this progress as tracked to avoid double-adding
+            objc_setAssociatedObject(progress, "isTrackedByTask", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Warning: Exception adding child progress: %@", exception);
+            // Don't rethrow the exception, just log it
+        }
     }
     
     // Simplify the text progress - only track fractionCompleted
@@ -652,8 +669,8 @@
         }];
         
         if (retryTask) {
-            // Add the retry task to progress tracking
-            [self addDownloadTaskToProgress:retryTask size:size];
+            // The retryTask's progress is already added to the parent progress by createDownloadTask
+            // so we don't need to call addDownloadTaskToProgress here
             [retryTask resume];
         } else {
             [self finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
@@ -667,9 +684,6 @@
                                                       toPath:packagePath 
                                                      success:modpackSuccess
                                                      failure:modpackFailure];
-    
-    // Add main download task to progress tracking system
-    [self addDownloadTaskToProgress:task size:size];
     if (task) {
         [task resume];
     }
