@@ -441,15 +441,19 @@
 #pragma mark - Utilities
 
 - (void)prepareForDownload {
-    // Create a simplified progress object
-    self.textProgress = [NSProgress new];
-    self.textProgress.totalUnitCount = -1;
+    // Create a simplified progress object for text display
+    self.textProgress = [NSProgress progressWithTotalUnitCount:1];
+    self.textProgress.completedUnitCount = 0;
 
-    self.progress = [NSProgress new];
-    // Push 1 byte so it won't accidentally finish after downloading assets index
-    self.progress.totalUnitCount = 1;
+    // Create the main progress object to track all downloads
+    self.progress = [NSProgress progressWithTotalUnitCount:1];
+    self.progress.completedUnitCount = 0;
+    
+    // Reset the tracking arrays
     [self.fileList removeAllObjects];
     [self.progressList removeAllObjects];
+    
+    NSLog(@"[MCDL] Prepared for download with initial progress objects");
 }
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
