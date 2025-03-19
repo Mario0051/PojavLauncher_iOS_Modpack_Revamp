@@ -369,6 +369,7 @@
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
     NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
     NSString *sha = modDetail[@"versionHashes"][selectedVersion];
+    
     // Use the original title without converting to lowercase or replacing spaces with underscores
     NSString *name = [modDetail[@"title"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
     // For the filesystem paths, create a sanitized version of the name (for the zip file only)
@@ -383,9 +384,31 @@
     
     // Store the game directory in metadata for proper profile creation
     self.metadata[@"gameDir"] = gameDir;
-
+    
+    // Create a clear display name for progress reporting
+    NSString *displayName = [NSString stringWithFormat:@"Downloading modpack: %@", name];
+    
+    // Set progress for the primary modpack download
+    self.progress.totalUnitCount = size > 0 ? size : 1000000; // Use reasonable placeholder if size unknown
+    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+    
+    // Add the package as the first item in the file list for UI reporting
+    [self.fileList addObject:displayName];
+    NSProgress *packageProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
+    [self.progressList addObject:packageProgress];
+    
     // Create a wrapped success callback that transitions to extraction phase
     void(^modpackSuccess)(void) = ^{
+        // Make sure progress is properly shown as complete for the download phase
+        packageProgress.completedUnitCount = packageProgress.totalUnitCount;
+        
+        // Add placeholder progress for extraction phase - reset overall progress
+        self.progress.totalUnitCount = 1;
+        self.progress.completedUnitCount = 0;
+        self.textProgress.totalUnitCount = 1;
+        self.textProgress.completedUnitCount = 0;
+        
+        NSLog(@"[MCDL] Modpack download complete, proceeding to extraction.");
         // Use the API to handle extraction and installation
         [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:destPath];
     };
@@ -393,6 +416,11 @@
     // Failure callback to handle retries for modpack download
     void(^modpackFailure)(NSError *error) = ^(NSError *error) {
         NSLog(@"[MCDL] Failed to download modpack: %@. Retrying...", error.localizedDescription);
+        
+        // Update file list to show retry attempt
+        [self.fileList addObject:[NSString stringWithFormat:@"Retrying download for %@", name]];
+        NSProgress *retryProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
+        [self.progressList addObject:retryProgress];
         
         // Create a retry task
         NSURLSessionDownloadTask *retryTask = [self createDownloadTask:url 
@@ -407,6 +435,8 @@
         }];
         
         if (retryTask) {
+            // Add the retry task to progress tracking
+            [self addDownloadTaskToProgress:retryTask size:size];
             [retryTask resume];
         } else {
             [self finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
@@ -416,10 +446,13 @@
     NSURLSessionDownloadTask *task = [self createDownloadTask:url 
                                                         size:size 
                                                          sha:sha 
-                                                     altName:[NSString stringWithFormat:@"Downloading %@", name]
+                                                     altName:displayName
                                                       toPath:packagePath 
                                                      success:modpackSuccess
                                                      failure:modpackFailure];
+    
+    // Add main download task to progress tracking system
+    [self addDownloadTaskToProgress:task size:size];
     [task resume];
 }
 
