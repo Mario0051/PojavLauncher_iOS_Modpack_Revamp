@@ -55,6 +55,9 @@
     // Log detailed file information for debugging
     NSLog(@"[MCDL] Creating download task for %@, size: %lu, path: %@", name, (unsigned long)size, path);
     
+    // Determine if this is a zip file for better size estimation
+    BOOL isZipFile = [path.pathExtension.lowercaseString isEqualToString:@"zip"];
+    
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
         NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
@@ -66,18 +69,26 @@
             [self.fileList addObject:name];
         } 
         // If no size provided, but response has size info
-        else if (response.expectedContentLength > 0) {
+        else if (response.expectedContentLength > 0 && response.expectedContentLength != NSURLResponseUnknownLength) {
             NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
             [self addDownloadTaskToProgress:task size:actualSize];
             [self.fileList addObject:name];
             sizeUpdated = YES;
             NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
         }
-        // If still no size, use a minimum value but we'll update it later
+        // If still no size, use a placeholder based on file type
         else {
-            [self addDownloadTaskToProgress:task size:1000000]; // Use 1MB as placeholder
+            NSUInteger placeholderSize;
+            if (isZipFile) {
+                // Use larger placeholder for ZIP files (20MB)
+                placeholderSize = 20 * 1024 * 1024;
+            } else {
+                // Use smaller placeholder for other files (5MB)
+                placeholderSize = 5 * 1024 * 1024;
+            }
+            [self addDownloadTaskToProgress:task size:placeholderSize];
             [self.fileList addObject:name];
-            NSLog(@"[MCDL] No size available for %@, using placeholder", name);
+            NSLog(@"[MCDL] No size available for %@, using placeholder: %lu", name, (unsigned long)placeholderSize);
         }
         
         [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
@@ -103,21 +114,30 @@
                 [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
             }
         } else {
-            // If we didn't have an accurate size initially and didn't update it from the response
-            if (!sizeUpdated && size == 0 && progress) {
+            // Handle size adjustments for files whose size wasn't known in advance
+            if ((!sizeUpdated && size == 0) || (progress && progress.completedUnitCount > progress.totalUnitCount)) {
                 // Get the actual file size for more accurate progress reporting
                 NSError *fileError;
                 NSDictionary *fileAttrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&fileError];
                 if (!fileError && fileAttrs) {
                     NSUInteger fileSize = [fileAttrs fileSize];
-                    NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
+                    NSLog(@"[MCDL] Completed download for %@, actual size: %lu, estimated: %lld", 
+                          name, (unsigned long)fileSize, progress ? progress.totalUnitCount : 0);
                     
-                    // Update progress with actual file size
-                    if (fileSize > 0 && fileSize != progress.totalUnitCount) {
-                        // Add the difference to total progress
-                        self.progress.totalUnitCount += (fileSize - progress.totalUnitCount);
-                        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                    // Update progress with actual file size if significantly different
+                    if (fileSize > 0 && progress && abs((long long)fileSize - (long long)progress.totalUnitCount) > 100000) {
+                        // Calculate the difference between actual and estimated size
+                        long long sizeDifference = (long long)fileSize - (long long)progress.totalUnitCount;
+                        
+                        // Adjust the total progress by the difference
+                        self.progress.totalUnitCount += sizeDifference;
+                        if (self.textProgress) {
+                            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                        }
+                        
+                        // Update the individual progress
                         progress.totalUnitCount = fileSize;
+                        NSLog(@"[MCDL] Updated progress for %@, adjusted total by %lld", name, sizeDifference);
                     }
                 }
             }
@@ -154,18 +174,20 @@
 
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size {
     NSProgress *progress = [self.manager downloadProgressForTask:task];
-    NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
+    NSUInteger fileSize = size > 0 ? size : 5 * 1024 * 1024; // Default to 5MB if no size provided
     progress.kind = NSProgressKindFile;
     progress.totalUnitCount = fileSize;
     [self.progressList addObject:progress];
     [self.progress addChild:progress withPendingUnitCount:fileSize];
-    self.progress.totalUnitCount += fileSize;
     
     // Simplify the text progress - only track fractionCompleted
     if (!self.textProgress) {
         self.textProgress = [NSProgress new];
     }
     self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+    
+    NSLog(@"[MCDL] Added progress tracking for file with size: %lu, total progress now: %lld", 
+          (unsigned long)fileSize, self.progress.totalUnitCount);
 }
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
