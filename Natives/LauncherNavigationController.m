@@ -229,11 +229,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         }
     }
     self.progressViewMain.hidden = enabled;
-    
-    // Make sure to properly handle the progress text visibility
     self.progressText.text = nil;
-    self.progressText.hidden = enabled; // Hide when enabled (not downloading), show when disabled (downloading)
-    
     if (downloading) {
         [self.buttonInstall setTitle:localize(enabled ? @"Play" : @"Details", nil) forState:UIControlStateNormal];
         self.buttonInstall.alpha = 1;
@@ -308,45 +304,31 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         return;
     }
 
-    // Safety check - ensure task and progress exist
-    if (!self.task || !self.task.progress) {
-        return;
-    }
+    // Only track simple progress percentage
+    NSInteger completedUnitCount = self.task.progress.totalUnitCount * self.task.progress.fractionCompleted;
     
-    // Find the most recently active file (prioritize files in progress)
-    NSString *currentFile = nil;
-    if (self.task && self.task.fileList.count > 0 && self.task.progressList.count > 0) {
-        // Safety: Ensure arrays have elements and are in sync
-        NSInteger fileIndex = MIN(self.task.fileList.count - 1, self.task.progressList.count - 1);
-        
-        // First, look for a file that's actively downloading (not complete, not just starting)
-        for (NSInteger i = fileIndex; i >= 0; i--) {
-            if (i < self.task.progressList.count) {
-                NSProgress *fileProgress = self.task.progressList[i];
-                
-                // Find a file that's in progress (not 0% and not 100%)
-                if (fileProgress.fractionCompleted > 0.01 && fileProgress.fractionCompleted < 0.99) {
-                    if (i < self.task.fileList.count) {
-                        currentFile = self.task.fileList[i];
+    // Find the most recently completed file (if any)
+    NSString *lastCompletedFile = nil;
+    if (self.task && self.task.fileList.count > 0) {
+        NSArray *progressListCopy = [NSArray arrayWithArray:self.task.progressList];
+        for (NSInteger i = progressListCopy.count - 1; i >= 0; i--) {
+            NSProgress *fileProgress = progressListCopy[i];
+            if (fileProgress.finished || fileProgress.fractionCompleted >= 1.0) {
+                if (i < self.task.fileList.count) {
+                    NSString *fileName = self.task.fileList[i];
+                    if (fileName) {
+                        lastCompletedFile = [fileName lastPathComponent];
                         break;
                     }
                 }
             }
         }
-        
-        // If no active file found, use the most recent one
-        if (!currentFile && fileIndex >= 0 && fileIndex < self.task.fileList.count) {
-            currentFile = self.task.fileList[fileIndex];
-        }
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
         // Compute total downloaded and expected sizes
-        long long totalBytes = MAX(1, self.task.progress.totalUnitCount); // Prevent division by zero
-        long long completedBytes = MIN(self.task.progress.completedUnitCount, totalBytes); // Prevent overflow
-        
-        // Ensure fraction is never greater than 1.0 (100%) or less than 0
-        float fraction = MAX(0, MIN(1.0f, (float)completedBytes / (float)totalBytes));
+        long long completedBytes = self.task.progress.completedUnitCount;
+        long long totalBytes = self.task.progress.totalUnitCount;
         
         // Format sizes with appropriate precision
         NSString *sizeText;
@@ -368,18 +350,15 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         }
         
         // Compute percentage
-        int percentage = (int)(fraction * 100);
+        int percentage = (int)(self.task.progress.fractionCompleted * 100);
         
         // Update progress text with size and percentage
-        if (currentFile) {
-            // Use just the filename part, not the full path
-            NSString *displayName = [currentFile lastPathComponent];
-            self.progressText.text = [NSString stringWithFormat:@"%@ - %@ (%d%%)", displayName, sizeText, percentage];
+        if (lastCompletedFile) {
+            self.progressText.text = [NSString stringWithFormat:@"%@ - %@ (%d%%)", lastCompletedFile, sizeText, percentage];
         } else {
             self.progressText.text = [NSString stringWithFormat:@"%@ (%d%%)", sizeText, percentage];
         }
 
-        // Check if download is still in progress
         if (!self.task.progress.finished && self.task.progress.fractionCompleted < 1.0) return;
         
         // The download is finished, make sure to dismiss the progress view if present
