@@ -27,6 +27,16 @@
     self.fileList = [NSMutableArray new];
     self.progressList = [NSMutableArray new];
     
+    // Initialize progress tracking
+    self.progress = [NSProgress new];
+    self.progress.totalUnitCount = 0;
+    self.progress.cancellable = YES;
+    
+    // Initialize text progress for UI updates
+    self.textProgress = [NSProgress new];
+    self.textProgress.totalUnitCount = 0;
+    self.textProgress.cancellable = YES;
+    
     return self;
 }
 
@@ -38,10 +48,18 @@
                                          toPath:(NSString *)path 
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure {
+    if (self.progress.cancelled) {
+        return nil;  // Don't create new tasks if cancelled
+    }
+    
     BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    // logSuccess?
+    // Check if file already exists and has correct SHA
     if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
-        if (success) success();
+        if (success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                success();
+            });
+        }
         return nil;
     } else if (![self checkAccessWithDialog:YES]) {
         return nil;
@@ -73,34 +91,56 @@
             sizeUpdated = YES;
             NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
         }
-        // If still no size, use a minimum value but we'll update it later
+        // If still no size, use a realistic placeholder (1MB)
         else {
-            [self addDownloadTaskToProgress:task size:1000000]; // Use 1MB as placeholder
+            [self addDownloadTaskToProgress:task size:1000000]; 
             [self.fileList addObject:name];
             NSLog(@"[MCDL] No size available for %@, using placeholder", name);
         }
         
-        [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
-        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        // Create directories and prepare for file write
+        NSError *dirError;
+        [[NSFileManager defaultManager] createDirectoryAtPath:path.stringByDeletingLastPathComponent 
+                                 withIntermediateDirectories:YES 
+                                                  attributes:nil 
+                                                       error:&dirError];
+                                                       
+        if (dirError) {
+            NSLog(@"[MCDL] Error creating directory for %@: %@", name, dirError.localizedDescription);
+        }
+        
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
         return [NSURL fileURLWithPath:path];
     } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
         if (self.progress.cancelled) {
-            // Ignore any further errors
+            // Ignore any further errors if cancelled
+            return;
         } else if (error != nil) {
             NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
             if (failure) {
-                failure(error);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    failure(error);
+                });
             } else {
-                [self finishDownloadWithError:error file:name];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self finishDownloadWithError:error file:name];
+                });
             }
-        } else if (![self checkSHA:sha forFile:path altName:altName]) {
+        } else if (![self checkSHA:sha forFile:path.stringByStandardizingPath altName:altName]) {
             NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
                                                     code:1000 
-                                                userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
+                                                userInfo:@{NSLocalizedDescriptionKey: 
+                                                    [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", 
+                                                     path.lastPathComponent]}];
             if (failure) {
-                failure(shaError);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    failure(shaError);
+                });
             } else {
-                [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", 
+                                                      path.lastPathComponent]];
+                });
             }
         } else {
             // If we didn't have an accurate size initially and didn't update it from the response
@@ -113,11 +153,13 @@
                     NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
                     
                     // Update progress with actual file size
-                    if (fileSize > 0 && fileSize != progress.totalUnitCount) {
-                        // Add the difference to total progress
-                        self.progress.totalUnitCount += (fileSize - progress.totalUnitCount);
-                        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-                        progress.totalUnitCount = fileSize;
+                    @synchronized(self) {
+                        if (fileSize > 0 && fileSize != progress.totalUnitCount) {
+                            // Add the difference to total progress
+                            self.progress.totalUnitCount += (fileSize - progress.totalUnitCount);
+                            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                            progress.totalUnitCount = fileSize;
+                        }
                     }
                 }
             }
@@ -126,7 +168,11 @@
             progress.completedUnitCount = progress.totalUnitCount;
             
             NSLog(@"[MCDL] Download completed for %@", name);
-            if (success) success();
+            if (success) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    success();
+                });
+            }
         }
     }];
 
@@ -153,19 +199,154 @@
 }
 
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size {
-    NSProgress *progress = [self.manager downloadProgressForTask:task];
-    NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
-    progress.kind = NSProgressKindFile;
-    progress.totalUnitCount = fileSize;
-    [self.progressList addObject:progress];
-    [self.progress addChild:progress withPendingUnitCount:fileSize];
-    self.progress.totalUnitCount += fileSize;
-    
-    // Simplify the text progress - only track fractionCompleted
-    if (!self.textProgress) {
-        self.textProgress = [NSProgress new];
+    @synchronized(self) {
+        NSProgress *progress = [self.manager downloadProgressForTask:task];
+        NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
+        progress.kind = NSProgressKindFile;
+        progress.totalUnitCount = fileSize;
+        [self.progressList addObject:progress];
+        
+        // Add to main progress tracker
+        [self.progress addChild:progress withPendingUnitCount:fileSize];
+        
+        // Update the text progress for UI - consistent with main progress
+        if (!self.textProgress) {
+            self.textProgress = [NSProgress new];
+        }
+        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
     }
-    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+}
+
+- (void)prepareForDownload {
+    @synchronized(self) {
+        // Reset progress tracking
+        self.progress = [NSProgress new];
+        self.progress.totalUnitCount = 0; // Start with 0 and add as we go
+        self.progress.cancellable = YES;
+        
+        // Reset text progress for UI
+        self.textProgress = [NSProgress new];
+        self.textProgress.totalUnitCount = 0;
+        self.textProgress.cancellable = YES;
+        
+        // Reset tracking lists
+        [self.fileList removeAllObjects];
+        [self.progressList removeAllObjects];
+    }
+}
+
+- (void)finishDownloadWithErrorString:(NSString *)error {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.progress cancel];
+        [self.textProgress cancel];
+        [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
+        showDialog(localize(@"Error", nil), error);
+        
+        // Call error handler if provided
+        if (self.handleError) {
+            self.handleError();
+        }
+    });
+}
+
+- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
+    NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
+    NSLog(@"[MCDL] Error: %@ %@", errorStr, NSThread.callStackSymbols);
+    [self finishDownloadWithErrorString:errorStr];
+}
+
+// Check if the account has permission to download
+- (BOOL)checkAccessWithDialog:(BOOL)show {
+    // for now
+    BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
+    if (!accessible) {
+        [self.progress cancel];
+        [self.textProgress cancel];
+        if (show) {
+            [self finishDownloadWithErrorString:@"Minecraft can't be legally installed when logged in with a local account. Please switch to an online account to continue."];
+        }
+    }
+    return accessible;
+}
+
+// Check SHA of the file
+- (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
+    if (sha.length == 0) {
+        // When sha = skip, only check for file existence
+        BOOL existence = [NSFileManager.defaultManager fileExistsAtPath:path];
+        if (existence) {
+            NSLog(@"[MCDL] Warning: couldn't find SHA for %@, have to assume it's good.", path);
+        }
+        return existence;
+    }
+
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data == nil) {
+        NSLog(@"[MCDL] SHA1 checker: file doesn't exist: %@", altName ? altName : path.lastPathComponent);
+        return NO;
+    }
+
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *localSHA = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
+    for(int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
+        [localSHA appendFormat:@"%02x", digest[i]];
+    }
+
+    BOOL check = [sha isEqualToString:localSHA];
+    if (!check || (getPrefBool(@"general.debug_logging") && logSuccess)) {
+        NSLog(@"[MCDL] SHA1 %@ for %@%@",
+          (check ? @"passed" : @"failed"), 
+          (altName ? altName : path.lastPathComponent),
+          (check ? @"" : [NSString stringWithFormat:@" (expected: %@, got: %@)", sha, localSHA]));
+    }
+    return check;
+}
+
+- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
+    if (getPrefBool(@"general.check_sha")) {
+        return [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:logSuccess];
+    } else {
+        return [NSFileManager.defaultManager fileExistsAtPath:path];
+    }
+}
+
+- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
+    return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
+}
+
+- (void)downloadVersion:(NSDictionary *)version {
+    [self prepareForDownload];
+    [self downloadVersionMetadata:version success:^{
+        [self downloadAssetMetadataWithSuccess:^{
+            NSArray *libTasks = [self downloadClientLibraries];
+            NSArray *assetTasks = [self downloadClientAssets];
+            
+            @synchronized(self) {
+                // If we have nothing to download, add a completed marker
+                if (self.progress.totalUnitCount == 0) {
+                    self.progress.totalUnitCount = 1;
+                    self.progress.completedUnitCount = 1;
+                    self.textProgress.totalUnitCount = 1;
+                    self.textProgress.completedUnitCount = 1;
+                    
+                    // Add completion marker
+                    [self.fileList addObject:@"Complete"];
+                    NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+                    completeProgress.completedUnitCount = 1;
+                    [self.progressList addObject:completeProgress];
+                    return;
+                }
+            }
+            
+            // Start all download tasks
+            [libTasks makeObjectsPerformSelector:@selector(resume)];
+            [assetTasks makeObjectsPerformSelector:@selector(resume)];
+            
+            // Clean up large metadata we don't need anymore
+            [self.metadata removeObjectForKey:@"assetIndexObj"];
+        }];
+    }];
 }
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
@@ -220,7 +401,9 @@
     NSUInteger size = [version[@"size"] unsignedLongLongValue];
 
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:versionStr toPath:path success:wrappedSuccess];
-    [task resume];
+    if (task) {
+        [task resume];
+    }
 }
 
 - (void)downloadAssetMetadataWithSuccess:(void (^)())success {
@@ -243,7 +426,12 @@
     };
     
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:wrappedSuccess];
-    [task resume];
+    if (task) {
+        [task resume];
+    } else {
+        // If no task was created (file already exists), continue
+        wrappedSuccess();
+    }
 }
 
 - (NSArray *)downloadClientLibraries {
@@ -323,40 +511,6 @@
     return tasks;
 }
 
-#pragma mark - Minecraft installation
-
-- (void)downloadVersion:(NSDictionary *)version {
-    [self prepareForDownload];
-    [self downloadVersionMetadata:version success:^{
-        [self downloadAssetMetadataWithSuccess:^{
-            NSArray *libTasks = [self downloadClientLibraries];
-            NSArray *assetTasks = [self downloadClientAssets];
-            // Drop the 1 byte we set initially
-            self.progress.totalUnitCount--;
-            self.textProgress.totalUnitCount--;
-            if (self.progress.totalUnitCount == 0) {
-                // We have nothing to download, invoke completion observer
-                self.progress.totalUnitCount = 1;
-                self.progress.completedUnitCount = 1;
-                self.textProgress.totalUnitCount = 1;
-                self.textProgress.completedUnitCount = 1;
-                
-                // Add completion marker
-                [self.fileList addObject:@"Complete"];
-                NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
-                completeProgress.completedUnitCount = 1;
-                [self.progressList addObject:completeProgress];
-                return;
-            }
-            [libTasks makeObjectsPerformSelector:@selector(resume)];
-            [assetTasks makeObjectsPerformSelector:@selector(resume)];
-            [self.metadata removeObjectForKey:@"assetIndexObj"];
-        }];
-    }];
-}
-
-#pragma mark - Modpack installation
-
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     [self prepareForDownload];
     
@@ -389,8 +543,10 @@
     NSString *displayName = [NSString stringWithFormat:@"Downloading modpack: %@", name];
     
     // Set progress for the primary modpack download
-    self.progress.totalUnitCount = size > 0 ? size : 1000000; // Use reasonable placeholder if size unknown
-    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+    @synchronized(self) {
+        self.progress.totalUnitCount = size > 0 ? size : 1000000; // Use reasonable placeholder if size unknown
+        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+    }
     
     // Add the package as the first item in the file list for UI reporting
     [self.fileList addObject:displayName];
@@ -403,10 +559,12 @@
         packageProgress.completedUnitCount = packageProgress.totalUnitCount;
         
         // Add placeholder progress for extraction phase - reset overall progress
-        self.progress.totalUnitCount = 1;
-        self.progress.completedUnitCount = 0;
-        self.textProgress.totalUnitCount = 1;
-        self.textProgress.completedUnitCount = 0;
+        @synchronized(self) {
+            self.progress.totalUnitCount = 1;
+            self.progress.completedUnitCount = 0;
+            self.textProgress.totalUnitCount = 1;
+            self.textProgress.completedUnitCount = 0;
+        }
         
         NSLog(@"[MCDL] Modpack download complete, proceeding to extraction.");
         // Use the API to handle extraction and installation
@@ -453,93 +611,9 @@
     
     // Add main download task to progress tracking system
     [self addDownloadTaskToProgress:task size:size];
-    [task resume];
-}
-
-#pragma mark - Utilities
-
-- (void)prepareForDownload {
-    // Create a simplified progress object
-    self.textProgress = [NSProgress new];
-    self.textProgress.totalUnitCount = -1;
-
-    self.progress = [NSProgress new];
-    // Push 1 byte so it won't accidentally finish after downloading assets index
-    self.progress.totalUnitCount = 1;
-    [self.fileList removeAllObjects];
-    [self.progressList removeAllObjects];
-}
-
-- (void)finishDownloadWithErrorString:(NSString *)error {
-    [self.progress cancel];
-    [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
-    showDialog(localize(@"Error", nil), error);
-    self.handleError();
-}
-
-- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
-    NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
-    NSLog(@"[MCDL] Error: %@ %@", errorStr, NSThread.callStackSymbols);
-    [self finishDownloadWithErrorString:errorStr];
-}
-
-// Check if the account has permission to download
-- (BOOL)checkAccessWithDialog:(BOOL)show {
-    // for now
-    BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
-    if (!accessible) {
-        [self.progress cancel];
-        if (show) {
-            [self finishDownloadWithErrorString:@"Minecraft can't be legally installed when logged in with a local account. Please switch to an online account to continue."];
-        }
+    if (task) {
+        [task resume];
     }
-    return accessible;
-}
-
-// Check SHA of the file
-- (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
-    if (sha.length == 0) {
-        // When sha = skip, only check for file existence
-        BOOL existence = [NSFileManager.defaultManager fileExistsAtPath:path];
-        if (existence) {
-            NSLog(@"[MCDL] Warning: couldn't find SHA for %@, have to assume it's good.", path);
-        }
-        return existence;
-    }
-
-    NSData *data = [NSData dataWithContentsOfFile:path];
-    if (data == nil) {
-        NSLog(@"[MCDL] SHA1 checker: file doesn't exist: %@", altName ? altName : path.lastPathComponent);
-        return NO;
-    }
-
-    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
-    CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
-    NSMutableString *localSHA = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
-    for(int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
-        [localSHA appendFormat:@"%02x", digest[i]];
-    }
-
-    BOOL check = [sha isEqualToString:localSHA];
-    if (!check || (getPrefBool(@"general.debug_logging") && logSuccess)) {
-        NSLog(@"[MCDL] SHA1 %@ for %@%@",
-          (check ? @"passed" : @"failed"), 
-          (altName ? altName : path.lastPathComponent),
-          (check ? @"" : [NSString stringWithFormat:@" (expected: %@, got: %@)", sha, localSHA]));
-    }
-    return check;
-}
-
-- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
-    if (getPrefBool(@"general.check_sha")) {
-        return [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:logSuccess];
-    } else {
-        return [NSFileManager.defaultManager fileExistsAtPath:path];
-    }
-}
-
-- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
-    return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
 }
 
 @end
