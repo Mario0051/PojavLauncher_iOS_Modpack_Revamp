@@ -50,41 +50,34 @@
     NSString *name = altName ?: path.lastPathComponent;
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:url]];
     __block NSProgress *progress;
+    __block BOOL sizeUpdated = NO;
     
-    // Determine if this is a zip file for initial size estimation
-    BOOL isZipFile = [path.pathExtension.lowercaseString isEqualToString:@"zip"];
+    // Log detailed file information for debugging
+    NSLog(@"[MCDL] Creating download task for %@, size: %lu, path: %@", name, (unsigned long)size, path);
     
-    // If size is unknown (0), use a better estimate for ZIP files
-    NSUInteger estimatedSize = size;
-    if (size == 0 && isZipFile) {
-        // Use larger initial size estimate for ZIP files (20MB)
-        estimatedSize = 20 * 1024 * 1024;
-        NSLog(@"[MCDL] Using initial ZIP size estimate of %lu bytes for %@", (unsigned long)estimatedSize, name);
-    } else if (size == 0) {
-        // Default size for non-ZIP files (5MB)
-        estimatedSize = 5 * 1024 * 1024;
-        NSLog(@"[MCDL] Using default size estimate of %lu bytes for %@", (unsigned long)estimatedSize, name);
-    }
-    
-    NSLog(@"[MCDL] Creating download task for %@, estimated size: %lu, path: %@", name, (unsigned long)estimatedSize, path);
-
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-        NSLog(@"[MCDL] Downloading %@, response size: %lld", name, response.expectedContentLength);
+        NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
         progress = [self.manager downloadProgressForTask:task];
-        
-        // Add to file list
-        [self.fileList addObject:name];
-        
-        // If response has a valid size, use it instead of our estimate
-        if (response.expectedContentLength > 0 && response.expectedContentLength != NSURLResponseUnknownLength) {
-            // Use response size rather than our estimate
+
+        // Add to progress tracking if we have size information
+        if (size > 0) {
+            [self addDownloadTaskToProgress:task size:size];
+            [self.fileList addObject:name];
+        } 
+        // If no size provided, but response has size info
+        else if (response.expectedContentLength > 0) {
             NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
-            NSLog(@"[MCDL] Using server-reported size: %lu for %@", (unsigned long)actualSize, name);
             [self addDownloadTaskToProgress:task size:actualSize];
-        } else {
-            // Use our estimated size
-            [self addDownloadTaskToProgress:task size:estimatedSize];
+            [self.fileList addObject:name];
+            sizeUpdated = YES;
+            NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
+        }
+        // If still no size, use a minimum value but we'll update it later
+        else {
+            [self addDownloadTaskToProgress:task size:1000000]; // Use 1MB as placeholder
+            [self.fileList addObject:name];
+            NSLog(@"[MCDL] No size available for %@, using placeholder", name);
         }
         
         [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
@@ -110,17 +103,27 @@
                 [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
             }
         } else {
-            // At this point, we have successfully downloaded the file
-            // We can now get its actual size to improve our progress reporting accuracy for future downloads
-            if (estimatedSize > 0 && size == 0) {
+            // If we didn't have an accurate size initially and didn't update it from the response
+            if (!sizeUpdated && size == 0 && progress) {
+                // Get the actual file size for more accurate progress reporting
                 NSError *fileError;
                 NSDictionary *fileAttrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&fileError];
                 if (!fileError && fileAttrs) {
                     NSUInteger fileSize = [fileAttrs fileSize];
-                    NSLog(@"[MCDL] Actual file size for %@: %lu (estimated: %lu)", 
-                          name, (unsigned long)fileSize, (unsigned long)estimatedSize);
+                    NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
+                    
+                    // Update progress with actual file size
+                    if (fileSize > 0 && fileSize != progress.totalUnitCount) {
+                        // Add the difference to total progress
+                        self.progress.totalUnitCount += (fileSize - progress.totalUnitCount);
+                        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                        progress.totalUnitCount = fileSize;
+                    }
                 }
             }
+            
+            // Ensure progress is marked as complete
+            progress.completedUnitCount = progress.totalUnitCount;
             
             NSLog(@"[MCDL] Download completed for %@", name);
             if (success) success();
@@ -150,37 +153,19 @@
 }
 
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size {
-    // Get the progress object associated with this download task
     NSProgress *progress = [self.manager downloadProgressForTask:task];
-    
-    // Ensure minimum size to prevent division by zero or extremely small progress increments
-    NSUInteger fileSize = MAX(size, 1024); // At least 1KB
-    
-    // Configure the progress object
+    NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
     progress.kind = NSProgressKindFile;
     progress.totalUnitCount = fileSize;
-    
-    // Add to our tracking list
     [self.progressList addObject:progress];
-    
-    // Create main progress object if it doesn't exist yet
-    if (!self.progress) {
-        self.progress = [NSProgress progressWithTotalUnitCount:0];
-    }
-    
-    // Add this progress as a child to the main progress
-    // This maintains the hierarchical relationship that allows automatic progress updates
     [self.progress addChild:progress withPendingUnitCount:fileSize];
+    self.progress.totalUnitCount += fileSize;
     
-    // Update or create the text progress for UI display
+    // Simplify the text progress - only track fractionCompleted
     if (!self.textProgress) {
-        self.textProgress = [NSProgress progressWithTotalUnitCount:self.progress.totalUnitCount];
-    } else {
-        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+        self.textProgress = [NSProgress new];
     }
-    
-    NSLog(@"[MCDL] Added progress tracking for file with size: %lu, total progress now: %lld", 
-          (unsigned long)fileSize, self.progress.totalUnitCount);
+    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
 }
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
@@ -441,19 +426,15 @@
 #pragma mark - Utilities
 
 - (void)prepareForDownload {
-    // Create a simplified progress object for text display
-    self.textProgress = [NSProgress progressWithTotalUnitCount:1];
-    self.textProgress.completedUnitCount = 0;
+    // Create a simplified progress object
+    self.textProgress = [NSProgress new];
+    self.textProgress.totalUnitCount = -1;
 
-    // Create the main progress object to track all downloads
-    self.progress = [NSProgress progressWithTotalUnitCount:1];
-    self.progress.completedUnitCount = 0;
-    
-    // Reset the tracking arrays
+    self.progress = [NSProgress new];
+    // Push 1 byte so it won't accidentally finish after downloading assets index
+    self.progress.totalUnitCount = 1;
     [self.fileList removeAllObjects];
     [self.progressList removeAllObjects];
-    
-    NSLog(@"[MCDL] Prepared for download with initial progress objects");
 }
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
