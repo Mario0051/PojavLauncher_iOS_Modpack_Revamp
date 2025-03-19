@@ -334,6 +334,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         long long completedBytes = self.task.progress.completedUnitCount;
         long long totalBytes = self.task.progress.totalUnitCount;
         
+        // Ensure fraction is never greater than 1.0 (100%)
+        float fraction = MIN(1.0f, self.task.progress.fractionCompleted);
+        
         // Format sizes with appropriate precision
         NSString *sizeText;
         double completedMB = completedBytes / 1024.0 / 1024.0;
@@ -353,8 +356,8 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             sizeText = [NSString stringWithFormat:@"%.0fMB/%.0fMB", completedMB, totalMB];
         }
         
-        // Compute percentage
-        int percentage = (int)(self.task.progress.fractionCompleted * 100);
+        // Compute percentage (capped at 100%)
+        int percentage = (int)(fraction * 100);
         
         // Update progress text with size and percentage
         if (lastCompletedFile) {
