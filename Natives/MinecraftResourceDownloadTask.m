@@ -50,45 +50,41 @@
     NSString *name = altName ?: path.lastPathComponent;
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:url]];
     __block NSProgress *progress;
-    __block BOOL sizeUpdated = NO;
     
-    // Log detailed file information for debugging
-    NSLog(@"[MCDL] Creating download task for %@, size: %lu, path: %@", name, (unsigned long)size, path);
-    
-    // Determine if this is a zip file for better size estimation
+    // Determine if this is a zip file for initial size estimation
     BOOL isZipFile = [path.pathExtension.lowercaseString isEqualToString:@"zip"];
     
+    // If size is unknown (0), use a better estimate for ZIP files
+    NSUInteger estimatedSize = size;
+    if (size == 0 && isZipFile) {
+        // Use larger initial size estimate for ZIP files (20MB)
+        estimatedSize = 20 * 1024 * 1024;
+        NSLog(@"[MCDL] Using initial ZIP size estimate of %lu bytes for %@", (unsigned long)estimatedSize, name);
+    } else if (size == 0) {
+        // Default size for non-ZIP files (5MB)
+        estimatedSize = 5 * 1024 * 1024;
+        NSLog(@"[MCDL] Using default size estimate of %lu bytes for %@", (unsigned long)estimatedSize, name);
+    }
+    
+    NSLog(@"[MCDL] Creating download task for %@, estimated size: %lu, path: %@", name, (unsigned long)estimatedSize, path);
+
     __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
     destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-        NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
+        NSLog(@"[MCDL] Downloading %@, response size: %lld", name, response.expectedContentLength);
         progress = [self.manager downloadProgressForTask:task];
-
-        // Add to progress tracking if we have size information
-        if (size > 0) {
-            [self addDownloadTaskToProgress:task size:size];
-            [self.fileList addObject:name];
-        } 
-        // If no size provided, but response has size info
-        else if (response.expectedContentLength > 0 && response.expectedContentLength != NSURLResponseUnknownLength) {
+        
+        // Add to file list
+        [self.fileList addObject:name];
+        
+        // If response has a valid size, use it instead of our estimate
+        if (response.expectedContentLength > 0 && response.expectedContentLength != NSURLResponseUnknownLength) {
+            // Use response size rather than our estimate
             NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
+            NSLog(@"[MCDL] Using server-reported size: %lu for %@", (unsigned long)actualSize, name);
             [self addDownloadTaskToProgress:task size:actualSize];
-            [self.fileList addObject:name];
-            sizeUpdated = YES;
-            NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
-        }
-        // If still no size, use a placeholder based on file type
-        else {
-            NSUInteger placeholderSize;
-            if (isZipFile) {
-                // Use larger placeholder for ZIP files (20MB)
-                placeholderSize = 20 * 1024 * 1024;
-            } else {
-                // Use smaller placeholder for other files (5MB)
-                placeholderSize = 5 * 1024 * 1024;
-            }
-            [self addDownloadTaskToProgress:task size:placeholderSize];
-            [self.fileList addObject:name];
-            NSLog(@"[MCDL] No size available for %@, using placeholder: %lu", name, (unsigned long)placeholderSize);
+        } else {
+            // Use our estimated size
+            [self addDownloadTaskToProgress:task size:estimatedSize];
         }
         
         [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
@@ -114,36 +110,17 @@
                 [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
             }
         } else {
-            // Handle size adjustments for files whose size wasn't known in advance
-            if ((!sizeUpdated && size == 0) || (progress && progress.completedUnitCount > progress.totalUnitCount)) {
-                // Get the actual file size for more accurate progress reporting
+            // At this point, we have successfully downloaded the file
+            // We can now get its actual size to improve our progress reporting accuracy for future downloads
+            if (estimatedSize > 0 && size == 0) {
                 NSError *fileError;
                 NSDictionary *fileAttrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&fileError];
                 if (!fileError && fileAttrs) {
                     NSUInteger fileSize = [fileAttrs fileSize];
-                    NSLog(@"[MCDL] Completed download for %@, actual size: %lu, estimated: %lld", 
-                          name, (unsigned long)fileSize, progress ? progress.totalUnitCount : 0);
-                    
-                    // Update progress with actual file size if significantly different
-                    if (fileSize > 0 && progress && abs((long long)fileSize - (long long)progress.totalUnitCount) > 100000) {
-                        // Calculate the difference between actual and estimated size
-                        long long sizeDifference = (long long)fileSize - (long long)progress.totalUnitCount;
-                        
-                        // Adjust the total progress by the difference
-                        self.progress.totalUnitCount += sizeDifference;
-                        if (self.textProgress) {
-                            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-                        }
-                        
-                        // Update the individual progress
-                        progress.totalUnitCount = fileSize;
-                        NSLog(@"[MCDL] Updated progress for %@, adjusted total by %lld", name, sizeDifference);
-                    }
+                    NSLog(@"[MCDL] Actual file size for %@: %lu (estimated: %lu)", 
+                          name, (unsigned long)fileSize, (unsigned long)estimatedSize);
                 }
             }
-            
-            // Ensure progress is marked as complete
-            progress.completedUnitCount = progress.totalUnitCount;
             
             NSLog(@"[MCDL] Download completed for %@", name);
             if (success) success();
@@ -173,18 +150,34 @@
 }
 
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size {
+    // Get the progress object associated with this download task
     NSProgress *progress = [self.manager downloadProgressForTask:task];
-    NSUInteger fileSize = size > 0 ? size : 5 * 1024 * 1024; // Default to 5MB if no size provided
+    
+    // Ensure minimum size to prevent division by zero or extremely small progress increments
+    NSUInteger fileSize = MAX(size, 1024); // At least 1KB
+    
+    // Configure the progress object
     progress.kind = NSProgressKindFile;
     progress.totalUnitCount = fileSize;
+    
+    // Add to our tracking list
     [self.progressList addObject:progress];
+    
+    // Create main progress object if it doesn't exist yet
+    if (!self.progress) {
+        self.progress = [NSProgress progressWithTotalUnitCount:0];
+    }
+    
+    // Add this progress as a child to the main progress
+    // This maintains the hierarchical relationship that allows automatic progress updates
     [self.progress addChild:progress withPendingUnitCount:fileSize];
     
-    // Simplify the text progress - only track fractionCompleted
+    // Update or create the text progress for UI display
     if (!self.textProgress) {
-        self.textProgress = [NSProgress new];
+        self.textProgress = [NSProgress progressWithTotalUnitCount:self.progress.totalUnitCount];
+    } else {
+        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
     }
-    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
     
     NSLog(@"[MCDL] Added progress tracking for file with size: %lu, total progress now: %lld", 
           (unsigned long)fileSize, self.progress.totalUnitCount);
