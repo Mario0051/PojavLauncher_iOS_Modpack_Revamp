@@ -17,17 +17,19 @@
 #import "PLProfiles.h"
 
 #define fm NSFileManager.defaultManager
+#define CACHE_DIR [NSString stringWithFormat:@"%s/cache", getenv("POJAV_HOME")]
 
 extern char **environ;
+
+// Cache for bootclasspath
+static NSString *cachedBootClasspath = nil;
+static NSString *cachedClasspath = nil;
 
 void init_loadDefaultEnv() {
     /* Define default env */
 
     // Silent Caciocavallo NPE error in locating Android-only lib
     setenv("LD_LIBRARY_PATH", "", 1);
-
-    // Ignore mipmap for performance(?) seems does not affect iOS
-    //setenv("LIBGL_MIPMAP", "3", 1);
 
     // Disable overloaded functions hack for Minecraft 1.17+
     setenv("LIBGL_NOINTOVLHACK", "1", 1);
@@ -46,7 +48,11 @@ void init_loadCustomEnv() {
     NSString *envvars = getPrefObject(@"java.env_variables");
     if (envvars == nil) return;
     NSLog(@"[JavaLauncher] Reading custom environment variables");
-    for (NSString *line in [envvars componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet]) {
+    
+    // Pre-split for performance
+    NSArray *lines = [envvars componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    
+    for (NSString *line in lines) {
         if (![line containsString:@"="]) {
             NSLog(@"[JavaLauncher] Warning: skipped empty value custom env variable: %@", line);
             continue;
@@ -68,7 +74,11 @@ void init_loadCustomJvmFlags(int* argc, const char** argv) {
 
     NSLog(@"[JavaLauncher] Reading custom JVM flags");
     NSArray *argsToPurge = @[@"Xms", @"Xmx", @"d32", @"d64"];
-    for (NSString *arg in [jvmargs componentsSeparatedByString:@" -"]) {
+    
+    // Pre-split for efficiency
+    NSArray *allArgs = [jvmargs componentsSeparatedByString:@" -"];
+    
+    for (NSString *arg in allArgs) {
         NSString *jvmarg = [arg stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         if (jvmarg.length == 0) continue;
         BOOL ignore = NO;
@@ -88,6 +98,49 @@ void init_loadCustomJvmFlags(int* argc, const char** argv) {
     }
 }
 
+NSString* buildClasspathForDirectory(NSString *dirPath) {
+    // Check for cached result first
+    NSString *cacheKey = [NSString stringWithFormat:@"classpath_%@", dirPath.lastPathComponent];
+    NSString *cachePath = [CACHE_DIR stringByAppendingPathComponent:cacheKey];
+    
+    // Check file modification time to validate cache
+    NSError *error;
+    NSDictionary *dirAttrs = [fm attributesOfItemAtPath:dirPath error:&error];
+    NSDictionary *cacheAttrs = [fm attributesOfItemAtPath:cachePath error:nil];
+    
+    if (!error && cacheAttrs) {
+        NSDate *dirModDate = dirAttrs[NSFileModificationDate];
+        NSDate *cacheModDate = cacheAttrs[NSFileModificationDate];
+        
+        // If directory hasn't been modified since cache was created, use cache
+        if ([dirModDate compare:cacheModDate] != NSOrderedDescending) {
+            NSString *cachedPath = [NSString stringWithContentsOfFile:cachePath encoding:NSUTF8StringEncoding error:nil];
+            if (cachedPath) {
+                return cachedPath;
+            }
+        }
+    }
+    
+    // Build classpath by scanning directory
+    NSMutableString *classpath = [NSMutableString string];
+    NSArray *files = [fm contentsOfDirectoryAtPath:dirPath error:nil];
+    
+    for (NSString *file in files) {
+        if ([file hasSuffix:@".jar"]) {
+            if (classpath.length > 0) {
+                [classpath appendString:@":"];
+            }
+            [classpath appendFormat:@"%@/%@", dirPath, file];
+        }
+    }
+    
+    // Cache the result for future use
+    [fm createDirectoryAtPath:CACHE_DIR withIntermediateDirectories:YES attributes:nil error:nil];
+    [classpath writeToFile:cachePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    
+    return classpath;
+}
+
 int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
     NSLog(@"[JavaLauncher] Beginning JVM launch");
 
@@ -98,6 +151,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         init_bypassDyldLibValidation();
     }
 
+    // Load environment variables and custom settings
     init_loadDefaultEnv();
     init_loadCustomEnv();
 
@@ -151,19 +205,23 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
             isExecuteJar ? [launchTarget lastPathComponent] : PLProfiles.current.selectedProfile[@"lastVersionId"], minVersion]);
         return 1;
     } else if ([javaHome hasPrefix:@(getenv("POJAV_HOME"))]) {
-        // Symlink libawt_xawt.dylib
-        NSString *dest = [NSString stringWithFormat:@"%@/lib/libawt_xawt.dylib", javaHome];
-        NSString *source = [NSString stringWithFormat:@"%@/Frameworks/libawt_xawt.dylib", NSBundle.mainBundle.bundlePath];
-        NSError *error;
-        [fm createSymbolicLinkAtPath:dest withDestinationPath:source error:&error];
-        if (error) {
-            NSLog(@"[JavaLauncher] Symlink libawt_xawt.dylib failed: %@", error.localizedDescription);
-        }
+        // Symlink libawt_xawt.dylib - use dispatch_once for thread safety
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            NSString *dest = [NSString stringWithFormat:@"%@/lib/libawt_xawt.dylib", javaHome];
+            NSString *source = [NSString stringWithFormat:@"%@/Frameworks/libawt_xawt.dylib", NSBundle.mainBundle.bundlePath];
+            NSError *error;
+            [fm createSymbolicLinkAtPath:dest withDestinationPath:source error:&error];
+            if (error) {
+                NSLog(@"[JavaLauncher] Symlink libawt_xawt.dylib failed: %@", error.localizedDescription);
+            }
+        });
     }
 
     setenv("JAVA_HOME", javaHome.UTF8String, 1);
     NSLog(@"[JavaLauncher] JAVA_HOME has been set to %@", javaHome);
 
+    // Optimize memory allocation
     int allocmem;
     if (getPrefBool(@"java.auto_ram")) {
         CGFloat autoRatio = getEntitlementValue(@"com.apple.private.memorystatus") ? 0.4 : 0.25;
@@ -173,9 +231,11 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
     NSLog(@"[JavaLauncher] Max RAM allocation is set to %d MB", allocmem);
 
+    // Presize argument array to avoid reallocation
     int margc = -1;
     const char *margv[1000];
 
+    // Essential JVM arguments
     margv[++margc] = [NSString stringWithFormat:@"%@/bin/java", javaHome].UTF8String;
     margv[++margc] = "-XstartOnFirstThread";
     if (!launchJar) {
@@ -190,7 +250,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = [NSString stringWithFormat:@"-DUIScreen.maximumFramesPerSecond=%d", (int)UIScreen.mainScreen.maximumFramesPerSecond].UTF8String;
     margv[++margc] = "-Dorg.lwjgl.glfw.checkThread0=false";
     margv[++margc] = "-Dorg.lwjgl.system.allocator=system";
-    //margv[++margc] = "-Dorg.lwjgl.util.NoChecks=true";
     margv[++margc] = "-Dlog4j2.formatMsgNoLookups=true";
 
     // Preset OpenGL libname
@@ -203,7 +262,12 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = [NSString stringWithFormat:@"-Dorg.lwjgl.opengl.libname=%s", glLibName].UTF8String;
     }
 
+    // Build and cache libraries path
     NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
+    if (!cachedClasspath) {
+        cachedClasspath = [NSString stringWithFormat:@"%@/*", librariesPath];
+    }
+    
     margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath].UTF8String;
     if(getPrefBool(@"general.cosmetica")) {
         margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
@@ -237,48 +301,53 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler";
     margv[++margc] = [NSString stringWithFormat:@"-Dcacio.managed.screensize=%dx%d", width, height].UTF8String;
     margv[++margc] = "-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel";
-    if (isJava8) {
-        // Setup Caciocavallo
-        margv[++margc] = "-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit";
-        margv[++margc] = "-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment";
-    } else {
-        // Required by Cosmetica to inject DNS
-        margv[++margc] = "--add-opens=java.base/java.net=ALL-UNNAMED";
+    
+    // Generate or retrieve cached bootclasspath
+    if (!cachedBootClasspath) {
+        if (isJava8) {
+            // Setup Caciocavallo
+            margv[++margc] = "-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit";
+            margv[++margc] = "-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment";
+            
+            // Build bootclasspath
+            NSString *cacio_libs_path = [NSString stringWithFormat:@"%@/libs_caciocavallo", NSBundle.mainBundle.bundlePath];
+            cachedBootClasspath = [buildClasspathForDirectory(cacio_libs_path) retain];
+        } else {
+            // Required by Cosmetica to inject DNS
+            margv[++margc] = "--add-opens=java.base/java.net=ALL-UNNAMED";
 
-        // Setup Caciocavallo
-        margv[++margc] = "-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit";
-        margv[++margc] = "-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment";
+            // Setup Caciocavallo
+            margv[++margc] = "-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit";
+            margv[++margc] = "-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment";
 
-        // Required by Caciocavallo17 to access internal API
-        margv[++margc] = "--add-exports=java.desktop/java.awt=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.java2d=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/java.awt.dnd.peer=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.awt=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.awt.event=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.awt.datatransfer=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.font=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.base/sun.security.action=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.base/java.util=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.desktop/java.awt=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.desktop/sun.font=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED";
+            // Required by Caciocavallo17 to access internal API
+            margv[++margc] = "--add-exports=java.desktop/java.awt=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.desktop/sun.java2d=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.desktop/java.awt.dnd.peer=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.desktop/sun.awt=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.desktop/sun.awt.event=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.desktop/sun.awt.datatransfer=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.desktop/sun.font=ALL-UNNAMED";
+            margv[++margc] = "--add-exports=java.base/sun.security.action=ALL-UNNAMED";
+            margv[++margc] = "--add-opens=java.base/java.util=ALL-UNNAMED";
+            margv[++margc] = "--add-opens=java.desktop/java.awt=ALL-UNNAMED";
+            margv[++margc] = "--add-opens=java.desktop/sun.font=ALL-UNNAMED";
+            margv[++margc] = "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED";
+            margv[++margc] = "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED";
 
-        // TODO: workaround, will be removed once the startup part works without PLaunchApp
-        margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
-    }
-
-    // Add Caciocavallo bootclasspath
-    NSString *cacio_classpath = [NSString stringWithFormat:@"-Xbootclasspath/%s", isJava8 ? "p" : "a"];
-    NSString *cacio_libs_path = [NSString stringWithFormat:@"%@/libs_caciocavallo%s", NSBundle.mainBundle.bundlePath, isJava8 ? "" : "17"];
-    NSArray *files = [fm contentsOfDirectoryAtPath:cacio_libs_path error:nil];
-    for(NSString *file in files) {
-        if ([file hasSuffix:@".jar"]) {
-            cacio_classpath = [NSString stringWithFormat:@"%@:%@/%@", cacio_classpath, cacio_libs_path, file];
+            // TODO: workaround, will be removed once the startup part works without PLaunchApp
+            margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
+            
+            // Build bootclasspath
+            NSString *cacio_libs_path = [NSString stringWithFormat:@"%@/libs_caciocavallo17", NSBundle.mainBundle.bundlePath];
+            cachedBootClasspath = [buildClasspathForDirectory(cacio_libs_path) retain];
         }
     }
+    
+    // Add the bootclasspath
+    NSString *cacio_classpath = [NSString stringWithFormat:@"-Xbootclasspath/%s:%@", isJava8 ? "p" : "a", cachedBootClasspath];
     margv[++margc] = cacio_classpath.UTF8String;
 
     if (!getEntitlementValue(@"com.apple.developer.kernel.extended-virtual-addressing")) {
@@ -297,9 +366,12 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     init_loadCustomJvmFlags(&margc, (const char **)margv);
     NSLog(@"[Init] Found JLI lib");
 
-    NSString *classpath = [NSString stringWithFormat:@"%@/*", librariesPath];
+    // Prepare classpath
+    NSString *classpath;
     if (launchJar) {
-        classpath = [classpath stringByAppendingFormat:@":%@", launchTarget];
+        classpath = [NSString stringWithFormat:@"%@:%@", cachedClasspath, launchTarget];
+    } else {
+        classpath = cachedClasspath;
     }
     margv[++margc] = "-cp";
     margv[++margc] = classpath.UTF8String;
@@ -316,7 +388,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     } else {
         margv[++margc] = [launchTarget UTF8String];
     }
-    //margv[++margc] = "ghidra.GhidraRun";
 
     pJLI_Launch = (JLI_Launch_func *)dlsym(libjli, "JLI_Launch");
 
