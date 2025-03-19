@@ -25,7 +25,6 @@
 
 extern char **environ;
 
-// Cache for paths and frequently used data
 // Use strong references for ARC compatibility
 static NSString * __strong cachedBootClasspath = nil;
 static NSString * __strong cachedClasspath = nil;
@@ -425,7 +424,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
     NSLog(@"[JavaLauncher] Max RAM allocation is set to %d MB", allocmem);
 
-    // Presize argument array to avoid reallocation
     int margc = -1;
     const char *margv[1000];
 
@@ -436,9 +434,14 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = "-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader";
     }
     
-    // Memory management optimizations
+    // Memory settings - basic heap configuration
     margv[++margc] = "-Xms128M";
     margv[++margc] = [NSString stringWithFormat:@"-Xmx%dM", allocmem].UTF8String;
+    
+    // Memory management optimizations 
+    // Start with experimental options unlock - MUST be before G1GC settings
+    margv[++margc] = "-XX:+UnlockExperimentalVMOptions";
+    // G1GC settings
     margv[++margc] = "-XX:+UseG1GC";  // Use G1 garbage collector for better performance
     margv[++margc] = "-XX:G1NewSizePercent=20";  // Allocate more space for young generation
     margv[++margc] = "-XX:G1ReservePercent=20";  // Reserve memory to avoid full GCs
@@ -514,7 +517,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     // Fast startup optimization - will be removed below for normal operation
     margv[++margc] = "-XX:CompileThreshold=10000";  // Wait longer before compiling methods
 
-    // Load java
+    // Load JLI library
     NSString *libjlipath8 = [NSString stringWithFormat:@"%@/lib/jli/libjli.dylib", javaHome]; // java 8
     NSString *libjlipath11 = [NSString stringWithFormat:@"%@/lib/libjli.dylib", javaHome]; // java 11+
     BOOL isJava8 = checkFileExistsWithCache(libjlipath8);
@@ -658,7 +661,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     signal(SIGILL, SIG_DFL);
     signal(SIGFPE, SIG_DFL);
 
-    // Free split VC and clear caches no longer needed
+    // Free split VC and clear caches that are no longer needed
     tmpRootVC = nil;
     
     // Free memory from caches that are no longer needed
