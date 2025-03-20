@@ -13,6 +13,14 @@
 // External functions from utils.h
 extern void showDialog(NSString *title, NSString *message);
 
+// Maximum concurrent downloads for modpack files
+#define MAX_CONCURRENT_DOWNLOADS 6
+
+@interface ModrinthAPI ()
+@property (nonatomic, assign) NSInteger pendingModpackDownloads;
+@property (nonatomic, strong) NSLock *downloadCountLock;
+@end
+
 @implementation ModrinthAPI
 
 // Helper function to convert WebP URLs to supported formats
@@ -46,7 +54,12 @@ extern void showDialog(NSString *title, NSString *message);
 }
 
 - (instancetype)init {
-    return [super initWithURL:@"https://api.modrinth.com/v2"];
+    self = [super initWithURL:@"https://api.modrinth.com/v2"];
+    if (self) {
+        self.pendingModpackDownloads = 0;
+        self.downloadCountLock = [[NSLock alloc] init];
+    }
+    return self;
 }
 
 - (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, NSString *> *)searchFilters previousPageResult:(NSMutableArray *)modrinthSearchResult {
@@ -423,9 +436,12 @@ extern void showDialog(NSString *title, NSString *message);
         downloader.textProgress.completedUnitCount = 0;
     }
     
-    // Track pending downloads to ensure we complete properly
-    __block NSInteger pendingDownloads = files.count;
-    NSLog(@"[ModrinthAPI] Starting download of %ld mod files", (long)pendingDownloads);
+    // Initialize the pending downloads counter
+    [self.downloadCountLock lock];
+    self.pendingModpackDownloads = files.count;
+    [self.downloadCountLock unlock];
+    
+    NSLog(@"[ModrinthAPI] Starting download of %ld mod files", (long)files.count);
     
     // Add overall status to file list
     [downloader.fileList addObject:[NSString stringWithFormat:@"Downloading %ld files...", (long)files.count]];
@@ -433,148 +449,178 @@ extern void showDialog(NSString *title, NSString *message);
     overallProgress.completedUnitCount = 0;
     [downloader.progressList addObject:overallProgress];
     
-    for (NSDictionary *indexFile in files) {
-        if (![indexFile isKindOfClass:[NSDictionary class]]) {
-            NSLog(@"[ModrinthAPI] Skipping invalid file entry");
-            pendingDownloads--;
-            downloader.progress.completedUnitCount++;
-            overallProgress.completedUnitCount++;
-            continue;
-        }
+    // Create a dispatch group for tracking completion
+    dispatch_group_t downloadGroup = dispatch_group_create();
+    
+    // Process files in batches to avoid overwhelming the system
+    NSInteger totalFiles = files.count;
+    NSInteger batchSize = 20; // Process 20 files at a time for better organization
+    
+    for (NSInteger batchStart = 0; batchStart < totalFiles; batchStart += batchSize) {
+        NSInteger batchEnd = MIN(batchStart + batchSize, totalFiles);
+        NSRange batchRange = NSMakeRange(batchStart, batchEnd - batchStart);
+        NSArray *batchFiles = [files subarrayWithRange:batchRange];
         
-        NSArray *downloadURLs = indexFile[@"downloads"];
-        if (!downloadURLs || ![downloadURLs isKindOfClass:[NSArray class]] || downloadURLs.count == 0) {
-            NSLog(@"[ModrinthAPI] File has no download URLs: %@", indexFile[@"path"]);
-            pendingDownloads--;
-            downloader.progress.completedUnitCount++;
-            overallProgress.completedUnitCount++;
-            continue;
-        }
-        
-        NSString *url = [downloadURLs firstObject];
-        NSString *sha = indexFile[@"hashes"][@"sha1"];
-        
-        // Ensure the path is correctly constructed relative to the destPath
-        NSString *relativePath = indexFile[@"path"];
-        NSString *path = [destPath stringByAppendingPathComponent:relativePath];
-        
-        NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
-        
-        // Create directory structure if needed
-        NSString *dirPath = [path stringByDeletingLastPathComponent];
-        [[NSFileManager defaultManager] createDirectoryAtPath:dirPath 
-                                 withIntermediateDirectories:YES 
-                                                  attributes:nil 
-                                                       error:nil];
-        
-        // Create a display name that includes more path information
-        NSString *displayName = [NSString stringWithFormat:@"Downloading %@", relativePath];
-        NSLog(@"[ModrinthAPI] Preparing to download: %@ to %@", displayName, path);
-        
-        // Create unique ID for tracking retries
-        NSString *downloadID = [NSString stringWithFormat:@"%@_%@", path.lastPathComponent, sha ?: @"nohash"];
-        
-        // Create success callback that decrements pending downloads and checks for completion
-        void(^fileSuccess)(void) = ^{
-            pendingDownloads--;
-            NSLog(@"[ModrinthAPI] Download completed: %@", relativePath);
-            
-            // Update the overall progress
-            overallProgress.completedUnitCount++;
-            
-            // If all downloads are complete, proceed to extraction
-            if (pendingDownloads == 0) {
-                [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+        // Process this batch of files
+        for (NSDictionary *indexFile in batchFiles) {
+            if (![indexFile isKindOfClass:[NSDictionary class]]) {
+                NSLog(@"[ModrinthAPI] Skipping invalid file entry");
+                
+                [self.downloadCountLock lock];
+                self.pendingModpackDownloads--;
+                [self.downloadCountLock unlock];
+                
+                downloader.progress.completedUnitCount++;
+                overallProgress.completedUnitCount++;
+                continue;
             }
-        };
-        
-        // Create failure callback that will retry the download once
-        void(^fileFailure)(NSError *error) = ^(NSError *error) {
-            // Check if this file has already been retried
-            NSMutableDictionary *retryMap = downloader.metadata[@"retryMap"];
-            NSNumber *retryCount = retryMap[downloadID];
             
-            if (!retryCount || retryCount.intValue < 1) {
-                // Log retry attempt
-                NSLog(@"[ModrinthAPI] Retrying download for %@ after failure: %@", relativePath, error.localizedDescription);
+            NSArray *downloadURLs = indexFile[@"downloads"];
+            if (!downloadURLs || ![downloadURLs isKindOfClass:[NSArray class]] || downloadURLs.count == 0) {
+                NSLog(@"[ModrinthAPI] File has no download URLs: %@", indexFile[@"path"]);
                 
-                // Mark this file as retried
-                retryMap[downloadID] = @(retryCount ? retryCount.intValue + 1 : 1);
+                [self.downloadCountLock lock];
+                self.pendingModpackDownloads--;
+                [self.downloadCountLock unlock];
                 
-                // Create a new download task with the same parameters
-                NSURLSessionDownloadTask *retryTask = [downloader createDownloadTask:url 
+                downloader.progress.completedUnitCount++;
+                overallProgress.completedUnitCount++;
+                continue;
+            }
+            
+            NSString *url = [downloadURLs firstObject];
+            NSString *sha = indexFile[@"hashes"][@"sha1"];
+            
+            // Ensure the path is correctly constructed relative to the destPath
+            NSString *relativePath = indexFile[@"path"];
+            NSString *path = [destPath stringByAppendingPathComponent:relativePath];
+            
+            NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
+            
+            // Create directory structure if needed
+            NSString *dirPath = [path stringByDeletingLastPathComponent];
+            [[NSFileManager defaultManager] createDirectoryAtPath:dirPath 
+                                     withIntermediateDirectories:YES 
+                                                      attributes:nil 
+                                                           error:nil];
+            
+            // Create a display name that includes more path information
+            NSString *displayName = [NSString stringWithFormat:@"Downloading %@", relativePath];
+            NSLog(@"[ModrinthAPI] Preparing to download: %@ to %@", displayName, path);
+            
+            // Create unique ID for tracking retries
+            NSString *downloadID = [NSString stringWithFormat:@"%@_%@", path.lastPathComponent, sha ?: @"nohash"];
+            
+            // Enter the download group for this file
+            dispatch_group_enter(downloadGroup);
+            
+            // Create success callback that decrements pending downloads
+            void(^fileSuccess)(void) = ^{
+                [self.downloadCountLock lock];
+                self.pendingModpackDownloads--;
+                NSInteger remaining = self.pendingModpackDownloads;
+                [self.downloadCountLock unlock];
+                
+                NSLog(@"[ModrinthAPI] Download completed: %@, %ld remaining", relativePath, (long)remaining);
+                
+                // Update the overall progress
+                overallProgress.completedUnitCount++;
+                
+                // Leave the download group for this file
+                dispatch_group_leave(downloadGroup);
+            };
+            
+            // Create failure callback that will retry the download once
+            void(^fileFailure)(NSError *error) = ^(NSError *error) {
+                // Check if this file has already been retried
+                NSMutableDictionary *retryMap = downloader.metadata[@"retryMap"];
+                NSNumber *retryCount = retryMap[downloadID];
+                
+                if (!retryCount || retryCount.intValue < 1) {
+                    // Log retry attempt
+                    NSLog(@"[ModrinthAPI] Retrying download for %@ after failure: %@", relativePath, error.localizedDescription);
+                    
+                    // Mark this file as retried
+                    retryMap[downloadID] = @(retryCount ? retryCount.intValue + 1 : 1);
+                    
+                    // Create a new download task with the same parameters
+                    NSURLSessionDownloadTask *retryTask = [downloader createDownloadTask:url 
                                                                                size:size 
                                                                                 sha:sha 
                                                                             altName:[NSString stringWithFormat:@"%@ (retry)", displayName]
                                                                              toPath:path 
                                                                             success:fileSuccess
                                                                             failure:^(NSError *retryError) {
-                    // If retry also fails, decrement pending count
-                    NSLog(@"[ModrinthAPI] Retry failed for %@: %@", relativePath, retryError.localizedDescription);
-                    pendingDownloads--;
+                        // If retry also fails, decrement pending count
+                        NSLog(@"[ModrinthAPI] Retry failed for %@: %@", relativePath, retryError.localizedDescription);
+                        
+                        [self.downloadCountLock lock];
+                        self.pendingModpackDownloads--;
+                        [self.downloadCountLock unlock];
+                        
+                        // Update the overall progress
+                        overallProgress.completedUnitCount++;
+                        
+                        // Leave the download group for this file
+                        dispatch_group_leave(downloadGroup);
+                    }];
                     
-                    // Update the overall progress
-                    overallProgress.completedUnitCount++;
-                    
-                    // If all downloads are complete (including failures), proceed
-                    if (pendingDownloads == 0) {
-                        [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
-                    }
-                }];
-                
-                if (retryTask) {
-                    [retryTask resume];
+                    // Task is automatically queued by createDownloadTask
                 } else {
-                    // If task creation fails, decrement pending count
-                    pendingDownloads--;
+                    // Already retried, decrement pending count
+                    [self.downloadCountLock lock];
+                    self.pendingModpackDownloads--;
+                    [self.downloadCountLock unlock];
+                    
                     overallProgress.completedUnitCount++;
                     
-                    // If all downloads are complete, proceed to extraction
-                    if (pendingDownloads == 0) {
-                        [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
-                    }
+                    // Leave the download group for this file
+                    dispatch_group_leave(downloadGroup);
                 }
-            } else {
-                // Already retried, decrement pending count
-                pendingDownloads--;
-                overallProgress.completedUnitCount++;
-                
-                // If all downloads are complete, proceed to extraction
-                if (pendingDownloads == 0) {
-                    [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
-                }
-            }
-        };
-        
-        NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
+            };
+            
+            NSURLSessionDownloadTask *task = [downloader createDownloadTask:url 
                                                                    size:size 
                                                                     sha:sha 
                                                                 altName:displayName 
                                                                  toPath:path 
                                                                 success:fileSuccess
                                                                 failure:fileFailure];
-        
-        if (task) {
-            // Add to file list with the unique display name
-            [downloader.fileList addObject:displayName];
-            [task resume];
-        } else if (!downloader.progress.cancelled) {
-            pendingDownloads--;
-            overallProgress.completedUnitCount++;
             
-            // If all downloads are complete, proceed to extraction
-            if (pendingDownloads == 0) {
-                [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+            if (!task && downloader.progress.cancelled) {
+                // If download was cancelled, leave the group now
+                dispatch_group_leave(downloadGroup);
+                return; // Exit the loop
+            } else if (!task) {
+                // If task creation failed but download wasn't cancelled, still leave the group
+                [self.downloadCountLock lock];
+                self.pendingModpackDownloads--;
+                [self.downloadCountLock unlock];
+                
+                overallProgress.completedUnitCount++;
+                dispatch_group_leave(downloadGroup);
             }
-        } else {
-            return; // cancelled
+            // NOTE: Tasks are now automatically queued and limited by MinecraftResourceDownloadTask
         }
     }
     
-    // If there were no downloads to process, proceed directly to extraction
-    if (pendingDownloads == 0) {
-        [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
-    }
+    // Wait for all downloads to complete with timeout
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(600 * NSEC_PER_SEC)); // 10 minute timeout
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Wait for all tasks to complete or timeout
+        long result = dispatch_group_wait(downloadGroup, timeout);
+        
+        if (result != 0) {
+            // Timeout - some downloads didn't complete in time
+            NSLog(@"[ModrinthAPI] Warning: Some downloads timed out, but continuing with extraction");
+        }
+        
+        // Proceed with extraction even if some downloads failed
+        if (!downloader.progress.cancelled) {
+            [self extractAndFinalizeModpack:downloader archive:archive indexDict:indexDict destPath:destPath packagePath:packagePath];
+        }
+    });
 }
 
 - (void)extractAndFinalizeModpack:(MinecraftResourceDownloadTask *)downloader 
@@ -659,14 +705,7 @@ extern void showDialog(NSString *title, NSString *message);
             [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
         }];
         
-        if (task) {
-            [task resume];
-        } else {
-            // If task couldn't be created but file exists, still finalize
-            jsonProgress.completedUnitCount = 100;
-            extractionProgress.completedUnitCount = 100;
-            [self finalizeModpackInstallation:downloader indexDict:indexDict depInfo:depInfo destPath:destPath];
-        }
+        // Task is automatically queued by createDownloadTask
     } else {
         // No JSON to download, so we can finalize immediately
         extractionProgress.completedUnitCount = 100;
