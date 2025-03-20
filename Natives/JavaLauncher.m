@@ -2,7 +2,6 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <libgen.h>
-#include <pthread.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,9 +40,6 @@ void init_loadDefaultEnv() {
 
     // Runs JVM in a separate thread
     setenv("HACK_IGNORE_START_ON_FIRST_THREAD", "1", 1);
-    
-    // Prevent excessive printing to stderr which can cause performance issues
-    setenv("JAVA_STDERR_REDIRECT", "/dev/null", 1);
 }
 
 void init_loadCustomEnv() {
@@ -90,68 +86,6 @@ void init_loadCustomJvmFlags(int* argc, const char** argv) {
 
         NSLog(@"[JavaLauncher] Added custom JVM flag: %s", argv[*argc]);
     }
-}
-
-NSString* getSelectedJavaHome(NSString *defaultJRETag, int minVersion) {
-    // First search java_runtimes directory in the current app bundle
-    NSArray<NSString *> *jrePaths = @[
-        [NSString stringWithFormat:@"%@/java_runtimes/java-%d-openjdk", NSBundle.mainBundle.bundlePath, minVersion],
-        [NSString stringWithFormat:@"%@/java_runtimes/java-21-openjdk", NSBundle.mainBundle.bundlePath],
-        [NSString stringWithFormat:@"%@/java_runtimes/java-17-openjdk", NSBundle.mainBundle.bundlePath],
-        [NSString stringWithFormat:@"%@/java_runtimes/java-8-openjdk", NSBundle.mainBundle.bundlePath]
-    ];
-    
-    // Logic to select the appropriate runtime based on tag and min version
-    if ([defaultJRETag isEqualToString:@"1_17_newer"]) {
-        // For MC 1.17+, try 17+ first
-        if (minVersion >= 21) {
-            for (NSString *path in jrePaths) {
-                if ([path containsString:@"21-openjdk"] && [fm fileExistsAtPath:path]) {
-                    return path;
-                }
-            }
-        }
-        
-        // Try Java 17
-        for (NSString *path in jrePaths) {
-            if ([path containsString:@"17-openjdk"] && [fm fileExistsAtPath:path]) {
-                return path;
-            }
-        }
-        
-        // Fallback to any JRE that meets the minimum version
-        for (NSString *path in jrePaths) {
-            if ([fm fileExistsAtPath:path]) {
-                NSInteger version = [[path componentsSeparatedByString:@"-openjdk"][0] componentsSeparatedByString:@"java-"][1].integerValue;
-                if (version >= minVersion) {
-                    return path;
-                }
-            }
-        }
-    } else if ([defaultJRETag isEqualToString:@"1_16_5_older"] || [defaultJRETag isEqualToString:@"execute_jar"]) {
-        // For MC 1.16.5 and older or jar execution, prefer Java 8
-        for (NSString *path in jrePaths) {
-            if ([path containsString:@"8-openjdk"] && [fm fileExistsAtPath:path]) {
-                return path;
-            }
-        }
-        
-        // Fallback to any JRE
-        for (NSString *path in jrePaths) {
-            if ([fm fileExistsAtPath:path]) {
-                return path;
-            }
-        }
-    }
-    
-    // If still not found, try one last time with any available runtime
-    for (NSString *path in jrePaths) {
-        if ([fm fileExistsAtPath:path]) {
-            return path;
-        }
-    }
-    
-    return nil;
 }
 
 int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
@@ -258,13 +192,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Dorg.lwjgl.system.allocator=system";
     //margv[++margc] = "-Dorg.lwjgl.util.NoChecks=true";
     margv[++margc] = "-Dlog4j2.formatMsgNoLookups=true";
-    
-    // Improve GC behavior to reduce pauses
-    margv[++margc] = "-XX:+UseG1GC";
-    margv[++margc] = "-XX:G1NewSizePercent=20";
-    margv[++margc] = "-XX:G1ReservePercent=20";
-    margv[++margc] = "-XX:MaxGCPauseMillis=50";
-    margv[++margc] = "-XX:G1HeapRegionSize=16M";
 
     // Preset OpenGL libname
     const char *glLibName = getenv("POJAV_RENDERER");
@@ -310,11 +237,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler";
     margv[++margc] = [NSString stringWithFormat:@"-Dcacio.managed.screensize=%dx%d", width, height].UTF8String;
     margv[++margc] = "-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel";
-    
-    // Garbage collection tuning to reduce stuttering
-    margv[++margc] = "-XX:+DisableExplicitGC";
-    margv[++margc] = "-XX:MaxDirectMemorySize=1G";
-    
     if (isJava8) {
         // Setup Caciocavallo
         margv[++margc] = "-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit";
@@ -344,10 +266,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED";
         margv[++margc] = "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED";
 
-        // For Java 17+, add settings to make Object-C interop more stable
-        margv[++margc] = "-XX:+UnlockDiagnosticVMOptions";
-        margv[++margc] = "-XX:+AbortVMOnException";
-        
         // TODO: workaround, will be removed once the startup part works without PLaunchApp
         margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
     }
@@ -419,70 +337,15 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
 
     // Free split VC
     tmpRootVC = nil;
-    
-    // Ensure we're properly capturing and processing JVM errors by installing signal handlers
-    // that can better detect and report JVM crashes or hangs
-    
-    // Create a child process for the JVM to isolate it
-    __block BOOL jvmStarted = NO;
-    
-    // Copy margc and create a copy of margv for the block
-    int blockMargc = margc;
-    const char **blockMargv = malloc((blockMargc + 1) * sizeof(char*));
-    for (int i = 0; i <= blockMargc; i++) {
-        // We need to make a copy of the strings too since they might be temporary
-        blockMargv[i] = strdup(margv[i]);
-    }
-    
-    // Run JVM launch on a separate thread
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        // Set thread priority to high and name (using pthread_setname_np is not portable)
-        pthread_t thread = pthread_self();
-        char threadName[] = "JVM_Launch_Thread";
-        
-        #if defined(__APPLE__) && defined(__MACH__)
-        // Only use pthread_setname_np on Apple platforms
-        pthread_setname_np(threadName);
-        #endif
-        
-        int threadResult = pJLI_Launch(blockMargc + 1, blockMargv,
-                       0, NULL, // sizeof(const_jargs) / sizeof(char *), const_jargs,
-                       0, NULL, // sizeof(const_appclasspath) / sizeof(char *), const_appclasspath,
-                       // These values are ignored in Java 17, so keep it anyways
-                       "1.8.0-internal",
-                       "1.8",
-    
-                       "java", "openjdk",
-                       /* (const_jargs != NULL) ? JNI_TRUE : */ JNI_FALSE,
-                       JNI_TRUE, JNI_FALSE, JNI_TRUE);
-                       
-        jvmStarted = YES;
-        
-        // Free the copied arguments
-        for (int i = 0; i <= blockMargc; i++) {
-            free((void*)blockMargv[i]);
-        }
-        free(blockMargv);
-        
-        // Log JVM exit
-        NSLog(@"[JavaLauncher] JVM process exited with result: %d", threadResult);
-    });
-    
-    // Wait a short time to ensure JVM starts properly
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        if (!jvmStarted) {
-            NSLog(@"[JavaLauncher] JVM may not have started properly, setting up watchdog...");
-            
-            // Set up a watchdog timer to detect if JVM hangs
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-                if (!jvmStarted) {
-                    NSLog(@"[JavaLauncher] JVM launch appears to be hanging, cleaning up...");
-                    // Handle cleanup if needed
-                }
-            });
-        }
-    });
-    
-    // Return a success indicator
-    return 0;
+
+    return pJLI_Launch(++margc, margv,
+                   0, NULL, // sizeof(const_jargs) / sizeof(char *), const_jargs,
+                   0, NULL, // sizeof(const_appclasspath) / sizeof(char *), const_appclasspath,
+                   // These values are ignored in Java 17, so keep it anyways
+                   "1.8.0-internal",
+                   "1.8",
+
+                   "java", "openjdk",
+                   /* (const_jargs != NULL) ? JNI_TRUE : */ JNI_FALSE,
+                   JNI_TRUE, JNI_FALSE, JNI_TRUE);
 }
