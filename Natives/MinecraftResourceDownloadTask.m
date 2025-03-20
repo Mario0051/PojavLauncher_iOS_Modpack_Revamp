@@ -250,6 +250,8 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
 }
 
+Fixed MinecraftResourceDownloadTask.m
+
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size {
     // Safety check for nil task
     if (!task) {
@@ -272,6 +274,9 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         return;
     }
     
+    // Mark this progress as tracked BEFORE adding it as a child to prevent race conditions
+    objc_setAssociatedObject(progress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
     NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
     progress.kind = NSProgressKindFile;
     progress.totalUnitCount = fileSize;
@@ -280,6 +285,9 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     // Create main progress if it doesn't exist yet
     if (!self.progress) {
         self.progress = [NSProgress progressWithTotalUnitCount:fileSize];
+    } else {
+        // Update the total unit count for the parent progress separately
+        self.progress.totalUnitCount += fileSize;
     }
     
     // Safely check if progress is cancelled
@@ -295,13 +303,9 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         // Try-catch to handle case where progress is already a child
         @try {
             [self.progress addChild:progress withPendingUnitCount:fileSize];
-            self.progress.totalUnitCount += fileSize;
-            
-            // Mark this progress as tracked to avoid double-adding
-            objc_setAssociatedObject(progress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } @catch (NSException *exception) {
             NSLog(@"[MCDL] Warning: Exception adding child progress: %@", exception);
-            // Don't rethrow the exception, just log it
+            // Just log the exception, don't rethrow
         }
     }
     
@@ -622,22 +626,11 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     // Create a clear display name for progress reporting
     NSString *displayName = [NSString stringWithFormat:@"Downloading modpack: %@", name];
     
-    // Set progress for the primary modpack download
-    @synchronized(self) {
-        self.progress.totalUnitCount = size > 0 ? size : 1000000; // Use reasonable placeholder if size unknown
-        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-    }
-    
-    // Add the package as the first item in the file list for UI reporting
-    [self.fileList addObject:displayName];
-    NSProgress *packageProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
-    [self.progressList addObject:packageProgress];
+    // We no longer create a separate packageProgress here - we'll rely entirely on the
+    // progress created by createDownloadTask to avoid duplicate progress tracking
     
     // Create a wrapped success callback that transitions to extraction phase
     void(^modpackSuccess)(void) = ^{
-        // Make sure progress is properly shown as complete for the download phase
-        packageProgress.completedUnitCount = packageProgress.totalUnitCount;
-        
         // Add placeholder progress for extraction phase - reset overall progress
         @synchronized(self) {
             self.progress.totalUnitCount = 1;
@@ -655,10 +648,8 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     void(^modpackFailure)(NSError *error) = ^(NSError *error) {
         NSLog(@"[MCDL] Failed to download modpack: %@. Retrying...", error.localizedDescription);
         
-        // Update file list to show retry attempt
+        // Add retry attempt to file list for UI visibility
         [self.fileList addObject:[NSString stringWithFormat:@"Retrying download for %@", name]];
-        NSProgress *retryProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
-        [self.progressList addObject:retryProgress];
         
         // Create a retry task
         NSURLSessionDownloadTask *retryTask = [self createDownloadTask:url 
@@ -673,8 +664,6 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         }];
         
         if (retryTask) {
-            // The retryTask's progress is already added to the parent progress by createDownloadTask
-            // so we don't need to call addDownloadTaskToProgress here
             [retryTask resume];
         } else {
             [self finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
