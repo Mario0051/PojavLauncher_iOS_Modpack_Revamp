@@ -14,11 +14,17 @@
 
 // Static key for objc association
 static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
+static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent downloads
 
 @interface MinecraftResourceDownloadTask ()
 @property(nonatomic, readwrite) AFURLSessionManager* manager;
 @property(nonatomic, strong) NSLock *progressLock; // Lock for synchronizing progress updates
 @property(nonatomic, strong) NSLock *fileListLock; // Lock for synchronizing file list updates
+@property(nonatomic, strong) dispatch_queue_t downloadQueue; // Serial queue for managing downloads
+@property(nonatomic, strong) NSMutableArray *pendingDownloads; // Queue of pending downloads
+@property(nonatomic, assign) NSInteger activeDownloads; // Track active downloads
+@property(nonatomic, strong) NSTimer *uiUpdateTimer; // Timer for batched UI updates
+@property(nonatomic, assign) BOOL needsUIUpdate; // Flag for pending UI updates
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -28,17 +34,25 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     if (self) {
         // Initialize with safer session configuration
         NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-        configuration.timeoutIntervalForRequest = 86400;
-        configuration.HTTPMaximumConnectionsPerHost = 6; // Limit concurrent connections
+        configuration.timeoutIntervalForRequest = 60; // Shorter default timeout
+        configuration.timeoutIntervalForResource = 300; // 5 minutes max for resource
+        configuration.HTTPMaximumConnectionsPerHost = kMaxConcurrentDownloads; // Limit concurrent connections
+        configuration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData; // Avoid cache issues
+        
         self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
         
         // Initialize collections with thread safety in mind
         self.fileList = [NSMutableArray new];
         self.progressList = [NSMutableArray new];
+        self.pendingDownloads = [NSMutableArray new];
+        self.activeDownloads = 0;
         
         // Initialize lock objects for thread safety
         self.progressLock = [[NSLock alloc] init];
         self.fileListLock = [[NSLock alloc] init];
+        
+        // Create serial queue for managing downloads
+        self.downloadQueue = dispatch_queue_create("net.kdt.pojavlauncher.downloadQueue", DISPATCH_QUEUE_SERIAL);
         
         // Initialize progress tracking
         self.progress = [NSProgress new];
@@ -49,8 +63,38 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         self.textProgress = [NSProgress new];
         self.textProgress.totalUnitCount = 0;
         self.textProgress.cancellable = YES;
+        
+        // Setup timer for batched UI updates
+        self.needsUIUpdate = NO;
+        self.uiUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:0.2 
+                                                             target:self 
+                                                           selector:@selector(processBatchedUIUpdates) 
+                                                           userInfo:nil 
+                                                            repeats:YES];
     }
     return self;
+}
+
+- (void)dealloc {
+    [self.uiUpdateTimer invalidate];
+    self.uiUpdateTimer = nil;
+}
+
+- (void)processBatchedUIUpdates {
+    if (!self.needsUIUpdate) return;
+    
+    // Send a notification for UI components to update
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter postNotificationName:@"DownloadProgressUpdated" object:self];
+        self.needsUIUpdate = NO;
+        
+        // Update text progress
+        [self.progressLock lock];
+        if (self.textProgress && self.progress) {
+            self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+        }
+        [self.progressLock unlock];
+    });
 }
 
 - (void)prepareForDownload {
@@ -71,6 +115,38 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     [self.fileList removeAllObjects];
     [self.progressList removeAllObjects];
     [self.fileListLock unlock];
+    
+    // Reset download tracking
+    @synchronized(self.pendingDownloads) {
+        [self.pendingDownloads removeAllObjects];
+        self.activeDownloads = 0;
+    }
+}
+
+- (void)processNextDownloadInQueue {
+    @synchronized(self.pendingDownloads) {
+        // Check if we're at the concurrency limit
+        if (self.activeDownloads >= kMaxConcurrentDownloads || self.pendingDownloads.count == 0) {
+            return;
+        }
+        
+        // Check if download was cancelled
+        if (self.progress.cancelled) {
+            return;
+        }
+        
+        // Get next download task
+        NSURLSessionDownloadTask *nextTask = [self.pendingDownloads firstObject];
+        if (nextTask) {
+            [self.pendingDownloads removeObjectAtIndex:0];
+            self.activeDownloads++;
+            
+            // Resume task on a background queue to not block the serial queue
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [nextTask resume];
+            });
+        }
+    }
 }
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
@@ -95,12 +171,18 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
             return nil;
         }
         
-        // Check if file already exists and has correct SHA1
+        // Check if file already exists and has correct SHA1 - with quick return
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
         
         if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+            // Optimization: Handle success callback on background thread
             if (success) {
-                success();
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    success();
+                });
+                
+                // Mark as needing UI update
+                self.needsUIUpdate = YES;
             }
             return nil;
         } else if (![self checkAccessWithDialog:YES]) {
@@ -110,7 +192,7 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         // Use filename as display name if no alternate name provided
         NSString *name = altName ?: path.lastPathComponent;
         
-        // Create URL request
+        // Create URL request with increased validity checks
         NSURL *requestURL = [NSURL URLWithString:url];
         if (!requestURL) {
             NSLog(@"[MCDL] Error: Invalid download URL format: %@", url);
@@ -131,9 +213,6 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         
         __block NSProgress *downloadProgress = nil;
         __block BOOL sizeUpdated = NO;
-        
-        // Log detailed file information for debugging
-        NSLog(@"[MCDL] Creating download task for %@, size: %lu, path: %@", name, (unsigned long)size, path);
         
         // Add to file list for UI tracking (before creating the task to avoid race conditions)
         [self.fileListLock lock];
@@ -171,22 +250,27 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         // Create download task with proper completion handling
         __weak typeof(self) weakSelf = self;
         NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull taskProgress) {
-            // Update progress for this specific task
-            if (taskProgress && downloadProgress) {
-                [weakSelf.progressLock lock];
+            // Throttle progress updates to reduce overhead - only update if significant change
+            static NSInteger lastReportedPercent = -1;
+            NSInteger currentPercent = (NSInteger)(taskProgress.fractionCompleted * 100);
+            
+            if (currentPercent != lastReportedPercent && currentPercent % 5 == 0) { // Update every 5%
+                lastReportedPercent = currentPercent;
                 
-                // Update completion amount with safeguards
-                CGFloat fraction = taskProgress.fractionCompleted;
-                if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
-                    downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
+                if (taskProgress && downloadProgress) {
+                    [weakSelf.progressLock lock];
                     
-                    // Also update text progress
-                    if (weakSelf.textProgress) {
-                        weakSelf.textProgress.completedUnitCount = weakSelf.progress.completedUnitCount;
+                    // Update completion amount with safeguards
+                    CGFloat fraction = taskProgress.fractionCompleted;
+                    if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
+                        downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
+                        
+                        // Flag for UI update instead of updating immediately
+                        weakSelf.needsUIUpdate = YES;
                     }
+                    
+                    [weakSelf.progressLock unlock];
                 }
-                
-                [weakSelf.progressLock unlock];
             }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
             NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
@@ -237,6 +321,15 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
             
             return [NSURL fileURLWithPath:path];
         } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
+            // Decrement active downloads count and process next download
+            @synchronized(weakSelf.pendingDownloads) {
+                weakSelf.activeDownloads--;
+                // Process next download on the serial queue
+                dispatch_async(weakSelf.downloadQueue, ^{
+                    [weakSelf processNextDownloadInQueue];
+                });
+            }
+            
             // Safely check if progress is cancelled
             BOOL isCancelled = NO;
             @try {
@@ -310,10 +403,8 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
                 [weakSelf.progressLock lock];
                 downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
                 
-                // Update text progress
-                if (weakSelf.textProgress) {
-                    weakSelf.textProgress.completedUnitCount = weakSelf.progress.completedUnitCount;
-                }
+                // Flag for UI update
+                weakSelf.needsUIUpdate = YES;
                 [weakSelf.progressLock unlock];
             } @catch (NSException *exception) {
                 [weakSelf.progressLock unlock];
@@ -325,6 +416,16 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
                 success();
             }
         }];
+
+        // Instead of immediately resuming, queue it for controlled execution
+        @synchronized(self.pendingDownloads) {
+            [self.pendingDownloads addObject:task];
+        }
+        
+        // Process the download queue on our serial queue
+        dispatch_async(self.downloadQueue, ^{
+            [self processNextDownloadInQueue];
+        });
 
         return task;
     }
@@ -416,6 +517,16 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     }
     
     [self.progressLock unlock];
+    
+    // Instead of immediately resuming, queue it for controlled execution
+    @synchronized(self.pendingDownloads) {
+        [self.pendingDownloads addObject:task];
+    }
+    
+    // Process the download queue
+    dispatch_async(self.downloadQueue, ^{
+        [self processNextDownloadInQueue];
+    });
 }
 
 - (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
@@ -437,6 +548,13 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     }
     
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
+    
+    // Clear pending downloads
+    @synchronized(self.pendingDownloads) {
+        [self.pendingDownloads removeAllObjects];
+        self.activeDownloads = 0;
+    }
+    
     showDialog(localize(@"Error", nil), error);
     if (self.handleError) {
         self.handleError();
@@ -541,40 +659,7 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
                 }
             }
             
-            // Start all download tasks in batches to avoid overwhelming the network
-            NSInteger batchSize = 10;
-            NSInteger totalTasks = libTasks.count + assetTasks.count;
-            
-            // Run batches in the background
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                // First process library tasks which are usually more important
-                for (NSInteger i = 0; i < libTasks.count; i += batchSize) {
-                    NSInteger end = MIN(i + batchSize, libTasks.count);
-                    for (NSInteger j = i; j < end; j++) {
-                        if (self.progress.cancelled) {
-                            return;
-                        }
-                        [(NSURLSessionDownloadTask *)libTasks[j] resume];
-                    }
-                    
-                    // Small delay between batches
-                    [NSThread sleepForTimeInterval:0.5];
-                }
-                
-                // Then process asset tasks
-                for (NSInteger i = 0; i < assetTasks.count; i += batchSize) {
-                    NSInteger end = MIN(i + batchSize, assetTasks.count);
-                    for (NSInteger j = i; j < end; j++) {
-                        if (self.progress.cancelled) {
-                            return;
-                        }
-                        [(NSURLSessionDownloadTask *)assetTasks[j] resume];
-                    }
-                    
-                    // Small delay between batches
-                    [NSThread sleepForTimeInterval:0.5];
-                }
-            });
+            // Tasks are now automatically queued and will be processed by the download queue
             
             // Clean up large metadata we don't need anymore
             [self.metadata removeObjectForKey:@"assetIndexObj"];
@@ -636,7 +721,10 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
 
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:versionStr toPath:path success:wrappedSuccess];
     if (task) {
-        [task resume];
+        // Task is automatically queued by createDownloadTask
+    } else {
+        // If no task was created, still call success
+        wrappedSuccess();
     }
 }
 
@@ -662,7 +750,7 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:wrappedSuccess];
     if (task) {
-        [task resume];
+        // Task is automatically queued by createDownloadTask
     } else {
         // If no task was created (file already exists), continue
         wrappedSuccess();
@@ -713,36 +801,74 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         return @[];
     }
     
-    for (NSString *name in assets[@"objects"]) {
-        NSDictionary *object = assets[@"objects"][name];
-        NSString *hash = object[@"hash"];
-        NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
-        NSUInteger size = [object[@"size"] unsignedLongLongValue];
+    // Create a secondary queue for processing asset entries to avoid blocking
+    dispatch_queue_t assetProcessingQueue = dispatch_queue_create("net.kdt.pojavlauncher.assetProcessingQueue", DISPATCH_QUEUE_CONCURRENT);
+    dispatch_group_t assetGroup = dispatch_group_create();
+    
+    // Process assets in batches for better performance
+    NSArray *assetNames = assets[@"objects"].allKeys;
+    NSInteger totalAssets = assetNames.count;
+    NSInteger batchSize = 100; // Process 100 assets at a time
+    
+    for (NSInteger startIndex = 0; startIndex < totalAssets; startIndex += batchSize) {
+        NSInteger endIndex = MIN(startIndex + batchSize, totalAssets);
+        NSRange batchRange = NSMakeRange(startIndex, endIndex - startIndex);
+        NSArray *batchNames = [assetNames subarrayWithRange:batchRange];
+        
+        // Process this batch concurrently
+        dispatch_group_enter(assetGroup);
+        dispatch_async(assetProcessingQueue, ^{
+            NSMutableArray *batchTasks = [NSMutableArray new];
+            
+            for (NSString *name in batchNames) {
+                if (self.progress.cancelled) {
+                    dispatch_group_leave(assetGroup);
+                    return;
+                }
+                
+                NSDictionary *object = assets[@"objects"][name];
+                NSString *hash = object[@"hash"];
+                NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
+                NSUInteger size = [object[@"size"] unsignedLongLongValue];
 
-        NSString *path;
-        if ([assets[@"map_to_resources"] boolValue]) {
-            path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
-        } else {
-            path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
-        }
+                NSString *path;
+                if ([assets[@"map_to_resources"] boolValue]) {
+                    path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
+                } else {
+                    path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
+                }
 
-        /* Special case for 1.19+
-         * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
-         * However, if an IOException occurs, it won't try to set.
-         * We skip downloading the icon file to workaround this. */
-        if ([name hasSuffix:@"/minecraft.icns"]) {
-            [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-            continue;
-        }
+                /* Special case for 1.19+
+                 * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
+                 * However, if an IOException occurs, it won't try to set.
+                 * We skip downloading the icon file to workaround this. */
+                if ([name hasSuffix:@"/minecraft.icns"]) {
+                    [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+                    continue;
+                }
 
-        NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil];
-        if (task) {
-            [tasks addObject:task];
-        } else if (self.progress.cancelled) {
-            return nil;
-        }
+                NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
+                NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil];
+                if (task) {
+                    [batchTasks addObject:task];
+                } else if (self.progress.cancelled) {
+                    dispatch_group_leave(assetGroup);
+                    return;
+                }
+            }
+            
+            // Add all tasks from this batch to the main tasks array
+            @synchronized(tasks) {
+                [tasks addObjectsFromArray:batchTasks];
+            }
+            
+            dispatch_group_leave(assetGroup);
+        });
     }
+    
+    // Wait for all batches to be processed
+    dispatch_group_wait(assetGroup, DISPATCH_TIME_FOREVER);
+    
     return tasks;
 }
 
@@ -817,7 +943,7 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         }];
         
         if (retryTask) {
-            [retryTask resume];
+            // Task is automatically queued by createDownloadTask
         } else {
             [weakSelf finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
         }
@@ -832,7 +958,7 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
                                                      failure:modpackFailure];
 
     if (task) {
-        [task resume];
+        // Task is automatically queued by createDownloadTask
     }
 }
 
