@@ -425,7 +425,7 @@
     }];
 }
 
-- (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
+- (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success {
     // Download base json
     NSString *versionStr = version[@"id"];
     if ([versionStr isEqualToString:@"latest-release"]) {
@@ -482,7 +482,7 @@
     }
 }
 
-- (void)downloadAssetMetadataWithSuccess:(void (^)())success {
+- (void)downloadAssetMetadataWithSuccess:(void (^)(void))success {
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
     if (!assetIndex) {
         success();
