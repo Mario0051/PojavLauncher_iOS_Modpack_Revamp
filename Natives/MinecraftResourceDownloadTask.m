@@ -250,8 +250,6 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
 }
 
-Fixed MinecraftResourceDownloadTask.m
-
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size {
     // Safety check for nil task
     if (!task) {
