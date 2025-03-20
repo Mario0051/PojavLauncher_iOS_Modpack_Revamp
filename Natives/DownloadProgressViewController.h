@@ -4,6 +4,11 @@
 @interface DownloadProgressViewController : UITableViewController
 @property MinecraftResourceDownloadTask* task;
 
+// Properties for download speed tracking
+@property (nonatomic, assign) int64_t lastBytesCompleted;
+@property (nonatomic, strong) NSDate *lastSpeedUpdateTime;
+@property (nonatomic, assign) double currentSpeed; // in bytes per second
+
 - (instancetype)initWithTask:(MinecraftResourceDownloadTask *)task;
 
 /**
