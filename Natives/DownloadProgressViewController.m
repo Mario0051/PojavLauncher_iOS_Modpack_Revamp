@@ -308,6 +308,10 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 }
 
 - (void)refreshProgressUI {
+    // Static variables for maintaining speed display between calls
+    static double lastNonZeroSpeed = 0;
+    static BOOL hasStartedDownloading = NO;
+    
     // Update overall progress for the header
     if (self.task.progress && self.task.progress.totalUnitCount > 0) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -343,15 +347,26 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             float fraction = self.task.progress.fractionCompleted;
             self.overallProgressView.progress = fraction;
             
-            // Format download speed
+            // Format download speed - always show speed once we've started downloading
             NSString *speedText = @"";
+            
+            // Keep showing speed even when current value is 0 (for slow periods)
             if (self.currentSpeed > 0) {
-                if (self.currentSpeed < 1024) {
-                    speedText = [NSString stringWithFormat:@" - %.0f B/s", self.currentSpeed];
-                } else if (self.currentSpeed < 1024 * 1024) {
-                    speedText = [NSString stringWithFormat:@" - %.1f KB/s", self.currentSpeed / 1024.0];
+                // Save the last non-zero speed
+                lastNonZeroSpeed = self.currentSpeed;
+                hasStartedDownloading = YES;
+            }
+            
+            // Format either current speed or last known non-zero speed
+            double speedToDisplay = (self.currentSpeed > 0) ? self.currentSpeed : lastNonZeroSpeed;
+            
+            if (hasStartedDownloading) {
+                if (speedToDisplay < 1024) {
+                    speedText = [NSString stringWithFormat:@" - %.0f B/s", speedToDisplay];
+                } else if (speedToDisplay < 1024 * 1024) {
+                    speedText = [NSString stringWithFormat:@" - %.1f KB/s", speedToDisplay / 1024.0];
                 } else {
-                    speedText = [NSString stringWithFormat:@" - %.2f MB/s", self.currentSpeed / (1024.0 * 1024.0)];
+                    speedText = [NSString stringWithFormat:@" - %.2f MB/s", speedToDisplay / (1024.0 * 1024.0)];
                 }
             }
             
@@ -361,7 +376,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             
             // Store last percentage to avoid unnecessary updates
             static int lastDisplayedPercentage = -1;
-            if (percentage != lastDisplayedPercentage || self.currentSpeed > 0) {
+            // Always update if percentage changed or if we need to show/update speed
+            if (percentage != lastDisplayedPercentage || hasStartedDownloading) {
                 lastDisplayedPercentage = percentage;
                 percentLabel.text = [NSString stringWithFormat:@"%d%%%@", percentage, speedText];
             }
@@ -414,6 +430,10 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Also check if progress is complete
     if (self.task.progress.fractionCompleted >= 1.0 || self.task.progress.finished) {
         isComplete = YES;
+        
+        // If complete, reset the download speed tracking
+        hasStartedDownloading = NO;
+        lastNonZeroSpeed = 0;
     }
     
     // If complete, ensure UI reflects this
