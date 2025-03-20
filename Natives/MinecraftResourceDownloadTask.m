@@ -684,6 +684,7 @@
                                                       toPath:packagePath 
                                                      success:modpackSuccess
                                                      failure:modpackFailure];
+
     if (task) {
         [task resume];
     }
