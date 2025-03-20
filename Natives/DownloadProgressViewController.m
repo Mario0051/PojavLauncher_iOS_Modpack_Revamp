@@ -24,6 +24,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 @property (nonatomic, strong) NSTimer *refreshTimer;
 @property (nonatomic, strong) NSMutableArray *filteredFileList;
 @property (nonatomic, strong) NSString *lastCompletedFile; // Track the most recently completed file
+@property (nonatomic, strong) NSSet *visibleIndexPaths; // Track visible cells for targeted updates
+@property (nonatomic, assign) BOOL needsFullTableReload; // Flag for tracking when full reload is needed
 @end
 
 @implementation DownloadProgressViewController
@@ -35,6 +37,14 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         self.cellProgressMap = [NSMutableDictionary dictionary];
         self.filteredFileList = [NSMutableArray array];
         self.lastCompletedFile = nil; // Initialize last completed file to nil
+        self.visibleIndexPaths = [NSSet set]; // Initialize with empty set
+        self.needsFullTableReload = NO;
+        
+        // Register for progress updates from MinecraftResourceDownloadTask
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(downloadProgressUpdated:)
+                                                     name:@"DownloadProgressUpdated"
+                                                   object:nil];
     }
     return self;
 }
@@ -43,6 +53,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Make sure we remove all observers when the view controller is deallocated
     [self.refreshTimer invalidate];
     self.refreshTimer = nil;
+    
+    // Remove update notification observer
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:@"DownloadProgressUpdated"
+                                                  object:nil];
     
     @try {
         [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
@@ -168,13 +183,13 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         self.overallProgressView.observedProgress = self.task.textProgress;
     }
     
-    // Setup a refresh timer to periodically update the UI
+    // Setup a refresh timer to periodically update the UI at a controlled rate
     // This helps with smoother updates when individual operations are taking a long time
     self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 
-                                                        target:self 
-                                                      selector:@selector(refreshProgressUI) 
-                                                      userInfo:nil 
-                                                       repeats:YES];
+                                                       target:self 
+                                                     selector:@selector(refreshProgressUI) 
+                                                     userInfo:nil 
+                                                      repeats:YES];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -196,6 +211,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     
     // Clear observed progress to avoid dangling references
     self.overallProgressView.observedProgress = nil;
+}
+
+- (void)downloadProgressUpdated:(NSNotification *)notification {
+    // Schedule a UI refresh on next timer cycle
+    self.needsFullTableReload = YES;
 }
 
 - (void)updateFilteredFileList {
@@ -274,17 +294,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     }];
 }
 
-- (void)reloadTableViewPreservingOffset {
-    // Save current scroll position
-    CGPoint contentOffset = self.tableView.contentOffset;
-    
-    // Reload data
-    [self.tableView reloadData];
-    
-    // Restore scroll position
-    [self.tableView setContentOffset:contentOffset animated:NO];
-}
-
 - (void)refreshProgressUI {
     // Update overall progress for the header
     if (self.task.progress && self.task.progress.totalUnitCount > 0) {
@@ -300,14 +309,22 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         });
     }
     
-    // Update the filtered file list
-    [self updateFilteredFileList];
-    
-    // Check for any new items that were added first
-    if (self.fileListCount != self.filteredFileList.count) {
-        self.fileListCount = self.filteredFileList.count;
-        [self reloadTableViewPreservingOffset];
-        return; // Don't proceed with other updates in the same refresh cycle
+    // Check if we need a full table reload
+    if (self.needsFullTableReload) {
+        // Update the filtered file list
+        [self updateFilteredFileList];
+        
+        // Check for any new items that were added first
+        if (self.fileListCount != self.filteredFileList.count) {
+            self.fileListCount = self.filteredFileList.count;
+            [self reloadTableViewPreservingOffset];
+            self.needsFullTableReload = NO;
+            return; // Don't proceed with other updates in the same refresh cycle
+        }
+        
+        // Update visible cells instead of reloading entire table
+        [self updateVisibleCells];
+        self.needsFullTableReload = NO;
     }
     
     // Update status label with most recently completed file
@@ -340,18 +357,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         isComplete = YES;
     }
     
-    // Force progress completion for extraction and setup tasks that may be stuck
-    if (isComplete) {
-        // Make a defensive copy to avoid mutation issues
-        NSArray *progressListCopy = [NSArray arrayWithArray:self.task.progressList];
-        for (NSInteger i = 0; i < progressListCopy.count; i++) {
-            NSProgress *progress = progressListCopy[i];
-            if (progress.fractionCompleted < 1.0) {
-                progress.completedUnitCount = progress.totalUnitCount;
-            }
-        }
-    }
-    
     // If complete, ensure UI reflects this
     if (isComplete && ![self.filteredFileList containsObject:@"Complete"] && ![self.task.fileList containsObject:@"Complete"]) {
         // Add completion marker if needed
@@ -361,7 +366,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         // Create completion progress
         NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
         completeProgress.completedUnitCount = 1;
-        completeProgress.kind = NSProgressKindFile;
         [self.task.progressList addObject:completeProgress];
         [self.task.progress addChild:completeProgress withPendingUnitCount:1];
         
@@ -369,18 +373,31 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         
         // Update status label for completion
         self.statusLabel.text = @"Download complete";
-    } else {
-        // Instead of reloading the entire table, update visible cells
-        [self updateVisibleCells];
     }
+}
+
+- (void)reloadTableViewPreservingOffset {
+    // Save current scroll position
+    CGPoint contentOffset = self.tableView.contentOffset;
+    
+    // Reload data
+    [self.tableView reloadData];
+    
+    // Restore scroll position
+    [self.tableView setContentOffset:contentOffset animated:NO];
 }
 
 // Helper method to update only visible cells to prevent flickering
 - (void)updateVisibleCells {
+    // Capture which cells are currently visible
     NSArray *visiblePaths = [self.tableView indexPathsForVisibleRows];
+    self.visibleIndexPaths = [NSSet setWithArray:visiblePaths];
+    
     for (NSIndexPath *indexPath in visiblePaths) {
         if (indexPath.row < self.filteredFileList.count) {
             UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+            if (!cell) continue;
+            
             NSString *fileName = self.filteredFileList[indexPath.row];
             NSUInteger originalIndex = [self.task.fileList indexOfObject:fileName];
             
@@ -566,6 +583,15 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         UITableViewCell *cell = objc_getAssociatedObject(progress, @"cell");
         if (!cell) return;
         
+        // Cap updates to avoid UI thrashing
+        static NSTimeInterval lastCellUpdate = 0;
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if (now - lastCellUpdate < 0.1) {
+            // Throttle updates to max 10 per second
+            return;
+        }
+        lastCellUpdate = now;
+        
         // Handle cell progress updates on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
             // Check if view controller is still active - guard against accessing deallocated objects
@@ -594,7 +620,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 // Only update if we found the file in our filtered list and the cell is visible
                 if (filteredIndex != NSNotFound) {
                     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:filteredIndex inSection:0];
-                    if ([self.tableView.indexPathsForVisibleRows containsObject:indexPath]) {
+                    if ([self.visibleIndexPaths containsObject:indexPath]) {
                         UITableViewCell *visibleCell = [self.tableView cellForRowAtIndexPath:indexPath];
                         [self updateCell:visibleCell withProgress:progress forIndexPath:indexPath];
                     }
@@ -602,6 +628,15 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             }
         });
     } else if (context == TotalProgressObserverContext) {
+        // Cap update rate
+        static NSTimeInterval lastHeaderUpdate = 0;
+        NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+        if (now - lastHeaderUpdate < 0.2) {
+            // Throttle updates to max 5 per second for header
+            return;
+        }
+        lastHeaderUpdate = now;
+        
         dispatch_async(dispatch_get_main_queue(), ^{
             // Check if view controller is still active - guard against accessing deallocated objects
             if (!self.view.window) return;
@@ -612,14 +647,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             int percentage = (int)(progress.fractionCompleted * 100);
             percentLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
             
-            // Check if we need to update the filtered list
-            [self updateFilteredFileList];
-            
-            // Check if file list count changed - use our own method to maintain scroll position
-            if (self.fileListCount != self.filteredFileList.count) {
-                [self reloadTableViewPreservingOffset];
-                self.fileListCount = self.filteredFileList.count;
-            }
+            // Signal need for a filtered list update
+            self.needsFullTableReload = YES;
             
             // Check for completion
             if (progress.fractionCompleted >= 1.0) {
@@ -635,6 +664,15 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     } else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     }
+}
+
+#pragma mark - UIScrollViewDelegate
+
+// Override to track visible cells whenever scroll position changes
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    // Update visible index paths on scroll
+    NSArray *visiblePaths = [self.tableView indexPathsForVisibleRows];
+    self.visibleIndexPaths = [NSSet setWithArray:visiblePaths];
 }
 
 #pragma mark - Table View Data Source
@@ -709,7 +747,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 // Ignore if not already observing
             }
             
-            // Start observing
+            // Start observing with reduced frequency
             @try {
                 [progress addObserver:self
                            forKeyPath:@"fractionCompleted"
