@@ -40,6 +40,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         self.visibleIndexPaths = [NSSet set]; // Initialize with empty set
         self.needsFullTableReload = NO;
         
+        // Initialize download speed tracking properties
+        self.lastBytesCompleted = 0;
+        self.lastSpeedUpdateTime = nil;
+        self.currentSpeed = 0;
+        
         // Register for progress updates from MinecraftResourceDownloadTask
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(downloadProgressUpdated:)
@@ -106,7 +111,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     _overallProgressView.clipsToBounds = YES;
     [headerContainer addSubview:_overallProgressView];
     
-    // Percentage label
+    // Percentage label with space for download speed
     UILabel *percentLabel = [[UILabel alloc] init];
     percentLabel.translatesAutoresizingMaskIntoConstraints = NO;
     percentLabel.font = [UIFont systemFontOfSize:12];
@@ -135,7 +140,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         [_overallProgressView.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
         [_overallProgressView.heightAnchor constraintEqualToConstant:4],
         
-        // Percentage Label
+        // Percentage Label - make it wider to accommodate download speed display
         [percentLabel.topAnchor constraintEqualToAnchor:_overallProgressView.bottomAnchor constant:4],
         [percentLabel.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor constant:16],
         [percentLabel.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
@@ -183,6 +188,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         self.overallProgressView.observedProgress = self.task.textProgress;
     }
     
+    // Reset speed tracking values when view appears
+    self.lastBytesCompleted = self.task.progress.completedUnitCount;
+    self.lastSpeedUpdateTime = [NSDate date];
+    self.currentSpeed = 0;
+    
     // Setup a refresh timer to periodically update the UI at a controlled rate
     // This helps with smoother updates when individual operations are taking a long time
     self.refreshTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 
@@ -190,6 +200,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                                                      selector:@selector(refreshProgressUI) 
                                                      userInfo:nil 
                                                       repeats:YES];
+    
+    // Run the timer on a common mode to ensure updates when scrolling
+    [[NSRunLoop currentRunLoop] addTimer:self.refreshTimer forMode:NSRunLoopCommonModes];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -298,14 +311,60 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Update overall progress for the header
     if (self.task.progress && self.task.progress.totalUnitCount > 0) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Update overall progress
+            // Calculate download speed
+            NSDate *now = [NSDate date];
+            
+            if (self.lastSpeedUpdateTime) {
+                // Get the time interval since the last update
+                NSTimeInterval interval = [now timeIntervalSinceDate:self.lastSpeedUpdateTime];
+                
+                if (interval >= 0.5) { // Only update speed every 0.5 seconds to avoid fluctuations
+                    int64_t currentBytesCompleted = self.task.progress.completedUnitCount;
+                    int64_t bytesDownloadedSinceLastUpdate = currentBytesCompleted - self.lastBytesCompleted;
+                    
+                    // Only update if we've actually downloaded something
+                    if (bytesDownloadedSinceLastUpdate > 0) {
+                        // Calculate speed in bytes per second
+                        self.currentSpeed = (double)bytesDownloadedSinceLastUpdate / interval;
+                        
+                        // Store current values for next calculation
+                        self.lastBytesCompleted = currentBytesCompleted;
+                        self.lastSpeedUpdateTime = now;
+                    }
+                }
+            } else {
+                // First time updating, initialize tracking values
+                self.lastBytesCompleted = self.task.progress.completedUnitCount;
+                self.lastSpeedUpdateTime = now;
+                self.currentSpeed = 0;
+            }
+            
+            // Update overall progress with stable value
             float fraction = self.task.progress.fractionCompleted;
             self.overallProgressView.progress = fraction;
             
-            // Update percentage label
+            // Format download speed
+            NSString *speedText = @"";
+            if (self.currentSpeed > 0) {
+                if (self.currentSpeed < 1024) {
+                    speedText = [NSString stringWithFormat:@" - %.0f B/s", self.currentSpeed];
+                } else if (self.currentSpeed < 1024 * 1024) {
+                    speedText = [NSString stringWithFormat:@" - %.1f KB/s", self.currentSpeed / 1024.0];
+                } else {
+                    speedText = [NSString stringWithFormat:@" - %.2f MB/s", self.currentSpeed / (1024.0 * 1024.0)];
+                }
+            }
+            
+            // Update percentage label with speed
             UILabel *percentLabel = objc_getAssociatedObject(self.overallProgressView, @"percentLabel");
             int percentage = (int)(fraction * 100);
-            percentLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+            
+            // Store last percentage to avoid unnecessary updates
+            static int lastDisplayedPercentage = -1;
+            if (percentage != lastDisplayedPercentage || self.currentSpeed > 0) {
+                lastDisplayedPercentage = percentage;
+                percentLabel.text = [NSString stringWithFormat:@"%d%%%@", percentage, speedText];
+            }
         });
     }
     
@@ -513,16 +572,31 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             cell.accessoryView = progressLabel;
         }
         
+        // Associate a stored percentage value with the cell to avoid flickering
+        NSNumber *storedPercent = objc_getAssociatedObject(cell, @"lastPercentage");
+        int lastPercent = storedPercent ? [storedPercent intValue] : -1;
+        
         // Check if we have valid progress information
         if (progress.totalUnitCount > 0 && progress.completedUnitCount <= progress.totalUnitCount) {
             int percentage = (int)(progress.fractionCompleted * 100);
-            progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+            
+            // Only update the percentage text if it has changed by at least 1%
+            if (lastPercent != percentage) {
+                progressLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
+                objc_setAssociatedObject(cell, @"lastPercentage", @(percentage), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
         } else if (progress.completedUnitCount > 0) {
             // Handle the case where completedUnitCount > totalUnitCount (placeholder value case)
             int estimatedPercentage = (int)((progress.completedUnitCount / (progress.completedUnitCount + 1000000)) * 100);
-            progressLabel.text = [NSString stringWithFormat:@"~%d%%", estimatedPercentage];
-        } else {
+            
+            // Only update if percentage has changed
+            if (lastPercent != estimatedPercentage) {
+                progressLabel.text = [NSString stringWithFormat:@"~%d%%", estimatedPercentage];
+                objc_setAssociatedObject(cell, @"lastPercentage", @(estimatedPercentage), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+        } else if (lastPercent != 0) {
             progressLabel.text = @"0%";
+            objc_setAssociatedObject(cell, @"lastPercentage", @(0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     }
 }
@@ -628,39 +702,51 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             }
         });
     } else if (context == TotalProgressObserverContext) {
-        // Cap update rate
+        // Cap update rate and store last values to prevent flickering
         static NSTimeInterval lastHeaderUpdate = 0;
+        static int64_t lastCompletedBytes = 0;
+        static int lastPercentage = -1;
+        
         NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
         if (now - lastHeaderUpdate < 0.2) {
             // Throttle updates to max 5 per second for header
             return;
         }
-        lastHeaderUpdate = now;
         
-        dispatch_async(dispatch_get_main_queue(), ^{
-            // Check if view controller is still active - guard against accessing deallocated objects
-            if (!self.view.window) return;
+        // Get current values before update to prevent race conditions
+        int64_t currentCompletedBytes = progress.completedUnitCount;
+        int currentPercentage = (int)(progress.fractionCompleted * 100);
+        
+        // Only update if there is a meaningful change
+        if (currentCompletedBytes != lastCompletedBytes || currentPercentage != lastPercentage) {
+            lastHeaderUpdate = now;
+            lastCompletedBytes = currentCompletedBytes;
+            lastPercentage = currentPercentage;
             
-            // Update overall progress bar (handled by observed progress now)
-            // and percentage label
-            UILabel *percentLabel = objc_getAssociatedObject(self.overallProgressView, @"percentLabel");
-            int percentage = (int)(progress.fractionCompleted * 100);
-            percentLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
-            
-            // Signal need for a filtered list update
-            self.needsFullTableReload = YES;
-            
-            // Check for completion
-            if (progress.fractionCompleted >= 1.0) {
-                // Add a completion message if needed - without reloading table if possible
-                if (![self.filteredFileList containsObject:@"Complete"] && ![self.task.fileList containsObject:@"Complete"]) {
-                    [self.task.fileList addObject:@"Complete"];
-                    [self updateFilteredFileList]; // This will add Complete to filteredFileList
-                    [self reloadTableViewPreservingOffset];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // Check if view controller is still active - guard against accessing deallocated objects
+                if (!self.view.window) return;
+                
+                // Update overall progress bar (handled by observed progress now)
+                // and percentage label
+                UILabel *percentLabel = objc_getAssociatedObject(self.overallProgressView, @"percentLabel");
+                percentLabel.text = [NSString stringWithFormat:@"%d%%", currentPercentage];
+                
+                // Signal need for a filtered list update
+                self.needsFullTableReload = YES;
+                
+                // Check for completion
+                if (progress.fractionCompleted >= 1.0) {
+                    // Add a completion message if needed - without reloading table if possible
+                    if (![self.filteredFileList containsObject:@"Complete"] && ![self.task.fileList containsObject:@"Complete"]) {
+                        [self.task.fileList addObject:@"Complete"];
+                        [self updateFilteredFileList]; // This will add Complete to filteredFileList
+                        [self reloadTableViewPreservingOffset];
+                    }
+                    self.statusLabel.text = @"Download complete";
                 }
-                self.statusLabel.text = @"Download complete";
-            }
-        });
+            });
+        }
     } else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     }
