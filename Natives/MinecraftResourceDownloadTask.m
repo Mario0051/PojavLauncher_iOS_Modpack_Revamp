@@ -17,49 +17,60 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
 
 @interface MinecraftResourceDownloadTask ()
 @property(nonatomic, readwrite) AFURLSessionManager* manager;
+@property(nonatomic, strong) NSLock *progressLock; // Lock for synchronizing progress updates
+@property(nonatomic, strong) NSLock *fileListLock; // Lock for synchronizing file list updates
 @end
 
 @implementation MinecraftResourceDownloadTask
 
 - (instancetype)init {
     self = [super init];
-    // TODO: implement background download
-    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-    configuration.timeoutIntervalForRequest = 86400;
-    //backgroundSessionConfigurationWithIdentifier:@"net.kdt.pojavlauncher.downloadtask"];
-    self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
-    self.fileList = [NSMutableArray new];
-    self.progressList = [NSMutableArray new];
-    
-    // Initialize progress tracking
-    self.progress = [NSProgress new];
-    self.progress.totalUnitCount = 0;
-    self.progress.cancellable = YES;
-    
-    // Initialize text progress for UI updates
-    self.textProgress = [NSProgress new];
-    self.textProgress.totalUnitCount = 0;
-    self.textProgress.cancellable = YES;
-    
+    if (self) {
+        // Initialize with safer session configuration
+        NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+        configuration.timeoutIntervalForRequest = 86400;
+        configuration.HTTPMaximumConnectionsPerHost = 6; // Limit concurrent connections
+        self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
+        
+        // Initialize collections with thread safety in mind
+        self.fileList = [NSMutableArray new];
+        self.progressList = [NSMutableArray new];
+        
+        // Initialize lock objects for thread safety
+        self.progressLock = [[NSLock alloc] init];
+        self.fileListLock = [[NSLock alloc] init];
+        
+        // Initialize progress tracking
+        self.progress = [NSProgress new];
+        self.progress.totalUnitCount = 0;
+        self.progress.cancellable = YES;
+        
+        // Initialize text progress for UI updates
+        self.textProgress = [NSProgress new];
+        self.textProgress.totalUnitCount = 0;
+        self.textProgress.cancellable = YES;
+    }
     return self;
 }
 
 - (void)prepareForDownload {
-    @synchronized(self) {
-        // Reset progress tracking
-        self.progress = [NSProgress new];
-        self.progress.totalUnitCount = 0; // Start with 0 and add as we go
-        self.progress.cancellable = YES;
-        
-        // Reset text progress for UI
-        self.textProgress = [NSProgress new];
-        self.textProgress.totalUnitCount = 0;
-        self.textProgress.cancellable = YES;
-        
-        // Reset tracking lists
-        [self.fileList removeAllObjects];
-        [self.progressList removeAllObjects];
-    }
+    [self.progressLock lock];
+    // Reset progress tracking
+    self.progress = [NSProgress new];
+    self.progress.totalUnitCount = 0; // Start with 0 and add as we go
+    self.progress.cancellable = YES;
+    
+    // Reset text progress for UI
+    self.textProgress = [NSProgress new];
+    self.textProgress.totalUnitCount = 0;
+    self.textProgress.cancellable = YES;
+    [self.progressLock unlock];
+    
+    // Reset tracking lists
+    [self.fileListLock lock];
+    [self.fileList removeAllObjects];
+    [self.progressList removeAllObjects];
+    [self.fileListLock unlock];
 }
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
@@ -69,126 +80,202 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
                                          toPath:(NSString *)path 
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure {
-    // Check if file already exists and has correct SHA1
-    BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    
-    if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
-        if (success) {
-            success();
-        }
-        return nil;
-    } else if (![self checkAccessWithDialog:YES]) {
-        return nil;
-    }
-
-    // Use filename as display name if no alternate name provided
-    NSString *name = altName ?: path.lastPathComponent;
-    
-    // Create URL request
-    NSURL *requestURL = [NSURL URLWithString:url];
-    if (!requestURL) {
-        NSLog(@"[MCDL] Error: Invalid download URL: %@", url);
-        NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
+    @autoreleasepool {
+        // Safety check for invalid URL
+        if (!url || url.length == 0) {
+            NSLog(@"[MCDL] Error: Invalid or empty download URL");
+            NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
                                                 code:1001 
                                             userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL"}];
-        if (failure) {
-            failure(urlError);
-        } else {
-            [self finishDownloadWithErrorString:@"Invalid download URL"];
+            if (failure) {
+                failure(urlError);
+            } else {
+                [self finishDownloadWithErrorString:@"Invalid download URL"];
+            }
+            return nil;
         }
-        return nil;
-    }
-    
-    NSURLRequest *request = [NSURLRequest requestWithURL:requestURL];
-    __block NSProgress *progress;
-    __block BOOL sizeUpdated = NO;
-    
-    // Log detailed file information for debugging
-    NSLog(@"[MCDL] Creating download task for %@, size: %lu, path: %@", name, (unsigned long)size, path);
-    
-    // Create download task with proper completion handling
-    __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
-    destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-        NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
         
-        // Get progress for this task
-        progress = [self.manager downloadProgressForTask:task];
-        if (!progress) {
-            NSLog(@"[MCDL] Warning: Could not get progress for download task %@, creating a new one", name);
-            progress = [NSProgress progressWithTotalUnitCount:1];
+        // Check if file already exists and has correct SHA1
+        BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
+        
+        if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+            if (success) {
+                success();
+            }
+            return nil;
+        } else if (![self checkAccessWithDialog:YES]) {
+            return nil;
         }
 
-        // Add to progress tracking with size information
-        if (size > 0) {
-            [self addDownloadTaskToProgress:task size:size];
-            [self.fileList addObject:name];
-        } 
-        // If no size provided, but response has size info
-        else if (response.expectedContentLength > 0) {
-            NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
-            [self addDownloadTaskToProgress:task size:actualSize];
-            [self.fileList addObject:name];
-            sizeUpdated = YES;
-            NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
-        }
-        // If still no size, use a minimum value but we'll update it later
-        else {
-            [self addDownloadTaskToProgress:task size:1000000]; // Use 1MB as placeholder
-            [self.fileList addObject:name];
-            NSLog(@"[MCDL] No size available for %@, using placeholder", name);
+        // Use filename as display name if no alternate name provided
+        NSString *name = altName ?: path.lastPathComponent;
+        
+        // Create URL request
+        NSURL *requestURL = [NSURL URLWithString:url];
+        if (!requestURL) {
+            NSLog(@"[MCDL] Error: Invalid download URL format: %@", url);
+            NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
+                                                code:1001 
+                                            userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL format"}];
+            if (failure) {
+                failure(urlError);
+            } else {
+                [self finishDownloadWithErrorString:@"Invalid download URL format"];
+            }
+            return nil;
         }
         
-        // Create directory structure if needed
-        NSError *dirError;
-        BOOL success = [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent 
+        NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:requestURL];
+        request.timeoutInterval = 60; // Set a reasonable timeout
+        request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData; // Avoid cache issues
+        
+        __block NSProgress *downloadProgress = nil;
+        __block BOOL sizeUpdated = NO;
+        
+        // Log detailed file information for debugging
+        NSLog(@"[MCDL] Creating download task for %@, size: %lu, path: %@", name, (unsigned long)size, path);
+        
+        // Add to file list for UI tracking (before creating the task to avoid race conditions)
+        [self.fileListLock lock];
+        [self.fileList addObject:name];
+        [self.fileListLock unlock];
+        
+        // Create a progress object for this download before the task is created
+        downloadProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
+        downloadProgress.kind = NSProgressKindFile;
+        
+        // Add this progress to our tracking list
+        [self.progressLock lock];
+        [self.progressList addObject:downloadProgress];
+        
+        // Update overall progress total
+        if (!self.progress) {
+            self.progress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
+        } else {
+            self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+        }
+        
+        if (!self.textProgress) {
+            self.textProgress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
+        } else {
+            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+        }
+        
+        // Add the progress as a child to our overall progress
+        [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
+        [self.progressLock unlock];
+        
+        // Mark the progress object as tracked by this task
+        objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        
+        // Create download task with proper completion handling
+        __weak typeof(self) weakSelf = self;
+        NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull taskProgress) {
+            // Update progress for this specific task
+            if (taskProgress && downloadProgress) {
+                [weakSelf.progressLock lock];
+                
+                // Update completion amount with safeguards
+                CGFloat fraction = taskProgress.fractionCompleted;
+                if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
+                    downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
+                    
+                    // Also update text progress
+                    if (weakSelf.textProgress) {
+                        weakSelf.textProgress.completedUnitCount = weakSelf.progress.completedUnitCount;
+                    }
+                }
+                
+                [weakSelf.progressLock unlock];
+            }
+        } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
+            NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
+            
+            // If size wasn't provided but response has size info, update progress
+            if (size == 0 && response.expectedContentLength > 0) {
+                NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
+                [weakSelf.progressLock lock];
+                
+                // Update progress size and overall progress total
+                NSUInteger oldSize = downloadProgress.totalUnitCount;
+                downloadProgress.totalUnitCount = actualSize;
+                
+                // Update parent progress total
+                if (weakSelf.progress) {
+                    weakSelf.progress.totalUnitCount = weakSelf.progress.totalUnitCount - oldSize + actualSize;
+                }
+                
+                if (weakSelf.textProgress) {
+                    weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
+                }
+                
+                sizeUpdated = YES;
+                [weakSelf.progressLock unlock];
+                
+                NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
+            }
+            
+            // Create directory structure if needed
+            NSError *dirError;
+            NSString *dirPath = [path stringByDeletingLastPathComponent];
+            BOOL success = [NSFileManager.defaultManager createDirectoryAtPath:dirPath 
                                                 withIntermediateDirectories:YES 
                                                                  attributes:nil 
                                                                       error:&dirError];
-        if (!success) {
-            NSLog(@"[MCDL] Warning: Could not create directory for %@: %@", name, dirError.localizedDescription);
-        }
-        
-        // Remove existing file if it exists
-        if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
-            NSError *removeError;
-            [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
-            if (removeError) {
-                NSLog(@"[MCDL] Warning: Could not remove existing file %@: %@", path, removeError.localizedDescription);
+            if (!success) {
+                NSLog(@"[MCDL] Warning: Could not create directory for %@: %@", name, dirError.localizedDescription);
             }
-        }
-        
-        return [NSURL fileURLWithPath:path];
-    } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
-        // Safely check if progress is cancelled
-        BOOL isCancelled = NO;
-        @try {
-            isCancelled = self.progress.cancelled;
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
-            isCancelled = NO;
-        }
-        
-        if (isCancelled) {
-            // Ignore any further errors when cancelled
-        } else if (error != nil) {
-            NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
-            if (failure) {
-                failure(error);
-            } else {
-                [self finishDownloadWithError:error file:name];
+            
+            // Remove existing file if it exists
+            if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
+                NSError *removeError;
+                [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
+                if (removeError) {
+                    NSLog(@"[MCDL] Warning: Could not remove existing file %@: %@", path, removeError.localizedDescription);
+                }
             }
-        } else if (![self checkSHA:sha forFile:path altName:altName]) {
-            NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
+            
+            return [NSURL fileURLWithPath:path];
+        } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
+            // Safely check if progress is cancelled
+            BOOL isCancelled = NO;
+            @try {
+                isCancelled = weakSelf.progress.cancelled;
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
+                isCancelled = NO;
+            }
+            
+            if (isCancelled) {
+                // Ignore any further errors when cancelled
+                NSLog(@"[MCDL] Download cancelled for %@", name);
+                return;
+            } 
+            
+            if (error != nil) {
+                NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
+                if (failure) {
+                    failure(error);
+                } else {
+                    [weakSelf finishDownloadWithError:error file:name];
+                }
+                return;
+            }
+            
+            if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
+                NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
                                                     code:1000 
                                                 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
-            if (failure) {
-                failure(shaError);
-            } else {
-                [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+                if (failure) {
+                    failure(shaError);
+                } else {
+                    [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+                }
+                return;
             }
-        } else {
+            
             // If we didn't have an accurate size initially and didn't update it from the response
-            if (!sizeUpdated && size == 0 && progress) {
+            if (!sizeUpdated && size == 0 && downloadProgress) {
                 // Get the actual file size for more accurate progress reporting
                 NSError *fileError;
                 NSDictionary *fileAttrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&fileError];
@@ -198,17 +285,21 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
                     
                     // Update progress with actual file size - safely
                     @try {
-                        if (fileSize > 0 && fileSize != progress.totalUnitCount && self.progress) {
+                        [weakSelf.progressLock lock];
+                        if (fileSize > 0 && fileSize != downloadProgress.totalUnitCount && weakSelf.progress) {
                             // Add the difference to total progress
-                            self.progress.totalUnitCount += (fileSize - progress.totalUnitCount);
+                            NSUInteger oldSize = downloadProgress.totalUnitCount;
+                            weakSelf.progress.totalUnitCount += (fileSize - oldSize);
                             
-                            if (self.textProgress) {
-                                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                            if (weakSelf.textProgress) {
+                                weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
                             }
                             
-                            progress.totalUnitCount = fileSize;
+                            downloadProgress.totalUnitCount = fileSize;
                         }
+                        [weakSelf.progressLock unlock];
                     } @catch (NSException *exception) {
+                        [weakSelf.progressLock unlock];
                         NSLog(@"[MCDL] Warning: Exception updating progress size: %@", exception);
                     }
                 }
@@ -216,8 +307,16 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
             
             // Ensure progress is marked as complete
             @try {
-                progress.completedUnitCount = progress.totalUnitCount;
+                [weakSelf.progressLock lock];
+                downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
+                
+                // Update text progress
+                if (weakSelf.textProgress) {
+                    weakSelf.textProgress.completedUnitCount = weakSelf.progress.completedUnitCount;
+                }
+                [weakSelf.progressLock unlock];
             } @catch (NSException *exception) {
+                [weakSelf.progressLock unlock];
                 NSLog(@"[MCDL] Warning: Exception setting progress as complete: %@", exception);
             }
             
@@ -225,10 +324,10 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
             if (success) {
                 success();
             }
-        }
-    }];
+        }];
 
-    return task;
+        return task;
+    }
 }
 
 // Compatibility method that calls the full version without failure callback
@@ -275,6 +374,8 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     // Mark this progress as tracked BEFORE adding it as a child to prevent race conditions
     objc_setAssociatedObject(progress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     
+    [self.progressLock lock];
+    
     NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
     progress.kind = NSProgressKindFile;
     progress.totalUnitCount = fileSize;
@@ -286,6 +387,13 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     } else {
         // Update the total unit count for the parent progress separately
         self.progress.totalUnitCount += fileSize;
+    }
+    
+    // Also update text progress
+    if (!self.textProgress) {
+        self.textProgress = [NSProgress progressWithTotalUnitCount:fileSize];
+    } else {
+        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
     }
     
     // Safely check if progress is cancelled
@@ -307,11 +415,7 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         }
     }
     
-    // Simplify the text progress - only track fractionCompleted
-    if (!self.textProgress) {
-        self.textProgress = [NSProgress progressWithTotalUnitCount:1];
-    }
-    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+    [self.progressLock unlock];
 }
 
 - (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
@@ -323,8 +427,12 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
 - (void)finishDownloadWithErrorString:(NSString *)error {
     // Safely cancel progress
     @try {
+        [self.progressLock lock];
         [self.progress cancel];
+        [self.textProgress cancel];
+        [self.progressLock unlock];
     } @catch (NSException *exception) {
+        [self.progressLock unlock];
         NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
     }
     
@@ -340,8 +448,16 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     // for now
     BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
     if (!accessible) {
-        [self.progress cancel];
-        [self.textProgress cancel];
+        @try {
+            [self.progressLock lock];
+            [self.progress cancel];
+            [self.textProgress cancel];
+            [self.progressLock unlock];
+        } @catch (NSException *exception) {
+            [self.progressLock unlock];
+            NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
+        }
+        
         if (show) {
             [self finishDownloadWithErrorString:@"Minecraft can't be legally installed when logged in with a local account. Please switch to an online account to continue."];
         }
@@ -407,23 +523,58 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
             @synchronized(self) {
                 // If we have nothing to download, add a completed marker
                 if (self.progress.totalUnitCount == 0) {
+                    [self.progressLock lock];
                     self.progress.totalUnitCount = 1;
                     self.progress.completedUnitCount = 1;
                     self.textProgress.totalUnitCount = 1;
                     self.textProgress.completedUnitCount = 1;
+                    [self.progressLock unlock];
                     
                     // Add completion marker
+                    [self.fileListLock lock];
                     [self.fileList addObject:@"Complete"];
                     NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
                     completeProgress.completedUnitCount = 1;
                     [self.progressList addObject:completeProgress];
+                    [self.fileListLock unlock];
                     return;
                 }
             }
             
-            // Start all download tasks
-            [libTasks makeObjectsPerformSelector:@selector(resume)];
-            [assetTasks makeObjectsPerformSelector:@selector(resume)];
+            // Start all download tasks in batches to avoid overwhelming the network
+            NSInteger batchSize = 10;
+            NSInteger totalTasks = libTasks.count + assetTasks.count;
+            
+            // Run batches in the background
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                // First process library tasks which are usually more important
+                for (NSInteger i = 0; i < libTasks.count; i += batchSize) {
+                    NSInteger end = MIN(i + batchSize, libTasks.count);
+                    for (NSInteger j = i; j < end; j++) {
+                        if (self.progress.cancelled) {
+                            return;
+                        }
+                        [(NSURLSessionDownloadTask *)libTasks[j] resume];
+                    }
+                    
+                    // Small delay between batches
+                    [NSThread sleepForTimeInterval:0.5];
+                }
+                
+                // Then process asset tasks
+                for (NSInteger i = 0; i < assetTasks.count; i += batchSize) {
+                    NSInteger end = MIN(i + batchSize, assetTasks.count);
+                    for (NSInteger j = i; j < end; j++) {
+                        if (self.progress.cancelled) {
+                            return;
+                        }
+                        [(NSURLSessionDownloadTask *)assetTasks[j] resume];
+                    }
+                    
+                    // Small delay between batches
+                    [NSThread sleepForTimeInterval:0.5];
+                }
+            });
             
             // Clean up large metadata we don't need anymore
             [self.metadata removeObjectForKey:@"assetIndexObj"];
@@ -445,20 +596,21 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     version = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
 
     // Create a wrapped success callback
+    __weak typeof(self) weakSelf = self;
     void(^wrappedSuccess)(void) = ^{
-        self.metadata = parseJSONFromFile(path);
-        if (self.metadata[@"NSErrorObject"]) {
-            [self finishDownloadWithErrorString:[self.metadata[@"NSErrorObject"] localizedDescription]];
+        weakSelf.metadata = parseJSONFromFile(path);
+        if (weakSelf.metadata[@"NSErrorObject"]) {
+            [weakSelf finishDownloadWithErrorString:[weakSelf.metadata[@"NSErrorObject"] localizedDescription]];
             return;
         }
-        if (self.metadata[@"inheritsFrom"]) {
-            NSMutableDictionary *inheritsFromDict = parseJSONFromFile([NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), self.metadata[@"inheritsFrom"]]);
+        if (weakSelf.metadata[@"inheritsFrom"]) {
+            NSMutableDictionary *inheritsFromDict = parseJSONFromFile([NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), weakSelf.metadata[@"inheritsFrom"]]);
             if (inheritsFromDict) {
-                [MinecraftResourceUtils processVersion:self.metadata inheritsFrom:inheritsFromDict];
-                self.metadata = inheritsFromDict;
+                [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:inheritsFromDict];
+                weakSelf.metadata = inheritsFromDict;
             }
         }
-        [MinecraftResourceUtils tweakVersionJson:self.metadata];
+        [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
         success();
     };
 
@@ -502,8 +654,9 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
     
     // Create a wrapped success callback to update phase
+    __weak typeof(self) weakSelf = self;
     void(^wrappedSuccess)(void) = ^{
-        self.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
+        weakSelf.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
         success();
     };
     
@@ -624,22 +777,22 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
     // Create a clear display name for progress reporting
     NSString *displayName = [NSString stringWithFormat:@"Downloading modpack: %@", name];
     
-    // We no longer create a separate packageProgress here - we'll rely entirely on the
-    // progress created by createDownloadTask to avoid duplicate progress tracking
-    
     // Create a wrapped success callback that transitions to extraction phase
+    __weak typeof(self) weakSelf = self;
     void(^modpackSuccess)(void) = ^{
         // Add placeholder progress for extraction phase - reset overall progress
-        @synchronized(self) {
-            self.progress.totalUnitCount = 1;
-            self.progress.completedUnitCount = 0;
-            self.textProgress.totalUnitCount = 1;
-            self.textProgress.completedUnitCount = 0;
+        @synchronized(weakSelf) {
+            [weakSelf.progressLock lock];
+            weakSelf.progress.totalUnitCount = 1;
+            weakSelf.progress.completedUnitCount = 0;
+            weakSelf.textProgress.totalUnitCount = 1;
+            weakSelf.textProgress.completedUnitCount = 0;
+            [weakSelf.progressLock unlock];
         }
         
         NSLog(@"[MCDL] Modpack download complete, proceeding to extraction.");
         // Use the API to handle extraction and installation
-        [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:destPath];
+        [api downloader:weakSelf submitDownloadTasksFromPackage:packagePath toPath:destPath];
     };
     
     // Failure callback to handle retries for modpack download
@@ -647,24 +800,26 @@ static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
         NSLog(@"[MCDL] Failed to download modpack: %@. Retrying...", error.localizedDescription);
         
         // Add retry attempt to file list for UI visibility
-        [self.fileList addObject:[NSString stringWithFormat:@"Retrying download for %@", name]];
+        [weakSelf.fileListLock lock];
+        [weakSelf.fileList addObject:[NSString stringWithFormat:@"Retrying download for %@", name]];
+        [weakSelf.fileListLock unlock];
         
         // Create a retry task
-        NSURLSessionDownloadTask *retryTask = [self createDownloadTask:url 
-                                                                 size:size 
-                                                                  sha:sha 
-                                                              altName:[NSString stringWithFormat:@"Downloading %@ (retry)", name]
-                                                               toPath:packagePath 
-                                                              success:modpackSuccess
-                                                              failure:^(NSError *retryError) {
+        NSURLSessionDownloadTask *retryTask = [weakSelf createDownloadTask:url 
+                                                                     size:size 
+                                                                      sha:sha 
+                                                                  altName:[NSString stringWithFormat:@"Downloading %@ (retry)", name]
+                                                                   toPath:packagePath 
+                                                                  success:modpackSuccess
+                                                                  failure:^(NSError *retryError) {
             // If retry also fails, show error
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to download modpack after retry: %@", retryError.localizedDescription]];
+            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to download modpack after retry: %@", retryError.localizedDescription]];
         }];
         
         if (retryTask) {
             [retryTask resume];
         } else {
-            [self finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
+            [weakSelf finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
         }
     };
 
