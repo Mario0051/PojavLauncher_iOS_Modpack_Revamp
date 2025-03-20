@@ -806,7 +806,19 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     dispatch_group_t assetGroup = dispatch_group_create();
     
     // Process assets in batches for better performance
-    NSArray *assetNames = assets[@"objects"].allKeys;
+    id objectsObj = assets[@"objects"];
+    NSArray *assetNames = nil;
+    
+    // Check if objects is a dictionary
+    if (objectsObj && [objectsObj isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *objectsDict = (NSDictionary *)objectsObj;
+        assetNames = objectsDict.allKeys;
+    } else {
+        // Handle the case where objects is nil or not a dictionary
+        NSLog(@"[MCDL] Warning: assets[@\"objects\"] is nil or not a dictionary");
+        return @[];
+    }
+    
     NSInteger totalAssets = assetNames.count;
     NSInteger batchSize = 100; // Process 100 assets at a time
     
