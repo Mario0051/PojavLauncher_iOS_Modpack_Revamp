@@ -1,5 +1,5 @@
 #import "AFNetworking.h"
-#import "installer/ForgeInstallViewController.h"
+#import "installer/FabricUtils.h"
 #import "JavaGUIViewController.h"
 #import "LauncherNavigationController.h"
 #import "MinecraftResourceDownloadTask.h"
@@ -58,6 +58,10 @@ extern void showDialog(NSString *title, NSString *message);
     if (self) {
         self.pendingModpackDownloads = 0;
         self.downloadCountLock = [[NSLock alloc] init];
+        
+        // Set a proper user agent to identify the app to Modrinth
+        self.userAgent = [NSString stringWithFormat:@"PojavLauncher/%@ (iOS; contact@pojavlauncher.com)",
+                          [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"]];
     }
     return self;
 }
@@ -119,8 +123,11 @@ extern void showDialog(NSString *title, NSString *message);
     
     NSLog(@"[ModrinthAPI] Searching with params: %@", params);
     
+    // Create headers with proper User-Agent
+    NSDictionary *headers = @{@"User-Agent": self.userAgent};
+    
     // Make the API request
-    NSDictionary *response = [self getEndpoint:@"search" params:params];
+    NSDictionary *response = [self getEndpoint:@"search" params:params headers:headers];
     if (!response) {
         NSLog(@"[ModrinthAPI] Error: API response is nil");
         return modrinthSearchResult ?: [NSMutableArray new];
@@ -216,9 +223,12 @@ extern void showDialog(NSString *title, NSString *message);
         return;
     }
     
+    // Create headers with proper User-Agent
+    NSDictionary *headers = @{@"User-Agent": self.userAgent};
+    
     // First, load full project details to get complete category info and other metadata
     NSString *projectEndpoint = [NSString stringWithFormat:@"project/%@", projectId];
-    NSDictionary *projectDetails = [self getEndpoint:projectEndpoint params:nil];
+    NSDictionary *projectDetails = [self getEndpoint:projectEndpoint params:nil headers:headers];
     
     // Extract additional metadata if available
     if (projectDetails) {
@@ -265,7 +275,7 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Now load version data
     NSString *endpoint = [NSString stringWithFormat:@"project/%@/version", projectId];
-    NSArray *response = [self getEndpoint:endpoint params:nil];
+    NSArray *response = [self getEndpoint:endpoint params:nil headers:headers];
     
     // Check response validity
     if (!response || ![response isKindOfClass:[NSArray class]] || response.count == 0) {
@@ -307,28 +317,40 @@ extern void showDialog(NSString *title, NSString *message);
             mcNames[i] = version[@"game_versions"][0];
         }
         
-        // Get file information
+        // Get file information - prefer primary file if available
         if (version[@"files"] && [version[@"files"] isKindOfClass:[NSArray class]] && 
-            [version[@"files"] count] > 0 && 
-            [version[@"files"][0] isKindOfClass:[NSDictionary class]]) {
+            [version[@"files"] count] > 0) {
             
-            NSDictionary *file = version[@"files"][0];
-            
-            // Get file size
-            if (file[@"size"] && [file[@"size"] isKindOfClass:[NSNumber class]]) {
-                sizes[i] = file[@"size"];
+            // Find the primary file first if possible
+            NSDictionary *primaryFile = nil;
+            for (NSDictionary *file in version[@"files"]) {
+                if ([file isKindOfClass:[NSDictionary class]] && 
+                    [file[@"primary"] boolValue]) {
+                    primaryFile = file;
+                    break;
+                }
             }
             
-            // Get download URL
-            if (file[@"url"] && [file[@"url"] isKindOfClass:[NSString class]]) {
-                NSString *fileUrl = [file[@"url"] stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
-                urls[i] = fileUrl;
-            }
+            // If no primary file, use the first file
+            NSDictionary *file = primaryFile ?: version[@"files"][0];
             
-            // Get hash
-            if (file[@"hashes"] && [file[@"hashes"] isKindOfClass:[NSDictionary class]] && 
-                file[@"hashes"][@"sha1"] && [file[@"hashes"][@"sha1"] isKindOfClass:[NSString class]]) {
-                hashes[i] = file[@"hashes"][@"sha1"];
+            if ([file isKindOfClass:[NSDictionary class]]) {
+                // Get file size
+                if (file[@"size"] && [file[@"size"] isKindOfClass:[NSNumber class]]) {
+                    sizes[i] = file[@"size"];
+                }
+                
+                // Get download URL
+                if (file[@"url"] && [file[@"url"] isKindOfClass:[NSString class]]) {
+                    NSString *fileUrl = [file[@"url"] stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+                    urls[i] = fileUrl;
+                }
+                
+                // Get hash
+                if (file[@"hashes"] && [file[@"hashes"] isKindOfClass:[NSDictionary class]] && 
+                    file[@"hashes"][@"sha1"] && [file[@"hashes"][@"sha1"] isKindOfClass:[NSString class]]) {
+                    hashes[i] = file[@"hashes"][@"sha1"];
+                }
             }
         }
     }];
@@ -340,6 +362,41 @@ extern void showDialog(NSString *title, NSString *message);
     item[@"versionUrls"] = urls;
     item[@"versionHashes"] = hashes;
     item[@"versionDetailsLoaded"] = @(YES);
+}
+
+- (id)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params headers:(NSDictionary *)headers {
+    __block id result;
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_group_enter(group);
+    NSString *url = [self.baseURL stringByAppendingPathComponent:endpoint];
+    AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
+    
+    // Set request timeout for more reliability
+    manager.requestSerializer.timeoutInterval = 30; // 30 seconds timeout
+    
+    // Add User-Agent to request headers if not provided
+    NSMutableDictionary *finalHeaders = [NSMutableDictionary dictionaryWithDictionary:headers ?: @{}];
+    if (!finalHeaders[@"User-Agent"]) {
+        finalHeaders[@"User-Agent"] = self.userAgent;
+    }
+    
+    [manager GET:url parameters:params headers:finalHeaders progress:nil
+    success:^(NSURLSessionTask *task, id obj) {
+        result = obj;
+        dispatch_group_leave(group);
+    } failure:^(NSURLSessionTask *operation, NSError *error) {
+        self.lastError = error;
+        NSLog(@"[ModrinthAPI] API request failed: %@", error.localizedDescription);
+        dispatch_group_leave(group);
+    }];
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    
+    return result;
+}
+
+// Compatibility method for old code - forwards to method with headers
+- (id)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params {
+    return [self getEndpoint:endpoint params:params headers:@{@"User-Agent": self.userAgent}];
 }
 
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
@@ -376,14 +433,16 @@ extern void showDialog(NSString *title, NSString *message);
     NSProgress *indexProgress = [NSProgress progressWithTotalUnitCount:1];
     [downloader.progressList addObject:indexProgress];
 
-    NSData *indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
+    // Try to extract the index file - first try the newer format, then fall back to the older one
+    NSData *indexData = [archive extractDataFromFile:@"index.json" error:nil];
+    
+    // If the newer format doesn't exist, try the older format
     if (!indexData) {
-        // Try mrpack format (newer Modrinth format)
-        indexData = [archive extractDataFromFile:@"index.json" error:&error];
+        indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
     }
     
     if (!indexData) {
-        [downloader finishDownloadWithErrorString:@"Failed to find index.json in modpack"];
+        [downloader finishDownloadWithErrorString:@"Failed to find index.json or modrinth.index.json in modpack"];
         return;
     }
     
@@ -600,7 +659,7 @@ extern void showDialog(NSString *title, NSString *message);
                 overallProgress.completedUnitCount++;
                 dispatch_group_leave(downloadGroup);
             }
-            // NOTE: Tasks are now automatically queued and limited by MinecraftResourceDownloadTask
+            // NOTE: Tasks are now automatically queued and will be processed by the download queue
         }
     }
     
@@ -644,9 +703,12 @@ extern void showDialog(NSString *title, NSString *message);
     [self extractDirectoryFromArchive:archive directory:@"overrides" toPath:destPath progress:extractionProgress];
     extractionProgress.completedUnitCount = 50; // 50% after overrides
     
-    // Extract client-overrides directory if it exists
+    // Extract client-overrides directory if it exists (new in Modrinth format)
     [self extractDirectoryFromArchive:archive directory:@"client-overrides" toPath:destPath progress:extractionProgress];
     extractionProgress.completedUnitCount = 75; // 75% after client-overrides
+    
+    // Extract server-overrides directory if it exists (for completeness, though not used on client)
+    [self extractDirectoryFromArchive:archive directory:@"server-overrides" toPath:destPath progress:nil];
     
     // Delete package cache
     [NSFileManager.defaultManager removeItemAtPath:packagePath error:nil];
@@ -842,7 +904,15 @@ extern void showDialog(NSString *title, NSString *message);
     
     NSString *vendor = forgeVersion ? @"Forge" : @"NeoForge";
     NSString *version = forgeVersion ?: neoForgeVersion;
-    NSString *fullVersion = [NSString stringWithFormat:@"%@-%@", minecraftVersion, version];
+    NSString *fullVersion;
+    
+    // Format the version based on the vendor
+    if ([vendor isEqualToString:@"Forge"]) {
+        fullVersion = [NSString stringWithFormat:@"%@-%@", minecraftVersion, version];
+    } else {
+        // NeoForge uses a different format
+        fullVersion = [NSString stringWithFormat:@"%@-neoforge-%@", minecraftVersion, version];
+    }
     
     // Check if this Forge version is already installed
     NSString *versionPath = [NSString stringWithFormat:@"%s/versions/%@", getenv("POJAV_GAME_DIR"), fullVersion];
@@ -931,8 +1001,10 @@ extern void showDialog(NSString *title, NSString *message);
                     navVC.progressViewMain.hidden = NO;
                 }
                 
-                // Create download request
-                NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:installerUrl]];
+                // Create download request with proper User-Agent header
+                NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:installerUrl]];
+                [request setValue:self.userAgent forHTTPHeaderField:@"User-Agent"];
+                
                 NSURLSessionDownloadTask *downloadTask = [manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull progress) {
                     dispatch_async(dispatch_get_main_queue(), ^{
                         if (navVC) {
