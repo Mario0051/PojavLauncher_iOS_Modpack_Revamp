@@ -10,6 +10,10 @@
 #import "ios_uikit_bridge.h"
 #import "PLProfiles.h"
 #import "utils.h"
+#import <objc/runtime.h>
+
+// Static key for objc association
+static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
 
 @interface MinecraftResourceDownloadTask ()
 @property(nonatomic, readwrite) AFURLSessionManager* manager;
@@ -262,7 +266,7 @@
     
     // Check if this progress is already a child of another progress
     // This can be done by checking a custom property we can associate with the progress
-    NSNumber *isTracked = objc_getAssociatedObject(progress, "isTrackedByTask");
+    NSNumber *isTracked = objc_getAssociatedObject(progress, kIsTrackedByTaskKey);
     if (isTracked && [isTracked boolValue]) {
         NSLog(@"[MCDL] Warning: Progress is already being tracked, skipping");
         return;
@@ -294,7 +298,7 @@
             self.progress.totalUnitCount += fileSize;
             
             // Mark this progress as tracked to avoid double-adding
-            objc_setAssociatedObject(progress, "isTrackedByTask", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            objc_setAssociatedObject(progress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         } @catch (NSException *exception) {
             NSLog(@"[MCDL] Warning: Exception adding child progress: %@", exception);
             // Don't rethrow the exception, just log it
