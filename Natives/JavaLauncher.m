@@ -2,6 +2,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <libgen.h>
+#include <pthread.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -425,11 +426,26 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     // Create a child process for the JVM to isolate it
     __block BOOL jvmStarted = NO;
     
+    // Copy margc and create a copy of margv for the block
+    int blockMargc = margc;
+    const char **blockMargv = malloc((blockMargc + 1) * sizeof(char*));
+    for (int i = 0; i <= blockMargc; i++) {
+        // We need to make a copy of the strings too since they might be temporary
+        blockMargv[i] = strdup(margv[i]);
+    }
+    
     // Run JVM launch on a separate thread
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        // Set thread priority to high
-        pthread_setname_np("JVM_Launch_Thread");
-        int threadResult = pJLI_Launch(++margc, margv,
+        // Set thread priority to high and name (using pthread_setname_np is not portable)
+        pthread_t thread = pthread_self();
+        char threadName[] = "JVM_Launch_Thread";
+        
+        #if defined(__APPLE__) && defined(__MACH__)
+        // Only use pthread_setname_np on Apple platforms
+        pthread_setname_np(threadName);
+        #endif
+        
+        int threadResult = pJLI_Launch(blockMargc + 1, blockMargv,
                        0, NULL, // sizeof(const_jargs) / sizeof(char *), const_jargs,
                        0, NULL, // sizeof(const_appclasspath) / sizeof(char *), const_appclasspath,
                        // These values are ignored in Java 17, so keep it anyways
@@ -441,6 +457,12 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
                        JNI_TRUE, JNI_FALSE, JNI_TRUE);
                        
         jvmStarted = YES;
+        
+        // Free the copied arguments
+        for (int i = 0; i <= blockMargc; i++) {
+            free((void*)blockMargv[i]);
+        }
+        free(blockMargv);
         
         // Log JVM exit
         NSLog(@"[JavaLauncher] JVM process exited with result: %d", threadResult);
