@@ -19,6 +19,7 @@ extern void showDialog(NSString *title, NSString *message);
 @interface ModrinthAPI ()
 @property (nonatomic, assign) NSInteger pendingModpackDownloads;
 @property (nonatomic, strong) NSLock *downloadCountLock;
+@property (nonatomic, strong) dispatch_queue_t fileProcessingQueue;
 @end
 
 @implementation ModrinthAPI
@@ -58,6 +59,7 @@ extern void showDialog(NSString *title, NSString *message);
     if (self) {
         self.pendingModpackDownloads = 0;
         self.downloadCountLock = [[NSLock alloc] init];
+        self.fileProcessingQueue = dispatch_queue_create("net.kdt.pojavlauncher.fileProcessingQueue", DISPATCH_QUEUE_CONCURRENT);
         
         // Set a proper user agent to identify the app to Modrinth
         self.userAgent = [NSString stringWithFormat:@"PojavLauncher/%@ (iOS; contact@pojavlauncher.com)",
@@ -389,7 +391,18 @@ extern void showDialog(NSString *title, NSString *message);
         NSLog(@"[ModrinthAPI] API request failed: %@", error.localizedDescription);
         dispatch_group_leave(group);
     }];
-    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    
+    // Use a timeout to prevent potential deadlocks
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(45 * NSEC_PER_SEC));
+    long timedOut = dispatch_group_wait(group, timeout);
+    
+    if (timedOut != 0) {
+        NSLog(@"[ModrinthAPI] Request timed out for endpoint: %@", endpoint);
+        self.lastError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
+                                             code:NSURLErrorTimedOut 
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Request timed out"}];
+        return nil;
+    }
     
     return result;
 }
@@ -529,7 +542,6 @@ extern void showDialog(NSString *title, NSString *message);
                 self.pendingModpackDownloads--;
                 [self.downloadCountLock unlock];
                 
-                downloader.progress.completedUnitCount++;
                 overallProgress.completedUnitCount++;
                 continue;
             }
@@ -542,7 +554,6 @@ extern void showDialog(NSString *title, NSString *message);
                 self.pendingModpackDownloads--;
                 [self.downloadCountLock unlock];
                 
-                downloader.progress.completedUnitCount++;
                 overallProgress.completedUnitCount++;
                 continue;
             }
@@ -552,6 +563,12 @@ extern void showDialog(NSString *title, NSString *message);
             
             // Ensure the path is correctly constructed relative to the destPath
             NSString *relativePath = indexFile[@"path"];
+            
+            // Make sure relativePath doesn't start with a slash to avoid path issues
+            if ([relativePath hasPrefix:@"/"]) {
+                relativePath = [relativePath substringFromIndex:1];
+            }
+            
             NSString *path = [destPath stringByAppendingPathComponent:relativePath];
             
             NSUInteger size = [indexFile[@"fileSize"] unsignedLongLongValue];
@@ -776,8 +793,33 @@ extern void showDialog(NSString *title, NSString *message);
 }
 
 - (void)extractDirectoryFromArchive:(UZKArchive *)archive directory:(NSString *)directoryName toPath:(NSString *)destPath progress:(NSProgress *)progress {
+    // Only attempt extraction if the directory name is valid
+    if (!directoryName || directoryName.length == 0) {
+        NSLog(@"[ModrinthAPI] Invalid directory name for extraction");
+        return;
+    }
+    
     NSError *error;
     NSLog(@"[ModrinthAPI] Extracting %@ directory to %@", directoryName, destPath);
+    
+    // Make sure we have a trailing slash for proper directory path comparison
+    NSString *dirWithSlash = [directoryName hasSuffix:@"/"] ? directoryName : [directoryName stringByAppendingString:@"/"];
+    
+    // First check if the directory exists in the archive
+    __block BOOL directoryExists = NO;
+    [archive performOnFilesInArchive:^(UZKFileInfo *fileInfo, BOOL *stop) {
+        if ([fileInfo.filename hasPrefix:dirWithSlash] || 
+            [fileInfo.filename isEqualToString:directoryName] ||
+            [fileInfo.filename hasPrefix:directoryName]) {
+            directoryExists = YES;
+            *stop = YES;
+        }
+    } error:&error];
+    
+    if (!directoryExists) {
+        NSLog(@"[ModrinthAPI] Directory %@ not found in the archive, skipping", directoryName);
+        return;
+    }
     
     [ModpackUtils archive:archive extractDirectory:directoryName toPath:destPath error:&error];
     
@@ -785,6 +827,11 @@ extern void showDialog(NSString *title, NSString *message);
         NSLog(@"[ModrinthAPI] Error extracting %@ directory: %@", directoryName, error.localizedDescription);
     } else {
         NSLog(@"[ModrinthAPI] Successfully extracted %@ directory to %@", directoryName, destPath);
+        
+        // Update progress if provided
+        if (progress) {
+            progress.completedUnitCount = MIN(progress.completedUnitCount + 5, progress.totalUnitCount);
+        }
     }
 }
 
@@ -814,17 +861,27 @@ extern void showDialog(NSString *title, NSString *message);
                               getenv("POJAV_HOME"), 
                               getPrefObject(@"general.game_directory")];
     
-    // If destPath starts with instancesPath, extract the relative part
+    // Check if destPath is within the instances directory structure
     if ([destPath hasPrefix:instancesPath]) {
-        gameDir = [destPath substringFromIndex:instancesPath.length];
-        // Remove leading slash if present
-        if ([gameDir hasPrefix:@"/"]) {
-            gameDir = [gameDir substringFromIndex:1];
+        // Calculate the relative path by removing the instances path prefix
+        NSUInteger prefixLength = instancesPath.length;
+        if (prefixLength < destPath.length) {
+            // Extract relative path
+            gameDir = [destPath substringFromIndex:prefixLength];
+            
+            // Remove leading slash if present
+            if ([gameDir hasPrefix:@"/"]) {
+                gameDir = [gameDir substringFromIndex:1];
+            }
+        } else {
+            // Fallback: If the path calculation fails, use a default profile-based path
+            gameDir = [PLProfiles uniqueGameDirForProfileName:profileName];
+            NSLog(@"[ModrinthAPI] Warning: destPath equals or is shorter than instancesPath. Using default profile path: %@", gameDir);
         }
     } else {
-        // Fallback to default gameDir path (should not normally happen)
+        // If destPath is outside instances directory, use a standardized path
         gameDir = [PLProfiles uniqueGameDirForProfileName:profileName];
-        NSLog(@"[ModrinthAPI] Warning: Could not determine relative gameDir from destPath. Using: %@", gameDir);
+        NSLog(@"[ModrinthAPI] Warning: destPath is not within instances directory. Using default profile path: %@", gameDir);
     }
     
     // Update setup progress
@@ -1052,7 +1109,7 @@ extern void showDialog(NSString *title, NSString *message);
             style:UIAlertActionStyleCancel 
             handler:nil]];
         
-        // Present the alert - find the current view controller
+        // Present the alert on the main thread using the appropriate view controller
         UIViewController *currentVC = nil;
         
         // Find the root view controller - proper way to get the current UI
