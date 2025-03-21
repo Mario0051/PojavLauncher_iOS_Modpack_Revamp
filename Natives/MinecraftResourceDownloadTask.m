@@ -131,13 +131,23 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         }
         
         // Check if download was cancelled
-        if (self.progress.cancelled) {
+        BOOL isCancelled = NO;
+        
+        @try {
+            isCancelled = self.progress.cancelled;
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
+            isCancelled = NO;
+        }
+        
+        if (isCancelled) {
             return;
         }
         
         // Get next download task
-        NSURLSessionDownloadTask *nextTask = [self.pendingDownloads firstObject];
-        if (nextTask) {
+        NSURLSessionDownloadTask *nextTask = nil;
+        if (self.pendingDownloads.count > 0) {
+            nextTask = self.pendingDownloads[0];
             [self.pendingDownloads removeObjectAtIndex:0];
             self.activeDownloads++;
             
@@ -150,21 +160,23 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 }
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path 
-                                        success:(void (^)(void))success
-                                        failure:(void (^)(NSError *error))failure {
+                                          size:(NSUInteger)size 
+                                           sha:(NSString *)sha 
+                                       altName:(NSString *)altName 
+                                        toPath:(NSString *)path 
+                                       success:(void (^)(void))success
+                                       failure:(void (^)(NSError *error))failure {
     @autoreleasepool {
         // Safety check for invalid URL
         if (!url || url.length == 0) {
             NSLog(@"[MCDL] Error: Invalid or empty download URL");
             NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
-                                                code:1001 
-                                            userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL"}];
+                                                   code:1001 
+                                               userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL"}];
             if (failure) {
-                failure(urlError);
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    failure(urlError);
+                });
             } else {
                 [self finishDownloadWithErrorString:@"Invalid download URL"];
             }
@@ -197,10 +209,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         if (!requestURL) {
             NSLog(@"[MCDL] Error: Invalid download URL format: %@", url);
             NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
-                                                code:1001 
-                                            userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL format"}];
+                                                   code:1001 
+                                               userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL format"}];
             if (failure) {
-                failure(urlError);
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    failure(urlError);
+                });
             } else {
                 [self finishDownloadWithErrorString:@"Invalid download URL format"];
             }
@@ -223,32 +237,47 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         downloadProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
         downloadProgress.kind = NSProgressKindFile;
         
-        // Add this progress to our tracking list
+        // Add this progress to our tracking list - using lock for thread safety
+        BOOL progressAdded = NO;
+        
         [self.progressLock lock];
-        [self.progressList addObject:downloadProgress];
-        
-        // Update overall progress total
-        if (!self.progress) {
-            self.progress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
-        } else {
-            self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+        @try {
+            [self.progressList addObject:downloadProgress];
+            
+            // Update overall progress total
+            if (!self.progress) {
+                self.progress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
+            } else {
+                self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+            }
+            
+            if (!self.textProgress) {
+                self.textProgress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
+            } else {
+                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+            }
+            
+            // Add the progress as a child to our overall progress
+            [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
+            progressAdded = YES;
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Exception adding progress: %@", exception);
+        } @finally {
+            [self.progressLock unlock];
         }
         
-        if (!self.textProgress) {
-            self.textProgress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
-        } else {
-            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+        if (!progressAdded) {
+            NSLog(@"[MCDL] Failed to add progress for %@", name);
+            // If we couldn't add progress, still try to proceed with the download
         }
-        
-        // Add the progress as a child to our overall progress
-        [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
-        [self.progressLock unlock];
         
         // Mark the progress object as tracked by this task
         objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         
-        // Create download task with proper completion handling
+        // Create weak reference to self to avoid retain cycles
         __weak typeof(self) weakSelf = self;
+        
+        // Create download task with proper completion handling
         NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull taskProgress) {
             // Throttle progress updates to reduce overhead - only update if significant change
             static NSInteger lastReportedPercent = -1;
@@ -257,19 +286,45 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             if (currentPercent != lastReportedPercent && currentPercent % 5 == 0) { // Update every 5%
                 lastReportedPercent = currentPercent;
                 
-                if (taskProgress && downloadProgress) {
-                    [weakSelf.progressLock lock];
-                    
-                    // Update completion amount with safeguards
-                    CGFloat fraction = taskProgress.fractionCompleted;
-                    if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
-                        downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
-                        
-                        // Flag for UI update instead of updating immediately
-                        weakSelf.needsUIUpdate = YES;
+                // Safely update progress with retry mechanism
+                BOOL updated = NO;
+                NSUInteger retryCount = 0;
+                
+                while (!updated && retryCount < 3) {
+                    if (retryCount > 0) {
+                        // Add short delay before retry
+                        usleep(10000); // 10ms
                     }
                     
-                    [weakSelf.progressLock unlock];
+                    if (!weakSelf || !taskProgress || !downloadProgress) {
+                        break; // Skip if objects are no longer valid
+                    }
+                    
+                    // Make sure the task is still running
+                    if (taskProgress.cancelled || taskProgress.finished) {
+                        break;
+                    }
+                    
+                    BOOL lockAcquired = [weakSelf.progressLock tryLock];
+                    if (lockAcquired) {
+                        @try {
+                            // Update completion amount with safeguards
+                            CGFloat fraction = taskProgress.fractionCompleted;
+                            if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
+                                downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
+                                
+                                // Flag for UI update instead of updating immediately
+                                weakSelf.needsUIUpdate = YES;
+                                updated = YES;
+                            }
+                        } @catch (NSException *exception) {
+                            NSLog(@"[MCDL] Warning: Exception updating progress: %@", exception);
+                        } @finally {
+                            [weakSelf.progressLock unlock];
+                        }
+                    }
+                    
+                    retryCount++;
                 }
             }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
@@ -278,23 +333,30 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             // If size wasn't provided but response has size info, update progress
             if (size == 0 && response.expectedContentLength > 0) {
                 NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
-                [weakSelf.progressLock lock];
                 
-                // Update progress size and overall progress total
-                NSUInteger oldSize = downloadProgress.totalUnitCount;
-                downloadProgress.totalUnitCount = actualSize;
-                
-                // Update parent progress total
-                if (weakSelf.progress) {
-                    weakSelf.progress.totalUnitCount = weakSelf.progress.totalUnitCount - oldSize + actualSize;
+                BOOL lockAcquired = [weakSelf.progressLock tryLock];
+                if (lockAcquired) {
+                    @try {
+                        // Update progress size and overall progress total
+                        NSUInteger oldSize = downloadProgress.totalUnitCount;
+                        downloadProgress.totalUnitCount = actualSize;
+                        
+                        // Update parent progress total
+                        if (weakSelf.progress) {
+                            weakSelf.progress.totalUnitCount = weakSelf.progress.totalUnitCount - oldSize + actualSize;
+                        }
+                        
+                        if (weakSelf.textProgress) {
+                            weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
+                        }
+                        
+                        sizeUpdated = YES;
+                    } @catch (NSException *exception) {
+                        NSLog(@"[MCDL] Warning: Exception updating progress size: %@", exception);
+                    } @finally {
+                        [weakSelf.progressLock unlock];
+                    }
                 }
-                
-                if (weakSelf.textProgress) {
-                    weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
-                }
-                
-                sizeUpdated = YES;
-                [weakSelf.progressLock unlock];
                 
                 NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
             }
@@ -303,16 +365,16 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             NSError *dirError;
             NSString *dirPath = [path stringByDeletingLastPathComponent];
             BOOL success = [NSFileManager.defaultManager createDirectoryAtPath:dirPath 
-                                                withIntermediateDirectories:YES 
-                                                                 attributes:nil 
-                                                                      error:&dirError];
+                                                    withIntermediateDirectories:YES 
+                                                                     attributes:nil 
+                                                                          error:&dirError];
             if (!success) {
                 NSLog(@"[MCDL] Warning: Could not create directory for %@: %@", name, dirError.localizedDescription);
             }
             
-            // Remove existing file if it exists
+            // Remove existing file if it exists to avoid write errors
+            NSError *removeError = nil;
             if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
-                NSError *removeError;
                 [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
                 if (removeError) {
                     NSLog(@"[MCDL] Warning: Could not remove existing file %@: %@", path, removeError.localizedDescription);
@@ -321,16 +383,16 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             
             return [NSURL fileURLWithPath:path];
         } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
-            // Decrement active downloads count and process next download
+            // Always decrement active downloads count
             @synchronized(weakSelf.pendingDownloads) {
-                weakSelf.activeDownloads--;
+                weakSelf.activeDownloads = MAX(0, weakSelf.activeDownloads - 1);
                 // Process next download on the serial queue
                 dispatch_async(weakSelf.downloadQueue, ^{
                     [weakSelf processNextDownloadInQueue];
                 });
             }
             
-            // Safely check if progress is cancelled
+            // Safely check if progress is cancelled to avoid potential crashes
             BOOL isCancelled = NO;
             @try {
                 isCancelled = weakSelf.progress.cancelled;
@@ -348,19 +410,24 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             if (error != nil) {
                 NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
                 if (failure) {
-                    failure(error);
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        failure(error);
+                    });
                 } else {
                     [weakSelf finishDownloadWithError:error file:name];
                 }
                 return;
             }
             
-            if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
+            // Verify the downloaded file if checksum is provided
+            if (sha.length > 0 && ![weakSelf checkSHA:sha forFile:path altName:altName]) {
                 NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
-                                                    code:1000 
-                                                userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
+                                                       code:1000 
+                                                   userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
                 if (failure) {
-                    failure(shaError);
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        failure(shaError);
+                    });
                 } else {
                     [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
                 }
@@ -368,52 +435,60 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             }
             
             // If we didn't have an accurate size initially and didn't update it from the response
-            if (!sizeUpdated && size == 0 && downloadProgress) {
+            if (!sizeUpdated && size == 0) {
                 // Get the actual file size for more accurate progress reporting
                 NSError *fileError;
                 NSDictionary *fileAttrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&fileError];
                 if (!fileError && fileAttrs) {
                     NSUInteger fileSize = [fileAttrs fileSize];
-                    NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
-                    
-                    // Update progress with actual file size - safely
-                    @try {
-                        [weakSelf.progressLock lock];
-                        if (fileSize > 0 && fileSize != downloadProgress.totalUnitCount && weakSelf.progress) {
-                            // Add the difference to total progress
-                            NSUInteger oldSize = downloadProgress.totalUnitCount;
-                            weakSelf.progress.totalUnitCount += (fileSize - oldSize);
-                            
-                            if (weakSelf.textProgress) {
-                                weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
+                    if (fileSize > 0) {
+                        NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
+                        
+                        // Update progress with actual file size - safely
+                        BOOL lockAcquired = [weakSelf.progressLock tryLock];
+                        if (lockAcquired) {
+                            @try {
+                                if (fileSize > 0 && fileSize != downloadProgress.totalUnitCount && weakSelf.progress) {
+                                    // Add the difference to total progress
+                                    NSUInteger oldSize = downloadProgress.totalUnitCount;
+                                    weakSelf.progress.totalUnitCount += (fileSize - oldSize);
+                                    
+                                    if (weakSelf.textProgress) {
+                                        weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
+                                    }
+                                    
+                                    downloadProgress.totalUnitCount = fileSize;
+                                }
+                            } @catch (NSException *exception) {
+                                NSLog(@"[MCDL] Warning: Exception updating progress size: %@", exception);
+                            } @finally {
+                                [weakSelf.progressLock unlock];
                             }
-                            
-                            downloadProgress.totalUnitCount = fileSize;
                         }
-                        [weakSelf.progressLock unlock];
-                    } @catch (NSException *exception) {
-                        [weakSelf.progressLock unlock];
-                        NSLog(@"[MCDL] Warning: Exception updating progress size: %@", exception);
                     }
                 }
             }
             
             // Ensure progress is marked as complete
-            @try {
-                [weakSelf.progressLock lock];
-                downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
-                
-                // Flag for UI update
-                weakSelf.needsUIUpdate = YES;
-                [weakSelf.progressLock unlock];
-            } @catch (NSException *exception) {
-                [weakSelf.progressLock unlock];
-                NSLog(@"[MCDL] Warning: Exception setting progress as complete: %@", exception);
+            BOOL lockAcquired = [weakSelf.progressLock tryLock];
+            if (lockAcquired) {
+                @try {
+                    downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
+                    
+                    // Flag for UI update
+                    weakSelf.needsUIUpdate = YES;
+                } @catch (NSException *exception) {
+                    NSLog(@"[MCDL] Warning: Exception setting progress as complete: %@", exception);
+                } @finally {
+                    [weakSelf.progressLock unlock];
+                }
             }
             
             NSLog(@"[MCDL] Download completed for %@", name);
             if (success) {
-                success();
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    success();
+                });
             }
         }];
 
@@ -433,20 +508,20 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
 // Compatibility method that calls the full version without failure callback
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path 
-                                        success:(void (^)(void))success {
+                                          size:(NSUInteger)size 
+                                           sha:(NSString *)sha 
+                                       altName:(NSString *)altName 
+                                        toPath:(NSString *)path 
+                                       success:(void (^)(void))success {
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:success failure:nil];
 }
 
 // Compatibility method for older code
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path {
+                                          size:(NSUInteger)size 
+                                           sha:(NSString *)sha 
+                                       altName:(NSString *)altName 
+                                        toPath:(NSString *)path {
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
 }
 
@@ -475,48 +550,62 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     // Mark this progress as tracked BEFORE adding it as a child to prevent race conditions
     objc_setAssociatedObject(progress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     
-    [self.progressLock lock];
-    
-    NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
-    progress.kind = NSProgressKindFile;
-    progress.totalUnitCount = fileSize;
-    [self.progressList addObject:progress];
-    
-    // Create main progress if it doesn't exist yet
-    if (!self.progress) {
-        self.progress = [NSProgress progressWithTotalUnitCount:fileSize];
-    } else {
-        // Update the total unit count for the parent progress separately
-        self.progress.totalUnitCount += fileSize;
-    }
-    
-    // Also update text progress
-    if (!self.textProgress) {
-        self.textProgress = [NSProgress progressWithTotalUnitCount:fileSize];
-    } else {
-        self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-    }
-    
-    // Safely check if progress is cancelled
-    BOOL isCancelled = NO;
-    @try {
-        isCancelled = self.progress.cancelled;
-    } @catch (NSException *exception) {
-        NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
-        isCancelled = NO;
-    }
-    
-    if (!isCancelled) {
-        // Try-catch to handle case where progress is already a child
-        @try {
-            [self.progress addChild:progress withPendingUnitCount:fileSize];
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Warning: Exception adding child progress: %@", exception);
-            // Just log the exception, don't rethrow
+    BOOL lockAcquired = [self.progressLock tryLock];
+    if (!lockAcquired) {
+        NSLog(@"[MCDL] Warning: Could not acquire progress lock, retrying...");
+        // Wait a bit and try again
+        usleep(10000); // 10ms
+        lockAcquired = [self.progressLock tryLock];
+        if (!lockAcquired) {
+            NSLog(@"[MCDL] Error: Failed to acquire progress lock after retry");
+            return;
         }
     }
     
-    [self.progressLock unlock];
+    @try {
+        NSUInteger fileSize = size > 0 ? size : 1000000; // Use 1MB as minimum placeholder
+        progress.kind = NSProgressKindFile;
+        progress.totalUnitCount = fileSize;
+        [self.progressList addObject:progress];
+        
+        // Create main progress if it doesn't exist yet
+        if (!self.progress) {
+            self.progress = [NSProgress progressWithTotalUnitCount:fileSize];
+        } else {
+            // Update the total unit count for the parent progress separately
+            self.progress.totalUnitCount += fileSize;
+        }
+        
+        // Also update text progress
+        if (!self.textProgress) {
+            self.textProgress = [NSProgress progressWithTotalUnitCount:fileSize];
+        } else {
+            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+        }
+        
+        // Safely check if progress is cancelled
+        BOOL isCancelled = NO;
+        @try {
+            isCancelled = self.progress.cancelled;
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
+            isCancelled = NO;
+        }
+        
+        if (!isCancelled) {
+            // Try-catch to handle case where progress is already a child
+            @try {
+                [self.progress addChild:progress withPendingUnitCount:fileSize];
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Warning: Exception adding child progress: %@", exception);
+                // Just log the exception, don't rethrow
+            }
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"[MCDL] Exception in addDownloadTaskToProgress: %@", exception);
+    } @finally {
+        [self.progressLock unlock];
+    }
     
     // Instead of immediately resuming, queue it for controlled execution
     @synchronized(self.pendingDownloads) {
@@ -538,12 +627,17 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 - (void)finishDownloadWithErrorString:(NSString *)error {
     // Safely cancel progress
     @try {
-        [self.progressLock lock];
-        [self.progress cancel];
-        [self.textProgress cancel];
-        [self.progressLock unlock];
+        BOOL lockAcquired = [self.progressLock tryLock];
+        if (lockAcquired) {
+            [self.progress cancel];
+            [self.textProgress cancel];
+            [self.progressLock unlock];
+        } else {
+            // Try without lock if we can't acquire it
+            [self.progress cancel];
+            [self.textProgress cancel];
+        }
     } @catch (NSException *exception) {
-        [self.progressLock unlock];
         NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
     }
     
@@ -567,12 +661,17 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
     if (!accessible) {
         @try {
-            [self.progressLock lock];
-            [self.progress cancel];
-            [self.textProgress cancel];
-            [self.progressLock unlock];
+            BOOL lockAcquired = [self.progressLock tryLock];
+            if (lockAcquired) {
+                [self.progress cancel];
+                [self.textProgress cancel];
+                [self.progressLock unlock];
+            } else {
+                // Try without lock if we can't acquire it
+                [self.progress cancel];
+                [self.textProgress cancel];
+            }
         } @catch (NSException *exception) {
-            [self.progressLock unlock];
             NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
         }
         
@@ -635,8 +734,8 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     [self prepareForDownload];
     [self downloadVersionMetadata:version success:^{
         [self downloadAssetMetadataWithSuccess:^{
-            NSArray *libTasks = [self downloadClientLibraries];
-            NSArray *assetTasks = [self downloadClientAssets];
+            [self downloadClientLibraries];
+            [self downloadClientAssets];
             
             @synchronized(self) {
                 // If we have nothing to download, add a completed marker
@@ -973,5 +1072,4 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         // Task is automatically queued by createDownloadTask
     }
 }
-
 @end
