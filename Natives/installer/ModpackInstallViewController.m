@@ -534,7 +534,6 @@
     // Setup category filter - segmented control
     UISegmentedControl *segment = [[UISegmentedControl alloc] initWithItems:@[
         localize(@"All", nil),
-        localize(@"Popular", nil),
         localize(@"Updated", nil)
     ]];
     segment.selectedSegmentIndex = 0;
@@ -614,19 +613,6 @@
     [self updateSearchResults];
 }
 
-- (void)dealloc {
-    // Remove all notification observers properly
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-    
-    // Remove KVO observer
-    @try {
-        [self.searchController removeObserver:self forKeyPath:@"active"];
-    } @catch (NSException *exception) {
-        // Handle any exception that might occur during removal
-        NSLog(@"Exception removing observer: %@", exception);
-    }
-}
-
 #pragma mark - Action Methods
 
 - (void)actionCancelDownload {
@@ -666,10 +652,7 @@
     // Update filter based on segment
     NSString *sortMethod;
     switch (segment.selectedSegmentIndex) {
-        case 1: // Popular
-            sortMethod = @"downloads";
-            break;
-        case 2: // Updated
+        case 1: // Updated (was index 2 before)
             sortMethod = @"updated";
             break;
         default: // All (default)
@@ -684,23 +667,6 @@
     self.hasMoreResults = YES;
     
     // Reload data with new filter
-    [self updateSearchResults];
-}
-
-- (void)refreshModpacks {
-    // Reset pagination state
-    self.hasMoreResults = YES;
-    
-    // Clear the current results - use lock for thread safety
-    [self.dataLock lock];
-    [self.organizedModpacks removeAllObjects];
-    [self.filteredModpacks removeAllObjects];
-    [self.categories removeAllObjects];
-    [self.visibilityList removeAllObjects];
-    [self.unifiedSearchResults removeAllObjects];
-    [self.dataLock unlock];
-    
-    // Reload with current filter settings
     [self updateSearchResults];
 }
 
@@ -1719,7 +1685,6 @@
         NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"Unknown";
         NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
         NSString *imageUrl = [modpack[@"imageUrl"] isKindOfClass:[NSString class]] ? modpack[@"imageUrl"] : @"";
-        BOOL detailsLoaded = [modpack[@"versionDetailsLoaded"] boolValue];
         NSArray *categories = [modpack[@"categories"] isKindOfClass:[NSArray class]] ? modpack[@"categories"] : @[];
         
         // Update the cell with modpack data
@@ -1772,15 +1737,9 @@
             cell.modpackIconView.image = fallbackImage;
         }
         
-        // Set accessory based on whether details are loaded
-        cell.accessoryType = detailsLoaded ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
-        if (!detailsLoaded) {
-            UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-            [activityIndicator startAnimating];
-            cell.accessoryView = activityIndicator;
-        } else {
-            cell.accessoryView = nil;
-        }
+        // Always show disclosure indicator, regardless of whether details are loaded
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.accessoryView = nil;
         
         return cell;
     }
@@ -1816,7 +1775,6 @@
     NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"Unknown";
     NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
     NSString *imageUrl = [modpack[@"imageUrl"] isKindOfClass:[NSString class]] ? modpack[@"imageUrl"] : @"";
-    BOOL detailsLoaded = [modpack[@"versionDetailsLoaded"] boolValue];
     NSArray *categories = [modpack[@"categories"] isKindOfClass:[NSArray class]] ? modpack[@"categories"] : @[];
     
     // Update the cell with modpack data
@@ -1869,15 +1827,9 @@
         cell.modpackIconView.image = fallbackImage;
     }
     
-// Set accessory based on whether details are loaded
-    cell.accessoryType = detailsLoaded ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
-    if (!detailsLoaded) {
-        UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-        [activityIndicator startAnimating];
-        cell.accessoryView = activityIndicator;
-    } else {
-        cell.accessoryView = nil;
-    }
+    // Always show disclosure indicator, regardless of whether details are loaded
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    cell.accessoryView = nil;
     
     return cell;
 }
@@ -1933,8 +1885,13 @@
         // Show version selection menu
         [self showVersionMenu:modpack atIndexPath:indexPath];
     } else {
-        // Load details first
+        // Load details first - preserve original categories
         NSMutableDictionary *modpackCopy = [modpack mutableCopy];
+        
+        // Store original categories to ensure modloader info isn't lost
+        if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
+            modpackCopy[@"original_categories"] = [modpack[@"categories"] copy];
+        }
         
         // Load details first
         [self loadModpackDetails:modpackCopy atIndexPath:indexPath];
@@ -2038,8 +1995,21 @@
                                                                                 } completion:nil];
                                                             } failure:nil];
                 
+                // Preserve original categories alongside new categories to maintain modloader info
+                NSMutableArray *categories = [NSMutableArray array];
+                
+                // Add original categories if they exist
+                if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
+                    [categories addObjectsFromArray:modpack[@"original_categories"]];
+                }
+                
+                // Add new categories if they exist
+                if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
+                    [categories addObjectsFromArray:modpack[@"categories"]];
+                }
+                
                 // If tags have been updated, refresh the cell
-                [versionCell setTags:modpack[@"categories"] ?: @[]];
+                [versionCell setTags:categories.count > 0 ? categories : (modpack[@"categories"] ?: @[])];
             }
             
             // Show version menu if details loaded successfully
@@ -2099,13 +2069,38 @@
             handler:^(UIAction *action) {
                 [self actionClose];
                 
+                // Create a mutable copy of modpack to include original categories
+                NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
+                
+                // If we have original categories stored, make sure they're included
+                if (modpack[@"original_categories"]) {
+                    NSMutableArray *allCategories = [NSMutableArray array];
+                    
+                    // Add original categories
+                    if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
+                        [allCategories addObjectsFromArray:modpack[@"original_categories"]];
+                    }
+                    
+                    // Add new categories if different from originals
+                    if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
+                        for (id category in modpack[@"categories"]) {
+                            if (![allCategories containsObject:category]) {
+                                [allCategories addObject:category];
+                            }
+                        }
+                    }
+                    
+                    // Use the combined categories
+                    modpackWithCategories[@"categories"] = allCategories;
+                }
+                
                 // Safely create the icon path
                 NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
                 UIImage *iconImage = cell.modpackIconView.image ?: [UIImage imageNamed:@"DefaultProfile"];
                 [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
                 
-                // Safely install the modpack
-                [self.modrinth installModpackFromDetail:modpack atIndex:i];
+                // Safely install the modpack with preserved categories
+                [self.modrinth installModpackFromDetail:modpackWithCategories atIndex:i];
             }]];
     }];
     
