@@ -235,8 +235,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Clear previous filtered list
     [self.filteredFileList removeAllObjects];
     
-    // Create a defensive copy of the file list to avoid mutation during enumeration
-    NSArray *fileListCopy = [NSArray arrayWithArray:self.task.fileList];
+    // Defensive copy to prevent mutations during enumeration
+    NSArray *fileListCopy = nil;
+    [self.task.fileListLock lock];
+    fileListCopy = [NSArray arrayWithArray:self.task.fileList];
+    [self.task.fileListLock unlock];
     
     // Create a dictionary to track files by their base name
     NSMutableDictionary *fileMap = [NSMutableDictionary dictionary];
@@ -245,6 +248,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     NSMutableArray *processEntries = [NSMutableArray array];
     
     for (NSString *filePath in fileListCopy) {
+        // Skip nil entries to avoid crashes
+        if (!filePath) continue;
+        
         // Track extraction and setup entries separately
         if ([filePath hasPrefix:@"Extracting"] || 
             [filePath hasPrefix:@"Setting"] || 
@@ -259,8 +265,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             continue;
         }
         
-        // Get just the file name without path
+        // Get just the file name without path - safely
         NSString *fileName = [filePath lastPathComponent];
+        if (!fileName) fileName = filePath; // Fallback if lastPathComponent fails
         
         // Store this path for this file name, preferring longer paths with directory structure
         if (!fileMap[fileName] || [filePath length] > [fileMap[fileName] length]) {
@@ -274,11 +281,17 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Add all unique paths to the filtered list
     NSArray *uniquePaths = [fileMap allValues];
     for (NSString *uniquePath in uniquePaths) {
+        // Skip nil entries to avoid crashes
+        if (!uniquePath) continue;
         [self.filteredFileList addObject:uniquePath];
     }
     
     // Sort the filtered list for consistent display
     [self.filteredFileList sortUsingComparator:^NSComparisonResult(NSString *path1, NSString *path2) {
+        // Handle nil values to prevent crashes
+        if (!path1) return NSOrderedDescending;
+        if (!path2) return NSOrderedAscending;
+        
         // Processing entries (Extracting, Setting, Installing) come first
         BOOL isProcess1 = [path1 hasPrefix:@"Extracting"] || 
                           [path1 hasPrefix:@"Setting"] || 
@@ -470,6 +483,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 - (void)updateVisibleCells {
     // Capture which cells are currently visible
     NSArray *visiblePaths = [self.tableView indexPathsForVisibleRows];
+    if (!visiblePaths) return;
+    
     self.visibleIndexPaths = [NSSet setWithArray:visiblePaths];
     
     for (NSIndexPath *indexPath in visiblePaths) {
@@ -478,11 +493,24 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             if (!cell) continue;
             
             NSString *fileName = self.filteredFileList[indexPath.row];
-            NSUInteger originalIndex = [self.task.fileList indexOfObject:fileName];
             
-            if (originalIndex != NSNotFound && originalIndex < self.task.progressList.count) {
-                NSProgress *progress = self.task.progressList[originalIndex];
-                [self updateCell:cell withProgress:progress forIndexPath:indexPath];
+            // Get the original index for this file name
+            NSUInteger originalIndex = NSNotFound;
+            
+            [self.task.fileListLock lock];
+            originalIndex = [self.task.fileList indexOfObject:fileName];
+            [self.task.fileListLock unlock];
+            
+            if (originalIndex != NSNotFound) {
+                // Make sure the progress list index is valid
+                [self.task.progressLock lock];
+                BOOL isValidIndex = originalIndex < self.task.progressList.count;
+                NSProgress *progress = isValidIndex ? self.task.progressList[originalIndex] : nil;
+                [self.task.progressLock unlock];
+                
+                if (progress) {
+                    [self updateCell:cell withProgress:progress forIndexPath:indexPath];
+                }
             }
         }
     }
@@ -490,7 +518,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 
 // Helper method to update a cell with the latest progress
 - (void)updateCell:(UITableViewCell *)cell withProgress:(NSProgress *)progress forIndexPath:(NSIndexPath *)indexPath {
-    if (!cell || !progress) return;
+    if (!cell || !progress || indexPath.row >= self.filteredFileList.count) {
+        return;
+    }
     
     NSString *fileName = self.filteredFileList[indexPath.row];
     DownloadTaskType taskType = DownloadTaskTypeFile;
@@ -501,6 +531,24 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         taskType = DownloadTaskTypeSetup;
     } else if ([fileName isEqualToString:@"Complete"]) {
         taskType = DownloadTaskTypeComplete;
+    }
+    
+    // Calculate completion percentage safely
+    float fractionCompleted = 0.0;
+    BOOL isComplete = NO;
+    
+    @try {
+        fractionCompleted = progress.fractionCompleted;
+        isComplete = progress.finished || fractionCompleted >= 1.0;
+        
+        // Ensure value is valid
+        if (isnan(fractionCompleted)) fractionCompleted = 0.0;
+        if (fractionCompleted < 0.0) fractionCompleted = 0.0;
+        if (fractionCompleted > 1.0) fractionCompleted = 1.0;
+    } @catch (NSException *exception) {
+        NSLog(@"[ProgressView] Warning: Exception getting progress value: %@", exception);
+        fractionCompleted = 0.0;
+        isComplete = NO;
     }
     
     // Format size as MB/MB for file downloads
@@ -538,27 +586,26 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         }
     } else if (taskType == DownloadTaskTypeExtraction) {
         // Show extraction progress percentage
-        int percentage = (int)(progress.fractionCompleted * 100);
+        int percentage = (int)(fractionCompleted * 100);
         sizeText = [NSString stringWithFormat:@"Extracting... %d%%", percentage];
     } else if (taskType == DownloadTaskTypeSetup) {
         // Show setup progress percentage
-        int percentage = (int)(progress.fractionCompleted * 100);
+        int percentage = (int)(fractionCompleted * 100);
         sizeText = [NSString stringWithFormat:@"Setting up... %d%%", percentage];
     } else if (taskType == DownloadTaskTypeComplete) {
         sizeText = @"Complete!";
+        isComplete = YES;
     } else {
         sizeText = progress.totalUnitCount > 0 ? 
                   @"Waiting..." : 
-                  [NSString stringWithFormat:@"%d%%", (int)(progress.fractionCompleted * 100)];
+                  [NSString stringWithFormat:@"%d%%", (int)(fractionCompleted * 100)];
     }
     
     // Update detail text
     cell.detailTextLabel.text = sizeText;
     
     // For the accessory view, check if download is complete
-    BOOL isComplete = progress.finished || progress.fractionCompleted >= 1.0 || taskType == DownloadTaskTypeComplete;
-    
-    if (isComplete) {
+    if (isComplete || taskType == DownloadTaskTypeComplete) {
         // Only update if the current accessory view is not already a checkmark
         if (![cell.accessoryView isKindOfClass:[UIImageView class]]) {
             UIImageView *checkmarkView = [[UIImageView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
@@ -572,7 +619,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 // Update the last completed file when a file is completed
                 self.lastCompletedFile = fileName;
                 // Update the status label immediately
-                self.statusLabel.text = fileName;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.statusLabel.text = fileName;
+                });
             }
         }
     } else if (taskType == DownloadTaskTypeExtraction || taskType == DownloadTaskTypeSetup) {
@@ -598,7 +647,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         
         // Check if we have valid progress information
         if (progress.totalUnitCount > 0 && progress.completedUnitCount <= progress.totalUnitCount) {
-            int percentage = (int)(progress.fractionCompleted * 100);
+            int percentage = (int)(fractionCompleted * 100);
             
             // Only update the percentage text if it has changed by at least 1%
             if (lastPercent != percentage) {
@@ -692,9 +741,23 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             if (!self.view.window) return;
             
             // Find the original file name for this progress
-            NSUInteger originalIndex = [self.task.progressList indexOfObject:progress];
-            if (originalIndex != NSNotFound && originalIndex < self.task.fileList.count) {
-                NSString *originalFileName = self.task.fileList[originalIndex];
+            NSUInteger originalIndex = NSNotFound;
+            
+            [self.task.progressLock lock];
+            originalIndex = [self.task.progressList indexOfObject:progress];
+            [self.task.progressLock unlock];
+            
+            if (originalIndex != NSNotFound) {
+                // Get the file name safely
+                NSString *originalFileName = nil;
+                
+                [self.task.fileListLock lock];
+                if (originalIndex < self.task.fileList.count) {
+                    originalFileName = self.task.fileList[originalIndex];
+                }
+                [self.task.fileListLock unlock];
+                
+                if (!originalFileName) return;
                 
                 // Find this file in our filtered list
                 NSUInteger filteredIndex = [self.filteredFileList indexOfObject:originalFileName];
@@ -716,7 +779,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:filteredIndex inSection:0];
                     if ([self.visibleIndexPaths containsObject:indexPath]) {
                         UITableViewCell *visibleCell = [self.tableView cellForRowAtIndexPath:indexPath];
-                        [self updateCell:visibleCell withProgress:progress forIndexPath:indexPath];
+                        if (visibleCell) {
+                            [self updateCell:visibleCell withProgress:progress forIndexPath:indexPath];
+                        }
                     }
                 }
             }
@@ -734,8 +799,20 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         }
         
         // Get current values before update to prevent race conditions
-        int64_t currentCompletedBytes = progress.completedUnitCount;
-        int currentPercentage = (int)(progress.fractionCompleted * 100);
+        int64_t currentCompletedBytes = 0;
+        int currentPercentage = 0;
+        
+        @try {
+            currentCompletedBytes = progress.completedUnitCount;
+            currentPercentage = (int)(progress.fractionCompleted * 100);
+            
+            // Ensure percentage is valid
+            if (currentPercentage < 0) currentPercentage = 0;
+            if (currentPercentage > 100) currentPercentage = 100;
+        } @catch (NSException *exception) {
+            NSLog(@"[ProgressView] Warning: Exception getting progress values: %@", exception);
+            return;
+        }
         
         // Only update if there is a meaningful change
         if (currentCompletedBytes != lastCompletedBytes || currentPercentage != lastPercentage) {
@@ -747,22 +824,39 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 // Check if view controller is still active - guard against accessing deallocated objects
                 if (!self.view.window) return;
                 
-                // Update overall progress bar (handled by observed progress now)
-                // and percentage label
+                // Update percentage label
                 UILabel *percentLabel = objc_getAssociatedObject(self.overallProgressView, @"percentLabel");
-                percentLabel.text = [NSString stringWithFormat:@"%d%%", currentPercentage];
+                if (percentLabel) {
+                    percentLabel.text = [NSString stringWithFormat:@"%d%%", currentPercentage];
+                }
                 
                 // Signal need for a filtered list update
                 self.needsFullTableReload = YES;
                 
                 // Check for completion
-                if (progress.fractionCompleted >= 1.0) {
+                BOOL isComplete = NO;
+                @try {
+                    isComplete = progress.fractionCompleted >= 1.0 || progress.finished;
+                } @catch (NSException *exception) {
+                    NSLog(@"[ProgressView] Warning: Exception checking completion: %@", exception);
+                    isComplete = NO;
+                }
+                
+                if (isComplete) {
                     // Add a completion message if needed - without reloading table if possible
-                    if (![self.filteredFileList containsObject:@"Complete"] && ![self.task.fileList containsObject:@"Complete"]) {
+                    BOOL completionEntryPresent = [self.filteredFileList containsObject:@"Complete"] || 
+                                                 [self.task.fileList containsObject:@"Complete"];
+                    
+                    if (!completionEntryPresent) {
+                        [self.task.fileListLock lock];
                         [self.task.fileList addObject:@"Complete"];
+                        [self.task.fileListLock unlock];
+                        
                         [self updateFilteredFileList]; // This will add Complete to filteredFileList
                         [self reloadTableViewPreservingOffset];
                     }
+                    
+                    // Update status text
                     self.statusLabel.text = @"Download complete";
                 }
             });
