@@ -281,11 +281,14 @@
     CGFloat tagSpacing = 8;
     
     // First, sort tags alphabetically and limit to a reasonable number
-    NSArray *sortedTags = [tags sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    // Convert to a set first to eliminate duplicates
+    NSSet *uniqueTags = [NSSet setWithArray:tags];
+    NSArray *sortedTags = [[uniqueTags allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
     NSInteger maxTags = 5; // Show only 5 tags at most to avoid clutter
     NSArray *displayTags = sortedTags.count > maxTags ? 
                           [sortedTags subarrayWithRange:NSMakeRange(0, maxTags)] : 
                           sortedTags;
+    
     
     for (NSString *tag in displayTags) {
         // Skip empty tags
@@ -614,6 +617,15 @@
 }
 
 #pragma mark - Action Methods
+
+- (void)refreshModpacks {
+    // Reset any active filters that might have been applied
+    [self.activeTagFilters removeAllObjects];
+    [self updateFilterIndicators];
+    
+    // Update search results with fresh data
+    [self updateSearchResults];
+}
 
 - (void)actionCancelDownload {
     // Reset the current download cell's appearance
@@ -1995,21 +2007,24 @@
                                                                                 } completion:nil];
                                                             } failure:nil];
                 
-                // Preserve original categories alongside new categories to maintain modloader info
-                NSMutableArray *categories = [NSMutableArray array];
-                
-                // Add original categories if they exist
-                if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
-                    [categories addObjectsFromArray:modpack[@"original_categories"]];
-                }
+                // Fix the tag duplication issue by creating a unique set of categories
+                NSMutableSet *uniqueCategories = [NSMutableSet set];
                 
                 // Add new categories if they exist
                 if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
-                    [categories addObjectsFromArray:modpack[@"categories"]];
+                    [uniqueCategories addObjectsFromArray:modpack[@"categories"]];
                 }
                 
-                // If tags have been updated, refresh the cell
-                [versionCell setTags:categories.count > 0 ? categories : (modpack[@"categories"] ?: @[])];
+                // Add original categories if they exist and weren't already added
+                if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
+                    [uniqueCategories addObjectsFromArray:modpack[@"original_categories"]];
+                }
+                
+                // Convert set back to array for the tags
+                NSArray *uniqueCategoriesArray = [uniqueCategories allObjects];
+                
+                // Update the cell's tags with the unique categories
+                [versionCell setTags:uniqueCategoriesArray];
             }
             
             // Show version menu if details loaded successfully
