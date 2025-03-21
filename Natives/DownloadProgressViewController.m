@@ -237,9 +237,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     
     // Defensive copy to prevent mutations during enumeration
     NSArray *fileListCopy = nil;
-    [self.task.fileListLock lock];
-    fileListCopy = [NSArray arrayWithArray:self.task.fileList];
-    [self.task.fileListLock unlock];
+    @synchronized(self.task.fileList) {
+        fileListCopy = [NSArray arrayWithArray:self.task.fileList];
+    }
     
     // Create a dictionary to track files by their base name
     NSMutableDictionary *fileMap = [NSMutableDictionary dictionary];
@@ -319,6 +319,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         return [path1 compare:path2];
     }];
 }
+
 
 - (void)refreshProgressUI {
     // Static variables for maintaining speed display between calls
@@ -497,16 +498,20 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             // Get the original index for this file name
             NSUInteger originalIndex = NSNotFound;
             
-            [self.task.fileListLock lock];
-            originalIndex = [self.task.fileList indexOfObject:fileName];
-            [self.task.fileListLock unlock];
+            @synchronized(self.task.fileList) {
+                originalIndex = [self.task.fileList indexOfObject:fileName];
+            }
             
             if (originalIndex != NSNotFound) {
                 // Make sure the progress list index is valid
-                [self.task.progressLock lock];
-                BOOL isValidIndex = originalIndex < self.task.progressList.count;
-                NSProgress *progress = isValidIndex ? self.task.progressList[originalIndex] : nil;
-                [self.task.progressLock unlock];
+                NSProgress *progress = nil;
+                
+                @synchronized(self.task.progressList) {
+                    BOOL isValidIndex = originalIndex < self.task.progressList.count;
+                    if (isValidIndex) {
+                        progress = self.task.progressList[originalIndex];
+                    }
+                }
                 
                 if (progress) {
                     [self updateCell:cell withProgress:progress forIndexPath:indexPath];
@@ -743,19 +748,19 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             // Find the original file name for this progress
             NSUInteger originalIndex = NSNotFound;
             
-            [self.task.progressLock lock];
-            originalIndex = [self.task.progressList indexOfObject:progress];
-            [self.task.progressLock unlock];
+            @synchronized(self.task.progressList) {
+                originalIndex = [self.task.progressList indexOfObject:progress];
+            }
             
             if (originalIndex != NSNotFound) {
                 // Get the file name safely
                 NSString *originalFileName = nil;
                 
-                [self.task.fileListLock lock];
-                if (originalIndex < self.task.fileList.count) {
-                    originalFileName = self.task.fileList[originalIndex];
+                @synchronized(self.task.fileList) {
+                    if (originalIndex < self.task.fileList.count) {
+                        originalFileName = self.task.fileList[originalIndex];
+                    }
                 }
-                [self.task.fileListLock unlock];
                 
                 if (!originalFileName) return;
                 
@@ -844,13 +849,25 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 
                 if (isComplete) {
                     // Add a completion message if needed - without reloading table if possible
-                    BOOL completionEntryPresent = [self.filteredFileList containsObject:@"Complete"] || 
-                                                 [self.task.fileList containsObject:@"Complete"];
+                    BOOL completionEntryPresent = [self.filteredFileList containsObject:@"Complete"];
+                    BOOL taskHasCompleteEntry = NO;
                     
-                    if (!completionEntryPresent) {
-                        [self.task.fileListLock lock];
-                        [self.task.fileList addObject:@"Complete"];
-                        [self.task.fileListLock unlock];
+                    @synchronized(self.task.fileList) {
+                        taskHasCompleteEntry = [self.task.fileList containsObject:@"Complete"];
+                    }
+                    
+                    if (!completionEntryPresent && !taskHasCompleteEntry) {
+                        @synchronized(self.task.fileList) {
+                            [self.task.fileList addObject:@"Complete"];
+                        }
+                        
+                        // Add a completion progress
+                        NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
+                        completeProgress.completedUnitCount = 1;
+                        
+                        @synchronized(self.task.progressList) {
+                            [self.task.progressList addObject:completeProgress];
+                        }
                         
                         [self updateFilteredFileList]; // This will add Complete to filteredFileList
                         [self reloadTableViewPreservingOffset];
