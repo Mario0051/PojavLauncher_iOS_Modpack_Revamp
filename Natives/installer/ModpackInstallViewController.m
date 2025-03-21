@@ -146,12 +146,21 @@
     [super prepareForReuse];
     
     // Reset the image view to avoid image flicker between cells
-    [self.modpackIconView cancelImageDownloadTask];
-    self.modpackIconView.image = nil;
+    // First cancel any active download to prevent callback race conditions
+    if (self.modpackIconView) {
+        [self.modpackIconView cancelImageDownloadTask];
+        self.modpackIconView.image = nil;
+    }
     
     // Reset the title and subtitle to ensure they're cleared for reuse
-    self.titleLabel.text = nil;
-    self.subtitleLabel.text = nil;
+    if (self.titleLabel) {
+        self.titleLabel.text = nil;
+        self.titleLabel.attributedText = nil;
+    }
+    
+    if (self.subtitleLabel) {
+        self.subtitleLabel.text = nil;
+    }
     
     // Clear existing tag views
     for (UIView *tagView in self.tagViews) {
@@ -160,36 +169,46 @@
     [self.tagViews removeAllObjects];
     
     // Reset the scroll view content size
-    self.tagsScrollView.contentSize = CGSizeZero;
+    if (self.tagsScrollView) {
+        self.tagsScrollView.contentSize = CGSizeZero;
+    }
+    
+    // Reset accessory view if needed
+    self.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    self.accessoryView = nil;
 }
 
 - (UIColor *)colorForTag:(NSString *)tag {
     // Enhanced category color mapping with semantically appropriate colors
-    NSDictionary *tagColors = @{
-        // Core gameplay categories
-        @"adventure": [UIColor systemGreenColor],          // Green: exploration, nature
-        @"challenging": [UIColor systemRedColor],          // Red: danger, difficulty
-        @"combat": [UIColor systemOrangeColor],            // Orange: action, intensity
-        @"kitchen sink": [UIColor systemPurpleColor],      // Purple: variety, abundance
-        @"lightweight": [UIColor systemTealColor],         // Teal: light, breezy
-        @"magic": [UIColor systemBlueColor],               // Blue: mystical, arcane
-        @"multiplayer": [UIColor systemIndigoColor],       // Indigo: social, connectivity
-        @"optimization": [UIColor colorWithRed:0.0 green:0.8 blue:0.9 alpha:1.0], // Cyan: efficiency, performance
-        @"quests": [UIColor systemYellowColor],            // Yellow: rewards, achievements
-        @"technology": [UIColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:1.0], // Gray: industrial, mechanical
-        
-        // Additional categories for better coverage
-        @"building": [UIColor colorWithRed:0.76 green:0.60 blue:0.42 alpha:1.0], // Brown: construction
-        @"exploration": [UIColor systemGreenColor],        // Same as adventure
-        @"survival": [UIColor systemOrangeColor],          // Survival-oriented
-        @"rpg": [UIColor systemPinkColor],                 // Pink: role-playing, fantasy
-        @"skyblock": [UIColor colorWithRed:0.53 green:0.81 blue:0.92 alpha:1.0], // Light blue: sky theme
-        @"mini game": [UIColor systemYellowColor],         // Mini-games like quests
-        @"modded": [UIColor systemPurpleColor],            // General modded category
-        @"fabric": [UIColor colorWithRed:0.31 green:0.31 blue:0.31 alpha:1.0],  // Dark gray: Fabric loader
-        @"forge": [UIColor colorWithRed:0.60 green:0.40 blue:0.20 alpha:1.0],   // Bronze: Forge loader
-        @"vanilla+": [UIColor colorWithRed:0.82 green:0.71 blue:0.55 alpha:1.0] // Vanilla enhanced
-    };
+    static NSDictionary *tagColors = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        tagColors = @{
+            // Core gameplay categories
+            @"adventure": [UIColor systemGreenColor],          // Green: exploration, nature
+            @"challenging": [UIColor systemRedColor],          // Red: danger, difficulty
+            @"combat": [UIColor systemOrangeColor],            // Orange: action, intensity
+            @"kitchen sink": [UIColor systemPurpleColor],      // Purple: variety, abundance
+            @"lightweight": [UIColor systemTealColor],         // Teal: light, breezy
+            @"magic": [UIColor systemBlueColor],               // Blue: mystical, arcane
+            @"multiplayer": [UIColor systemIndigoColor],       // Indigo: social, connectivity
+            @"optimization": [UIColor colorWithRed:0.0 green:0.8 blue:0.9 alpha:1.0], // Cyan: efficiency, performance
+            @"quests": [UIColor systemYellowColor],            // Yellow: rewards, achievements
+            @"technology": [UIColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:1.0], // Gray: industrial, mechanical
+            
+            // Additional categories for better coverage
+            @"building": [UIColor colorWithRed:0.76 green:0.60 blue:0.42 alpha:1.0], // Brown: construction
+            @"exploration": [UIColor systemGreenColor],        // Same as adventure
+            @"survival": [UIColor systemOrangeColor],          // Survival-oriented
+            @"rpg": [UIColor systemPinkColor],                 // Pink: role-playing, fantasy
+            @"skyblock": [UIColor colorWithRed:0.53 green:0.81 blue:0.92 alpha:1.0], // Light blue: sky theme
+            @"mini game": [UIColor systemYellowColor],         // Mini-games like quests
+            @"modded": [UIColor systemPurpleColor],            // General modded category
+            @"fabric": [UIColor colorWithRed:0.31 green:0.31 blue:0.31 alpha:1.0],  // Dark gray: Fabric loader
+            @"forge": [UIColor colorWithRed:0.60 green:0.40 blue:0.20 alpha:1.0],   // Bronze: Forge loader
+            @"vanilla+": [UIColor colorWithRed:0.82 green:0.71 blue:0.55 alpha:1.0] // Vanilla enhanced
+        };
+    });
     
     // Convert tag to lowercase for case-insensitive matching
     NSString *lowercaseTag = [tag lowercaseString];
@@ -252,7 +271,7 @@
     }
     [self.tagViews removeAllObjects];
     
-    if (tags.count == 0) {
+    if (!tags || tags.count == 0) {
         return;
     }
     
@@ -270,7 +289,7 @@
     
     for (NSString *tag in displayTags) {
         // Skip empty tags
-        if (tag.length == 0) continue;
+        if (!tag || tag.length == 0) continue;
         
         // Create tag container view
         UIView *tagView = [[UIView alloc] init];
@@ -596,6 +615,7 @@
 }
 
 - (void)dealloc {
+    // Remove all notification observers properly
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     
     // Remove KVO observer
@@ -635,11 +655,13 @@
     }
     
     // Clear the current results
+    [self.dataLock lock];
     [self.organizedModpacks removeAllObjects];
     [self.filteredModpacks removeAllObjects];
     [self.categories removeAllObjects];
     [self.visibilityList removeAllObjects];
     [self.unifiedSearchResults removeAllObjects];
+    [self.dataLock unlock];
     
     // Update filter based on segment
     NSString *sortMethod;
@@ -669,12 +691,14 @@
     // Reset pagination state
     self.hasMoreResults = YES;
     
-    // Clear the current results
+    // Clear the current results - use lock for thread safety
+    [self.dataLock lock];
     [self.organizedModpacks removeAllObjects];
     [self.filteredModpacks removeAllObjects];
     [self.categories removeAllObjects];
     [self.visibilityList removeAllObjects];
     [self.unifiedSearchResults removeAllObjects];
+    [self.dataLock unlock];
     
     // Reload with current filter settings
     [self updateSearchResults];
@@ -684,11 +708,29 @@
     // Create a set of all available tags
     NSMutableSet *allTagsSet = [NSMutableSet new];
     
+    // Get all tags from all modpacks - thread safe approach
+    [self.dataLock lock];
+    // Create a copy of organized modpacks to avoid mutation issues
+    NSArray *safeCategoriesArray = [NSArray arrayWithArray:self.organizedModpacks];
+    [self.dataLock unlock];
+    
     // Get all tags from all modpacks
-    for (NSArray *categoryModpacks in self.organizedModpacks) {
+    for (NSArray *categoryModpacks in safeCategoriesArray) {
+        // Skip if not an array
+        if (![categoryModpacks isKindOfClass:[NSArray class]]) continue;
+        
         for (NSDictionary *modpack in categoryModpacks) {
-            NSArray *categories = modpack[@"categories"] ?: @[];
+            // Skip if not a dictionary
+            if (![modpack isKindOfClass:[NSDictionary class]]) continue;
+            
+            NSArray *categories = modpack[@"categories"];
+            // Skip if categories is not an array
+            if (![categories isKindOfClass:[NSArray class]]) continue;
+            
             for (NSString *category in categories) {
+                // Skip if not a string
+                if (![category isKindOfClass:[NSString class]]) continue;
+                
                 // Store lowercase version for case-insensitive matching
                 [allTagsSet addObject:[category lowercaseString]];
             }
@@ -718,26 +760,30 @@
     
     // Add actions for each tag
     for (NSString *tag in allTags) {
-        BOOL isSelected = [self.activeTagFilters containsObject:tag];
+        // Create a copy of activeTagFilters to avoid any mutation during enumeration
+        NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
+        BOOL isSelected = [activeTagFiltersCopy containsObject:tag];
         NSString *formattedTag = formattedTagMap[tag];
         NSString *title = isSelected ? [NSString stringWithFormat:@"✓ %@", formattedTag] : formattedTag;
         
         UIAlertAction *action = [UIAlertAction actionWithTitle:title
                                                          style:UIAlertActionStyleDefault
                                                        handler:^(UIAlertAction * _Nonnull action) {
-            // Toggle tag selection
-            if (isSelected) {
-                [self.activeTagFilters removeObject:tag];
-            } else {
-                [self.activeTagFilters addObject:tag];
-            }
-            
-            // Apply filters without dismissing the menu
-            [self updateUnifiedSearchResults];
-            [self updateFilterIndicators];
-            
-            // Show the tag menu again with updated selection state
-            [self showTagFilterMenu:sender];
+            // Toggle tag selection - use main thread for UI updates
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (isSelected) {
+                    [self.activeTagFilters removeObject:tag];
+                } else {
+                    [self.activeTagFilters addObject:tag];
+                }
+                
+                // Apply filters without dismissing the menu
+                [self updateUnifiedSearchResults];
+                [self updateFilterIndicators];
+                
+                // Show the tag menu again with updated selection state
+                [self showTagFilterMenu:sender];
+            });
         }];
         
         [alertController addAction:action];
@@ -747,9 +793,12 @@
     UIAlertAction *clearAction = [UIAlertAction actionWithTitle:localize(@"Clear All Filters", nil)
                                                          style:UIAlertActionStyleDestructive
                                                        handler:^(UIAlertAction * _Nonnull action) {
-        [self.activeTagFilters removeAllObjects];
-        [self updateUnifiedSearchResults];
-        [self updateFilterIndicators];
+        // Clear all filters - use main thread for UI updates
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.activeTagFilters removeAllObjects];
+            [self updateUnifiedSearchResults];
+            [self updateFilterIndicators];
+        });
     }];
     [alertController addAction:clearAction];
     
@@ -759,9 +808,12 @@
                                                       handler:nil];
     [alertController addAction:doneAction];
     
-    // Present the alert
-    alertController.popoverPresentationController.barButtonItem = sender;
-    [self presentViewController:alertController animated:YES completion:nil];
+    // Present the alert on the main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Configure popover presentation for iPad
+        alertController.popoverPresentationController.barButtonItem = sender;
+        [self presentViewController:alertController animated:YES completion:nil];
+    });
 }
 
 #pragma mark - Data Loading
@@ -784,8 +836,16 @@
               searchFilters, prevList ? @"YES" : @"NO");
         
         // Perform the search, using the previous results if appending
+        NSMutableArray *prevResults = nil;
+        if (prevList) {
+            // Thread-safe copy of previous results
+            [self.dataLock lock];
+            prevResults = [NSMutableArray arrayWithArray:self.unifiedSearchResults];
+            [self.dataLock unlock];
+        }
+        
         NSMutableArray *newResults = [self.modrinth searchModWithFilters:searchFilters 
-                                             previousPageResult:prevList ? self.unifiedSearchResults : nil];
+                                             previousPageResult:prevResults];
         
         // Check for pagination status
         self.hasMoreResults = !self.modrinth.reachedLastPage;
@@ -843,54 +903,65 @@
 #pragma mark - UI State Management
 
 - (void)switchToLoadingState {
-    UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithCustomView:indicator]];
-    [indicator startAnimating];
-    self.navigationController.modalInPresentation = YES;
-    self.tableView.allowsSelection = NO;
-    
-    self.isDataLoading = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithCustomView:indicator]];
+        [indicator startAnimating];
+        self.navigationController.modalInPresentation = YES;
+        self.tableView.allowsSelection = NO;
+        
+        self.isDataLoading = YES;
+    });
 }
 
 - (void)switchToReadyState {
-    UIActivityIndicatorView *indicator = (id)self.navigationItem.rightBarButtonItems[0].customView;
-    [indicator stopAnimating];
-    
-    UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] 
-                                   initWithBarButtonSystemItem:UIBarButtonSystemItemClose
-                                   target:self 
-                                   action:@selector(actionClose)];
-                                   
-    UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
-                                        initWithImage:[UIImage systemImageNamed:@"tag"]
-                                        style:UIBarButtonItemStylePlain 
-                                        target:self 
-                                        action:@selector(showTagFilterMenu:)];
-                                        
-    if (self.activeTagFilters.count > 0) {
-        tagFilterButton.tintColor = [UIColor systemBlueColor];
-    }
-    
-    self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
-    self.navigationController.modalInPresentation = NO;
-    self.tableView.allowsSelection = YES;
-    [self.refreshControl endRefreshing];
-    
-    self.isDataLoading = NO;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIActivityIndicatorView *indicator = (id)self.navigationItem.rightBarButtonItems[0].customView;
+        [indicator stopAnimating];
+        
+        UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] 
+                                       initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                       target:self 
+                                       action:@selector(actionClose)];
+                                       
+        UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
+                                            initWithImage:[UIImage systemImageNamed:@"tag"]
+                                            style:UIBarButtonItemStylePlain 
+                                            target:self 
+                                            action:@selector(showTagFilterMenu:)];
+                                            
+        if (self.activeTagFilters.count > 0) {
+            tagFilterButton.tintColor = [UIColor systemBlueColor];
+        }
+        
+        self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
+        self.navigationController.modalInPresentation = NO;
+        self.tableView.allowsSelection = YES;
+        [self.refreshControl endRefreshing];
+        
+        self.isDataLoading = NO;
+    });
 }
 
 - (void)updateFilterIndicators {
-    // Update navigation title to indicate active filters
-    if (self.activeTagFilters.count > 0) {
-        self.navigationItem.rightBarButtonItems[1].tintColor = [UIColor systemBlueColor];
-    } else {
-        self.navigationItem.rightBarButtonItems[1].tintColor = nil; // Default tint
-    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Update navigation title to indicate active filters
+        if (self.activeTagFilters.count > 0) {
+            self.navigationItem.rightBarButtonItems[1].tintColor = [UIColor systemBlueColor];
+        } else {
+            self.navigationItem.rightBarButtonItems[1].tintColor = nil; // Default tint
+        }
+    });
 }
 
 #pragma mark - Data Organization and Filtering
 
 - (void)organizeModpacksByCategory:(NSArray *)modpacks {
+    // Guard against nil input
+    if (!modpacks) {
+        modpacks = @[];
+    }
+    
     [self.dataLock lock];
     
     // Clear previous data
@@ -1014,24 +1085,38 @@
         // If no category had a score, use the default "Other"
         NSString *category = (highestScore > 0) ? bestCategory : localize(@"Other Modpacks", nil);
         
-        // Add to appropriate category
-        [categorizedModpacks[category] addObject:modpack];
+        // Add to appropriate category - check for valid arrays first
+        NSMutableArray *categoryArray = categorizedModpacks[category];
+        if (categoryArray && [categoryArray isKindOfClass:[NSMutableArray class]]) {
+            [categoryArray addObject:modpack];
+        } else {
+            // If category doesn't exist for some reason, add to Other
+            NSMutableArray *otherArray = categorizedModpacks[localize(@"Other Modpacks", nil)];
+            if (otherArray && [otherArray isKindOfClass:[NSMutableArray class]]) {
+                [otherArray addObject:modpack];
+            }
+        }
     }
     
     // Feature the first few modpacks regardless of category
     NSMutableArray *featuredModpacks = [NSMutableArray array];
-    int featuredCount = MIN(5, modpacks.count);
-    for (int i = 0; i < featuredCount; i++) {
-        [featuredModpacks addObject:modpacks[i]];
+    NSInteger featuredCount = MIN(5, modpacks.count);
+    for (NSInteger i = 0; i < featuredCount; i++) {
+        if (i < safeModpacks.count) {
+            [featuredModpacks addObject:safeModpacks[i]];
+        }
     }
-    categorizedModpacks[localize(@"Featured Modpacks", nil)] = featuredModpacks;
+    
+    if (categorizedModpacks[localize(@"Featured Modpacks", nil)]) {
+        categorizedModpacks[localize(@"Featured Modpacks", nil)] = featuredModpacks;
+    }
     
     // Build the final organized arrays
     for (NSString *category in defaultCategories) {
         NSMutableArray *modpacksInCategory = categorizedModpacks[category];
         
         // Only add non-empty categories
-        if (modpacksInCategory.count > 0) {
+        if (modpacksInCategory && modpacksInCategory.count > 0) {
             [self.categories addObject:category];
             [self.visibilityList addObject:@(YES)]; // Start expanded by default
             [self.organizedModpacks addObject:modpacksInCategory];
@@ -1073,13 +1158,28 @@
     }
     
     // Add new modpacks to the "Other" category
-    [self.organizedModpacks[otherIndex] addObjectsFromArray:newModpacks];
-    [self.filteredModpacks[otherIndex] addObjectsFromArray:newModpacks];
+    if (otherIndex < self.organizedModpacks.count) {
+        NSMutableArray *otherModpacks = self.organizedModpacks[otherIndex];
+        if ([otherModpacks isKindOfClass:[NSMutableArray class]]) {
+            [otherModpacks addObjectsFromArray:newModpacks];
+        }
+    }
+    
+    if (otherIndex < self.filteredModpacks.count) {
+        NSMutableArray *filteredOtherModpacks = self.filteredModpacks[otherIndex];
+        if ([filteredOtherModpacks isKindOfClass:[NSMutableArray class]]) {
+            [filteredOtherModpacks addObjectsFromArray:newModpacks];
+        }
+    }
     
     // For search mode, also append to unified search results if they match the current criteria
     if (self.isSearchActive) {
         // Create a safe copy of newModpacks to iterate through
         NSArray *safeModpacks = [newModpacks copy];
+        
+        // Get a copy of search text and active tag filters to avoid race conditions
+        NSString *currentSearchText = [self.searchText copy];
+        NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
         
         for (id modpackObj in safeModpacks) {
             // Ensure the modpack is a dictionary
@@ -1101,13 +1201,13 @@
             NSArray *safeCategories = [categories copy];
             
             // Check if search text appears in title or description
-            BOOL matchesTextContent = (self.searchText.length == 0) || 
-                                      [title localizedCaseInsensitiveContainsString:self.searchText] ||
-                                      [description localizedCaseInsensitiveContainsString:self.searchText];
+            BOOL matchesTextContent = (currentSearchText.length == 0) || 
+                                      [title localizedCaseInsensitiveContainsString:currentSearchText] ||
+                                      [description localizedCaseInsensitiveContainsString:currentSearchText];
             
             // Check if search text matches any tag/category
             BOOL matchesTextInTags = NO;
-            if (self.searchText.length > 0) {
+            if (currentSearchText.length > 0) {
                 for (id tagObj in safeCategories) {
                     // Ensure tag is a string
                     if (![tagObj isKindOfClass:[NSString class]]) {
@@ -1115,7 +1215,7 @@
                     }
                     
                     NSString *tag = (NSString *)tagObj;
-                    if ([tag localizedCaseInsensitiveContainsString:self.searchText]) {
+                    if ([tag localizedCaseInsensitiveContainsString:currentSearchText]) {
                         matchesTextInTags = YES;
                         break;
                     }
@@ -1123,11 +1223,8 @@
             }
             
             // Check if modpack has at least one of the active tag filters
-            BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
+            BOOL matchesTagFilters = (activeTagFiltersCopy.count == 0);
             if (!matchesTagFilters) {
-                // Create a safe copy of activeTagFilters to avoid potential mutations
-                NSSet *safeActiveTagFilters = [self.activeTagFilters copy];
-                
                 for (id tagObj in safeCategories) {
                     // Ensure tag is a string
                     if (![tagObj isKindOfClass:[NSString class]]) {
@@ -1135,7 +1232,7 @@
                     }
                     
                     NSString *tag = (NSString *)tagObj;
-                    if ([safeActiveTagFilters containsObject:[tag lowercaseString]]) {
+                    if ([activeTagFiltersCopy containsObject:[tag lowercaseString]]) {
                         matchesTagFilters = YES;
                         break;
                     }
@@ -1184,7 +1281,9 @@
                 [self updateUnifiedSearchResults];
             } else {
                 // When search is dismissed, reload table to restore category view
-                [self.tableView reloadData];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self.tableView reloadData];
+                });
             }
         }
     } else {
@@ -1216,6 +1315,10 @@
         // Create a copy of allModpacks to avoid mutation issues
         NSArray *safeAllModpacks = [allModpacks copy];
         
+        // Create copies of filter criteria to avoid race conditions
+        NSString *searchTextCopy = [self.searchText copy];
+        NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
+        
         for (id modpackObj in safeAllModpacks) {
             if (![modpackObj isKindOfClass:[NSDictionary class]]) {
                 continue; // Skip invalid modpacks
@@ -1234,13 +1337,13 @@
             NSArray *safeCategories = [categories copy];
             
             // Check if search text appears in title or description
-            BOOL matchesTextContent = (self.searchText.length == 0) || 
-                                      [title localizedCaseInsensitiveContainsString:self.searchText] ||
-                                      [description localizedCaseInsensitiveContainsString:self.searchText];
+            BOOL matchesTextContent = (searchTextCopy.length == 0) || 
+                                      [title localizedCaseInsensitiveContainsString:searchTextCopy] ||
+                                      [description localizedCaseInsensitiveContainsString:searchTextCopy];
             
             // Check if search text matches any tag/category
             BOOL matchesTextInTags = NO;
-            if (self.searchText.length > 0) {
+            if (searchTextCopy.length > 0) {
                 for (id tagObj in safeCategories) {
                     // Ensure tag is a string
                     if (![tagObj isKindOfClass:[NSString class]]) {
@@ -1248,7 +1351,7 @@
                     }
                     
                     NSString *tag = (NSString *)tagObj;
-                    if ([tag localizedCaseInsensitiveContainsString:self.searchText]) {
+                    if ([tag localizedCaseInsensitiveContainsString:searchTextCopy]) {
                         matchesTextInTags = YES;
                         break;
                     }
@@ -1256,11 +1359,8 @@
             }
             
             // Check if modpack has at least one of the active tag filters
-            BOOL matchesTagFilters = (self.activeTagFilters.count == 0);
+            BOOL matchesTagFilters = (activeTagFiltersCopy.count == 0);
             if (!matchesTagFilters) {
-                // Create a safe copy of activeTagFilters
-                NSSet *safeActiveTagFilters = [self.activeTagFilters copy];
-                
                 for (id tagObj in safeCategories) {
                     // Ensure tag is a string
                     if (![tagObj isKindOfClass:[NSString class]]) {
@@ -1268,7 +1368,7 @@
                     }
                     
                     NSString *tag = (NSString *)tagObj;
-                    if ([safeActiveTagFilters containsObject:[tag lowercaseString]]) {
+                    if ([activeTagFiltersCopy containsObject:[tag lowercaseString]]) {
                         matchesTagFilters = YES;
                         break;
                     }
@@ -1282,14 +1382,14 @@
         }
         
         // Sort results by relevance to search query if text search is active
-        if (self.searchText.length > 0) {
+        if (searchTextCopy.length > 0) {
             [self.unifiedSearchResults sortUsingComparator:^NSComparisonResult(NSDictionary *modpack1, NSDictionary *modpack2) {
                 NSString *title1 = modpack1[@"title"] ?: @"";
                 NSString *title2 = modpack2[@"title"] ?: @"";
                 
                 // If one title contains the search text exactly but the other doesn't, prioritize the exact match
-                BOOL title1ContainsExact = [title1 localizedCaseInsensitiveContainsString:self.searchText];
-                BOOL title2ContainsExact = [title2 localizedCaseInsensitiveContainsString:self.searchText];
+                BOOL title1ContainsExact = [title1 localizedCaseInsensitiveContainsString:searchTextCopy];
+                BOOL title2ContainsExact = [title2 localizedCaseInsensitiveContainsString:searchTextCopy];
                 
                 if (title1ContainsExact && !title2ContainsExact) {
                     return NSOrderedAscending;
@@ -1315,8 +1415,10 @@
     
     [self.dataLock unlock];
     
-    // Reload the table view with the unified results
-    [self.tableView reloadData];
+    // Reload the table view with the unified results on the main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.tableView reloadData];
+    });
 }
 
 #pragma mark - UISearchResultsUpdating
@@ -1393,15 +1495,18 @@
     
     // When in search mode, show unified search results
     if (self.isSearchActive) {
+        [self.dataLock lock];
         NSInteger count = self.unifiedSearchResults.count;
+        BOOL hasMore = self.hasMoreResults;
+        [self.dataLock unlock];
         
         // If we have no results but might get more, show a loading indicator
-        if (count == 0 && self.hasMoreResults) {
+        if (count == 0 && hasMore) {
             return 1;
         }
         
         // If we have results and might get more, add 1 for the loading indicator
-        if (count > 0 && self.hasMoreResults) {
+        if (count > 0 && hasMore) {
             return count + 1;
         }
         
@@ -1488,6 +1593,9 @@
     // Store section index
     headerView.expandCollapseButton.tag = section;
     
+    // Remove existing targets to avoid duplicate actions
+    [headerView.expandCollapseButton removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
+    
     // Add action for the button
     [headerView.expandCollapseButton addTarget:self action:@selector(toggleSection:) forControlEvents:UIControlEventTouchUpInside];
     
@@ -1518,8 +1626,10 @@
         
         [self.dataLock unlock];
         
-        // Update section
-        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationFade];
+        // Update section on the main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationFade];
+        });
     } else {
         [self.dataLock unlock];
     }
@@ -1549,8 +1659,13 @@
     
     // SEARCH MODE: Show unified search results
     if (self.isSearchActive) {
+        [self.dataLock lock];
+        
+        NSInteger resultsCount = self.unifiedSearchResults.count;
+        BOOL hasMore = self.hasMoreResults;
+        
         // If we're showing the loading indicator row
-        if (self.hasMoreResults && indexPath.row == self.unifiedSearchResults.count) {
+        if (hasMore && indexPath.row == resultsCount) {
             cell.titleLabel.text = localize(@"Loading more results...", nil);
             cell.subtitleLabel.text = @"";
             [cell setTags:@[]];
@@ -1561,6 +1676,8 @@
             [activityIndicator startAnimating];
             cell.accessoryView = activityIndicator;
             
+            [self.dataLock unlock];
+            
             // Trigger loading more results if not already loading
             if (!self.isLoadingMoreResults) {
                 [self loadMoreResults];
@@ -1570,7 +1687,7 @@
         }
         
         // If we have no results
-        if (self.unifiedSearchResults.count == 0) {
+        if (resultsCount == 0) {
             cell.titleLabel.text = localize(@"No modpacks found", nil);
             cell.subtitleLabel.text = localize(@"Try changing your search criteria", nil);
             [cell setTags:@[]];
@@ -1578,23 +1695,43 @@
             cell.modpackIconView.image = [UIImage systemImageNamed:@"cube.box"];
             cell.modpackIconView.tintColor = [UIColor systemGray3Color];
             
+            [self.dataLock unlock];
             return cell;
         }
         
-        // Regular result row
-        NSDictionary *modpack = self.unifiedSearchResults[indexPath.row];
+        // Make sure the index path is in range
+        if (indexPath.row >= resultsCount) {
+            [self.dataLock unlock];
+            
+            // Return a generic cell if out of range
+            cell.titleLabel.text = @"";
+            cell.subtitleLabel.text = @"";
+            [cell setTags:@[]];
+            return cell;
+        }
+        
+        // Regular result row - get a safe copy
+        NSDictionary *modpack = [self.unifiedSearchResults[indexPath.row] copy];
+        
+        [self.dataLock unlock];
+        
+        // Safely extract values with type checking
+        NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"Unknown";
+        NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
+        NSString *imageUrl = [modpack[@"imageUrl"] isKindOfClass:[NSString class]] ? modpack[@"imageUrl"] : @"";
+        BOOL detailsLoaded = [modpack[@"versionDetailsLoaded"] boolValue];
+        NSArray *categories = [modpack[@"categories"] isKindOfClass:[NSArray class]] ? modpack[@"categories"] : @[];
         
         // Update the cell with modpack data
-        cell.titleLabel.text = modpack[@"title"] ?: @"Unknown";
-        cell.subtitleLabel.text = modpack[@"description"] ?: @"";
+        cell.titleLabel.text = title;
+        cell.subtitleLabel.text = description;
         
         // Set tags from categories
-        [cell setTags:modpack[@"categories"] ?: @[]];
+        [cell setTags:categories];
         
         // Set modpack icon with improved image loading
         cell.modpackIconView.image = nil; // Reset image first to avoid stale images
         UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
-        NSString *imageUrl = modpack[@"imageUrl"] ?: @"";
         
         if (imageUrl.length > 0) {
             // Convert WebP URLs to supported formats
@@ -1602,9 +1739,6 @@
             
             // Create an absolute URL if it's not already
             NSURL *iconURL = [NSURL URLWithString:imageUrl];
-            
-            // Add URL logging to help diagnose issues
-            NSLog(@"[ModpackInstall] Loading image for %@ from URL: %@", modpack[@"title"], iconURL);
             
             // Use the shared image downloader from AFNetworking with clear cache policy
             NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:iconURL];
@@ -1628,14 +1762,8 @@
                                                                      animations:^{
                                                                          cell.modpackIconView.image = image;
                                                                      } completion:nil];
-                                                     
-                                                     // Log success for debugging
-                                                     NSLog(@"[ModpackInstall] Successfully loaded image for %@", modpack[@"title"]);
                                                  } 
                                                  failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
-                                                     // Log error for debugging
-                                                     NSLog(@"[ModpackInstall] Failed to load image for %@: %@", modpack[@"title"], error.localizedDescription);
-                                                     
                                                      // Ensure fallback image is set
                                                      cell.modpackIconView.image = fallbackImage;
                                                  }];
@@ -1645,7 +1773,6 @@
         }
         
         // Set accessory based on whether details are loaded
-        BOOL detailsLoaded = [modpack[@"versionDetailsLoaded"] boolValue];
         cell.accessoryType = detailsLoaded ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
         if (!detailsLoaded) {
             UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -1680,17 +1807,17 @@
         return cell;
     }
     
-    // Get the modpack data
-    NSDictionary *modpack = self.organizedModpacks[indexPath.section][indexPath.row];
-    
-    // Make a copy to use after releasing the lock
-    NSString *title = [modpack[@"title"] copy] ?: @"Unknown";
-    NSString *description = [modpack[@"description"] copy] ?: @"";
-    NSString *imageUrl = [modpack[@"imageUrl"] copy] ?: @"";
-    BOOL detailsLoaded = [modpack[@"versionDetailsLoaded"] boolValue];
-    NSArray *categories = [modpack[@"categories"] copy] ?: @[];
+    // Get the modpack data and make a safe copy
+    NSDictionary *modpack = [self.organizedModpacks[indexPath.section][indexPath.row] copy];
     
     [self.dataLock unlock];
+    
+    // Safely extract values with type checking
+    NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"Unknown";
+    NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
+    NSString *imageUrl = [modpack[@"imageUrl"] isKindOfClass:[NSString class]] ? modpack[@"imageUrl"] : @"";
+    BOOL detailsLoaded = [modpack[@"versionDetailsLoaded"] boolValue];
+    NSArray *categories = [modpack[@"categories"] isKindOfClass:[NSArray class]] ? modpack[@"categories"] : @[];
     
     // Update the cell with modpack data
     cell.titleLabel.text = title;
@@ -1709,9 +1836,6 @@
         
         // Create an absolute URL if it's not already
         NSURL *iconURL = [NSURL URLWithString:imageUrl];
-        
-        // Add URL logging to help diagnose issues
-        NSLog(@"[ModpackInstall] Loading image for %@ from URL: %@", title, iconURL);
         
         // Use the shared image downloader from AFNetworking with clear cache policy
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:iconURL];
@@ -1735,14 +1859,8 @@
                                                                  animations:^{
                                                                      cell.modpackIconView.image = image;
                                                                  } completion:nil];
-                                                 
-                                                 // Log success for debugging
-                                                 NSLog(@"[ModpackInstall] Successfully loaded image for %@", title);
                                              } 
                                              failure:^(NSURLRequest *request, NSHTTPURLResponse *response, NSError *error) {
-                                                 // Log error for debugging
-                                                 NSLog(@"[ModpackInstall] Failed to load image for %@: %@", title, error.localizedDescription);
-                                                 
                                                  // Ensure fallback image is set
                                                  cell.modpackIconView.image = fallbackImage;
                                              }];
@@ -1751,7 +1869,7 @@
         cell.modpackIconView.image = fallbackImage;
     }
     
-    // Set accessory based on whether details are loaded
+// Set accessory based on whether details are loaded
     cell.accessoryType = detailsLoaded ? UITableViewCellAccessoryDisclosureIndicator : UITableViewCellAccessoryNone;
     if (!detailsLoaded) {
         UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -1783,12 +1901,17 @@
     
     // Get the modpack based on whether we're in search mode or category mode
     if (self.isSearchActive) {
+        [self.dataLock lock];
+        
         // Check bounds
         if (indexPath.row >= self.unifiedSearchResults.count || self.unifiedSearchResults.count == 0) {
+            [self.dataLock unlock];
             return;
         }
         
-        modpack = self.unifiedSearchResults[indexPath.row];
+        // Make a safe copy to avoid race conditions
+        modpack = [self.unifiedSearchResults[indexPath.row] copy];
+        [self.dataLock unlock];
     } else {
         [self.dataLock lock];
         
@@ -1800,19 +1923,17 @@
             return;
         }
         
-        modpack = self.organizedModpacks[indexPath.section][indexPath.row];
+        // Make a safe copy to avoid race conditions
+        modpack = [self.organizedModpacks[indexPath.section][indexPath.row] copy];
         [self.dataLock unlock];
     }
     
     // Check if details already loaded
     if ([modpack[@"versionDetailsLoaded"] boolValue]) {
-        // Make a copy to use
-        NSDictionary *modpackCopy = [modpack copy];
-        
         // Show version selection menu
-        [self showVersionMenu:modpackCopy atIndexPath:indexPath];
+        [self showVersionMenu:modpack atIndexPath:indexPath];
     } else {
-        // Make a copy
+        // Load details first
         NSMutableDictionary *modpackCopy = [modpack mutableCopy];
         
         // Load details first
@@ -1823,6 +1944,10 @@
 - (void)loadModpackDetails:(NSMutableDictionary *)modpack atIndexPath:(NSIndexPath *)indexPath {
     // Show loading indicator
     ModpackVersionCell *cell = (ModpackVersionCell *)[self.tableView cellForRowAtIndexPath:indexPath];
+    if (!cell) {
+        return; // Cell might have been scrolled offscreen
+    }
+    
     UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     [activityIndicator startAnimating];
     cell.accessoryView = activityIndicator;
@@ -1833,17 +1958,25 @@
         [self.modrinth loadDetailsOfMod:modpack];
         
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Update cell to use disclosure indicator
-            cell.accessoryView = nil;
-            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            // Update cell to use disclosure indicator - check if cell is still visible
+            UITableViewCell *updatedCell = [self.tableView cellForRowAtIndexPath:indexPath];
+            if (updatedCell) {
+                updatedCell.accessoryView = nil;
+                updatedCell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            }
             
             // Update data model - find the modpack in all lists and update it
             [self.dataLock lock];
             
             // Update in organized lists
             for (NSMutableArray *category in self.organizedModpacks) {
+                if (![category isKindOfClass:[NSMutableArray class]]) continue;
+                
                 for (NSInteger i = 0; i < category.count; i++) {
-                    if ([category[i][@"id"] isEqual:modpack[@"id"]]) {
+                    NSDictionary *item = category[i];
+                    if (![item isKindOfClass:[NSDictionary class]]) continue;
+                    
+                    if ([item[@"id"] isEqual:modpack[@"id"]]) {
                         category[i] = modpack;
                     }
                 }
@@ -1851,8 +1984,13 @@
             
             // Update in filtered lists
             for (NSMutableArray *category in self.filteredModpacks) {
+                if (![category isKindOfClass:[NSMutableArray class]]) continue;
+                
                 for (NSInteger i = 0; i < category.count; i++) {
-                    if ([category[i][@"id"] isEqual:modpack[@"id"]]) {
+                    NSDictionary *item = category[i];
+                    if (![item isKindOfClass:[NSDictionary class]]) continue;
+                    
+                    if ([item[@"id"] isEqual:modpack[@"id"]]) {
                         category[i] = modpack;
                     }
                 }
@@ -1860,18 +1998,24 @@
             
             // Update in unified search results
             for (NSInteger i = 0; i < self.unifiedSearchResults.count; i++) {
-                if ([self.unifiedSearchResults[i][@"id"] isEqual:modpack[@"id"]]) {
+                NSDictionary *item = self.unifiedSearchResults[i];
+                if (![item isKindOfClass:[NSDictionary class]]) continue;
+                
+                if ([item[@"id"] isEqual:modpack[@"id"]]) {
                     self.unifiedSearchResults[i] = modpack;
                 }
             }
             
             [self.dataLock unlock];
             
-            // If icon URL has been updated, reload image
-            if (modpack[@"imageUrl"]) {
+            // If icon URL has been updated, reload image - check if cell is still visible
+            if (modpack[@"imageUrl"] && [updatedCell isKindOfClass:[ModpackVersionCell class]]) {
+                ModpackVersionCell *versionCell = (ModpackVersionCell *)updatedCell;
+                
                 // Create an absolute URL if it's not already
-                NSURL *iconURL = [NSURL URLWithString:modpack[@"imageUrl"]];
-                NSLog(@"[ModpackInstall] Reloading updated image for %@ from URL: %@", modpack[@"title"], iconURL);
+                NSString *imageUrl = [modpack[@"imageUrl"] isKindOfClass:[NSString class]] ? modpack[@"imageUrl"] : @"";
+                imageUrl = [versionCell convertWebPUrl:imageUrl];
+                NSURL *iconURL = [NSURL URLWithString:imageUrl];
                 
                 // Use the shared image downloader from AFNetworking with clear cache policy
                 NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:iconURL];
@@ -1880,29 +2024,33 @@
                 [request setTimeoutInterval:15.0];
                 
                 // Cancel any previous image tasks
-                [cell.modpackIconView cancelImageDownloadTask];
+                [versionCell.modpackIconView cancelImageDownloadTask];
                 
                 // Load the updated image
-                [cell.modpackIconView setImageWithURLRequest:request 
-                                           placeholderImage:cell.modpackIconView.image ?: [UIImage imageNamed:@"DefaultProfile"]
-                                                    success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
-                                                        [UIView transitionWithView:cell.modpackIconView
-                                                                          duration:0.3
-                                                                           options:UIViewAnimationOptionTransitionCrossDissolve
-                                                                        animations:^{
-                                                                            cell.modpackIconView.image = image;
-                                                                        } completion:nil];
-                                                    } failure:nil];
+                [versionCell.modpackIconView setImageWithURLRequest:request 
+                                                   placeholderImage:versionCell.modpackIconView.image ?: [UIImage imageNamed:@"DefaultProfile"]
+                                                            success:^(NSURLRequest *request, NSHTTPURLResponse *response, UIImage *image) {
+                                                                [UIView transitionWithView:versionCell.modpackIconView
+                                                                                  duration:0.3
+                                                                                   options:UIViewAnimationOptionTransitionCrossDissolve
+                                                                                animations:^{
+                                                                                    versionCell.modpackIconView.image = image;
+                                                                                } completion:nil];
+                                                            } failure:nil];
+                
+                // If tags have been updated, refresh the cell
+                [versionCell setTags:modpack[@"categories"] ?: @[]];
             }
-            
-            // If tags have been updated, refresh the cell
-            [cell setTags:modpack[@"categories"] ?: @[]];
             
             // Show version menu if details loaded successfully
             if ([modpack[@"versionDetailsLoaded"] boolValue]) {
                 [self showVersionMenu:modpack atIndexPath:indexPath];
             } else {
-                showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                if (self.modrinth.lastError) {
+                    showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                } else {
+                    showDialog(localize(@"Error", nil), @"Failed to load modpack details. Please try again later.");
+                }
             }
         });
     });
@@ -1910,30 +2058,76 @@
 
 - (void)showVersionMenu:(NSDictionary *)modpack atIndexPath:(NSIndexPath *)indexPath {
     ModpackVersionCell *cell = (ModpackVersionCell *)[self.tableView cellForRowAtIndexPath:indexPath];
+    if (!cell) {
+        // The cell might have been scrolled off-screen
+        // Create a new temporary cell that won't be displayed just to handle the menu
+        cell = [[ModpackVersionCell alloc] init];
+        cell.modpackIconView = [[UIImageView alloc] init];
+        cell.modpackIconView.image = [UIImage imageNamed:@"DefaultProfile"];
+    }
     
     NSMutableArray<UIAction *> *menuItems = [[NSMutableArray alloc] init];
-    [modpack[@"versionNames"] enumerateObjectsUsingBlock:
+    
+    // Validate the version arrays
+    NSArray *versionNames = modpack[@"versionNames"];
+    NSArray *mcVersionNames = modpack[@"mcVersionNames"];
+    
+    if (!versionNames || ![versionNames isKindOfClass:[NSArray class]] || 
+        !mcVersionNames || ![mcVersionNames isKindOfClass:[NSArray class]]) {
+        showDialog(localize(@"Error", nil), @"Invalid version information. Please try again.");
+        return;
+    }
+    
+    [versionNames enumerateObjectsUsingBlock:
     ^(NSString *name, NSUInteger i, BOOL *stop) {
+        // Skip invalid indices
+        if (i >= mcVersionNames.count) return;
+        
+        // Skip non-string values
+        if (![name isKindOfClass:[NSString class]] || 
+            ![mcVersionNames[i] isKindOfClass:[NSString class]]) return;
+        
         NSString *nameWithVersion = name;
-        NSString *mcVersion = modpack[@"mcVersionNames"][i];
+        NSString *mcVersion = mcVersionNames[i];
         if (![name hasSuffix:mcVersion]) {
             nameWithVersion = [NSString stringWithFormat:@"%@ - %@", name, mcVersion];
         }
+        
         [menuItems addObject:[UIAction
             actionWithTitle:nameWithVersion
             image:nil identifier:nil
             handler:^(UIAction *action) {
                 [self actionClose];
+                
+                // Safely create the icon path
                 NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
-                [UIImagePNGRepresentation([cell.modpackIconView.image _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
+                UIImage *iconImage = cell.modpackIconView.image ?: [UIImage imageNamed:@"DefaultProfile"];
+                [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
+                
+                // Safely install the modpack
                 [self.modrinth installModpackFromDetail:modpack atIndex:i];
             }]];
     }];
     
-    self.currentMenu = [UIMenu menuWithTitle:modpack[@"title"] children:menuItems];
+    // If no valid menu items, show error
+    if (menuItems.count == 0) {
+        showDialog(localize(@"Error", nil), @"No valid versions available for this modpack.");
+        return;
+    }
+    
+    self.currentMenu = [UIMenu menuWithTitle:modpack[@"title"] ?: @"Select Version" children:menuItems];
     UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:self];
-    cell.interactions = @[interaction];
-    [interaction _presentMenuAtLocation:CGPointZero];
+    
+    // Only set interactions if cell is visible
+    if ([cell superview]) {
+        cell.interactions = @[interaction];
+        [interaction _presentMenuAtLocation:CGPointZero];
+    } else {
+        // If cell isn't visible, present menu from a fixed point
+        UIView *containerView = self.view;
+        containerView.interactions = @[interaction];
+        [interaction _presentMenuAtLocation:CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2)];
+    }
 }
 
 @end
