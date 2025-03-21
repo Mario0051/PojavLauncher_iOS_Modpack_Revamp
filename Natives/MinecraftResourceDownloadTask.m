@@ -98,23 +98,27 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 }
 
 - (void)prepareForDownload {
-    [self.progressLock lock];
     // Reset progress tracking
-    self.progress = [NSProgress new];
-    self.progress.totalUnitCount = 0; // Start with 0 and add as we go
-    self.progress.cancellable = YES;
-    
-    // Reset text progress for UI
-    self.textProgress = [NSProgress new];
-    self.textProgress.totalUnitCount = 0;
-    self.textProgress.cancellable = YES;
-    [self.progressLock unlock];
+    @synchronized(self) {
+        // Reset progress tracking
+        self.progress = [NSProgress new];
+        self.progress.totalUnitCount = 0; // Start with 0 and add as we go
+        self.progress.cancellable = YES;
+        
+        // Reset text progress for UI
+        self.textProgress = [NSProgress new];
+        self.textProgress.totalUnitCount = 0;
+        self.textProgress.cancellable = YES;
+    }
     
     // Reset tracking lists
-    [self.fileListLock lock];
-    [self.fileList removeAllObjects];
-    [self.progressList removeAllObjects];
-    [self.fileListLock unlock];
+    @synchronized(self.fileList) {
+        [self.fileList removeAllObjects];
+    }
+    
+    @synchronized(self.progressList) {
+        [self.progressList removeAllObjects];
+    }
     
     // Reset download tracking
     @synchronized(self.pendingDownloads) {
@@ -122,6 +126,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         self.activeDownloads = 0;
     }
 }
+
 
 - (void)processNextDownloadInQueue {
     @synchronized(self.pendingDownloads) {
@@ -229,41 +234,42 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         __block BOOL sizeUpdated = NO;
         
         // Add to file list for UI tracking (before creating the task to avoid race conditions)
-        [self.fileListLock lock];
-        [self.fileList addObject:name];
-        [self.fileListLock unlock];
+        @synchronized(self.fileList) {
+            [self.fileList addObject:name];
+        }
         
         // Create a progress object for this download before the task is created
         downloadProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
         downloadProgress.kind = NSProgressKindFile;
         
-        // Add this progress to our tracking list - using lock for thread safety
+        // Add this progress to our tracking list - using synchronization for thread safety
         BOOL progressAdded = NO;
         
-        [self.progressLock lock];
-        @try {
-            [self.progressList addObject:downloadProgress];
-            
-            // Update overall progress total
-            if (!self.progress) {
-                self.progress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
-            } else {
-                self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+        @synchronized(self) {
+            @try {
+                @synchronized(self.progressList) {
+                    [self.progressList addObject:downloadProgress];
+                }
+                
+                // Update overall progress total
+                if (!self.progress) {
+                    self.progress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
+                } else {
+                    self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+                }
+                
+                if (!self.textProgress) {
+                    self.textProgress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
+                } else {
+                    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                }
+                
+                // Add the progress as a child to our overall progress
+                [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
+                progressAdded = YES;
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Exception adding progress: %@", exception);
             }
-            
-            if (!self.textProgress) {
-                self.textProgress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
-            } else {
-                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-            }
-            
-            // Add the progress as a child to our overall progress
-            [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
-            progressAdded = YES;
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Exception adding progress: %@", exception);
-        } @finally {
-            [self.progressLock unlock];
         }
         
         if (!progressAdded) {
@@ -305,8 +311,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                         break;
                     }
                     
-                    BOOL lockAcquired = [weakSelf.progressLock tryLock];
-                    if (lockAcquired) {
+                    @synchronized(weakSelf) {
                         @try {
                             // Update completion amount with safeguards
                             CGFloat fraction = taskProgress.fractionCompleted;
@@ -319,8 +324,6 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                             }
                         } @catch (NSException *exception) {
                             NSLog(@"[MCDL] Warning: Exception updating progress: %@", exception);
-                        } @finally {
-                            [weakSelf.progressLock unlock];
                         }
                     }
                     
@@ -334,8 +337,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             if (size == 0 && response.expectedContentLength > 0) {
                 NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
                 
-                BOOL lockAcquired = [weakSelf.progressLock tryLock];
-                if (lockAcquired) {
+                @synchronized(weakSelf) {
                     @try {
                         // Update progress size and overall progress total
                         NSUInteger oldSize = downloadProgress.totalUnitCount;
@@ -353,8 +355,6 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                         sizeUpdated = YES;
                     } @catch (NSException *exception) {
                         NSLog(@"[MCDL] Warning: Exception updating progress size: %@", exception);
-                    } @finally {
-                        [weakSelf.progressLock unlock];
                     }
                 }
                 
@@ -394,11 +394,13 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             
             // Safely check if progress is cancelled to avoid potential crashes
             BOOL isCancelled = NO;
-            @try {
-                isCancelled = weakSelf.progress.cancelled;
-            } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
-                isCancelled = NO;
+            @synchronized(weakSelf) {
+                @try {
+                    isCancelled = weakSelf.progress.cancelled;
+                } @catch (NSException *exception) {
+                    NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
+                    isCancelled = NO;
+                }
             }
             
             if (isCancelled) {
@@ -445,8 +447,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                         NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
                         
                         // Update progress with actual file size - safely
-                        BOOL lockAcquired = [weakSelf.progressLock tryLock];
-                        if (lockAcquired) {
+                        @synchronized(weakSelf) {
                             @try {
                                 if (fileSize > 0 && fileSize != downloadProgress.totalUnitCount && weakSelf.progress) {
                                     // Add the difference to total progress
@@ -461,8 +462,6 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                                 }
                             } @catch (NSException *exception) {
                                 NSLog(@"[MCDL] Warning: Exception updating progress size: %@", exception);
-                            } @finally {
-                                [weakSelf.progressLock unlock];
                             }
                         }
                     }
@@ -470,8 +469,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             }
             
             // Ensure progress is marked as complete
-            BOOL lockAcquired = [weakSelf.progressLock tryLock];
-            if (lockAcquired) {
+            @synchronized(weakSelf) {
                 @try {
                     downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
                     
@@ -479,8 +477,6 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                     weakSelf.needsUIUpdate = YES;
                 } @catch (NSException *exception) {
                     NSLog(@"[MCDL] Warning: Exception setting progress as complete: %@", exception);
-                } @finally {
-                    [weakSelf.progressLock unlock];
                 }
             }
             
@@ -626,19 +622,13 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
     // Safely cancel progress
-    @try {
-        BOOL lockAcquired = [self.progressLock tryLock];
-        if (lockAcquired) {
+    @synchronized(self) {
+        @try {
             [self.progress cancel];
             [self.textProgress cancel];
-            [self.progressLock unlock];
-        } else {
-            // Try without lock if we can't acquire it
-            [self.progress cancel];
-            [self.textProgress cancel];
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
         }
-    } @catch (NSException *exception) {
-        NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
     }
     
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
