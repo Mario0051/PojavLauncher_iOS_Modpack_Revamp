@@ -919,8 +919,13 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                                      group, artifactName, version, artifactName, version, classifier];
                 artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
                 
-                if (library[@"checksums"] && [library[@"checksums"] isKindOfClass:[NSArray class]] && library[@"checksums"].count > 0) {
-                    artifactDict[@"sha1"] = library[@"checksums"][0];
+                // Safely get SHA1 from checksums if available
+                id checksums = library[@"checksums"];
+                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                    NSArray *checksumsArray = (NSArray *)checksums;
+                    if (checksumsArray.count > 0) {
+                        artifactDict[@"sha1"] = checksumsArray[0];
+                    }
                 }
             } else {
                 // Fallback to the original logic for standard 3-part library names
@@ -930,8 +935,13 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                                      libParts[2]];
                 artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
                 
-                if (library[@"checksums"] && [library[@"checksums"] isKindOfClass:[NSArray class]] && library[@"checksums"].count > 0) {
-                    artifactDict[@"sha1"] = library[@"checksums"][0];
+                // Safely get SHA1 from checksums if available
+                id checksums = library[@"checksums"];
+                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                    NSArray *checksumsArray = (NSArray *)checksums;
+                    if (checksumsArray.count > 0) {
+                        artifactDict[@"sha1"] = checksumsArray[0];
+                    }
                 }
             }
         }
