@@ -902,6 +902,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
             NSArray *libParts = [name componentsSeparatedByString:@":"];
             
+            // Check for Forge libraries explicitly
+            BOOL isForgeLibrary = [libParts[0] isEqualToString:@"net.minecraftforge"];
+            
             // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
             if (libParts.count >= 3) {
                 NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
@@ -914,10 +917,33 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                     classifier = [NSString stringWithFormat:@"-%@", libParts[3]];
                 }
                 
-                // Construct path and URL correctly
-                artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
-                                     group, artifactName, version, artifactName, version, classifier];
-                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                // Special handling for Forge libraries
+                if (isForgeLibrary) {
+                    // Always use Maven Forge repository for Forge artifacts
+                    if ([artifactName isEqualToString:@"forge"]) {
+                        prefix = @"https://maven.minecraftforge.net/";
+                        
+                        // Special path formatting for Forge with classifiers
+                        artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
+                                             group, artifactName, version, artifactName, version, classifier];
+                        
+                        // Explicit URL for Forge client/server builds
+                        artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@/%@/%@/%@-%@%@.jar", 
+                                            prefix, group, artifactName, version, artifactName, version, classifier];
+                        
+                        NSLog(@"[MCDL] Generated Forge URL: %@", artifactDict[@"url"]);
+                    } else {
+                        // Other Forge artifacts
+                        artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
+                                             group, artifactName, version, artifactName, version, classifier];
+                        artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                    }
+                } else {
+                    // Standard library format for non-Forge libraries
+                    artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
+                                         group, artifactName, version, artifactName, version, classifier];
+                    artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                }
                 
                 // Safely get SHA1 from checksums if available
                 id checksums = library[@"checksums"];
