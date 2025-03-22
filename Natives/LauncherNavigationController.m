@@ -467,57 +467,47 @@ static NSLock *versionListLock;
         return;
     }
     
-    // Always perform UI updates on the main thread
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self setInteractionEnabled:NO forDownloading:YES];
-    });
+    // Perform UI updates immediately on the main thread
+    [self setInteractionEnabled:NO forDownloading:YES];
     
-    // Create the task on a background thread
+    // Create task on the main thread to avoid any race conditions
+    self.task = [MinecraftResourceDownloadTask new];
+    
+    __weak LauncherNavigationController *weakSelf = self;
+    self.task.handleError = ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf setInteractionEnabled:YES forDownloading:YES];
+            weakSelf.task = nil;
+            weakSelf.progressVC = nil;
+        });
+    };
+    
+    // Set up progress tracking BEFORE starting the download
+    self.progressViewMain.observedProgress = self.task.progress;
+    
+    @try {
+        [self.task.progress addObserver:self
+                            forKeyPath:@"fractionCompleted"
+                               options:NSKeyValueObservingOptionInitial
+                               context:ProgressObserverContext];
+    } @catch (NSException *exception) {
+        NSLog(@"[MCDL] Exception adding observer: %@", exception);
+    }
+    
+    // Create copies of the data we need for the background task
+    NSDictionary *userInfo = [notification.userInfo copy];
+    id notificationObject = notification.object;
+    
+    // Start the actual download in a background thread
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        MinecraftResourceDownloadTask *newTask = [MinecraftResourceDownloadTask new];
+        // Safety check that task hasn't been cleared
+        if (!weakSelf.task) {
+            return;
+        }
         
-        // Get a strong reference to self for the block
-        __weak LauncherNavigationController *weakSelf = self;
-        
-        newTask.handleError = ^{
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf setInteractionEnabled:YES forDownloading:YES];
-                weakSelf.task = nil;
-                weakSelf.progressVC = nil;
-            });
-        };
-        
-        // Set task safely
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.task = newTask;
-        });
-        
-        // Extract user info data with safe access
-        NSDictionary *userInfo = [notification.userInfo copy];
-        id notificationObject = notification.object;
-        
-        // Start the download task
-        [self.task downloadModpackFromAPI:notificationObject 
-                                   detail:userInfo[@"detail"] 
-                                  atIndex:[userInfo[@"index"] unsignedLongValue]];
-        
-        // Set up progress observation on main thread
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!weakSelf || !weakSelf.task || !weakSelf.task.progress) {
-                return; // Safety check
-            }
-            
-            weakSelf.progressViewMain.observedProgress = weakSelf.task.progress;
-            
-            @try {
-                [weakSelf.task.progress addObserver:weakSelf
-                                        forKeyPath:@"fractionCompleted"
-                                           options:NSKeyValueObservingOptionInitial
-                                           context:ProgressObserverContext];
-            } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Exception adding observer: %@", exception);
-            }
-        });
+        [weakSelf.task downloadModpackFromAPI:notificationObject 
+                               detail:userInfo[@"detail"] 
+                              atIndex:[userInfo[@"index"] unsignedLongValue]];
     });
 }
 
