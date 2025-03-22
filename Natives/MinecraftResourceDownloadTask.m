@@ -778,7 +778,8 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         }
         if (weakSelf.metadata[@"inheritsFrom"]) {
-            NSMutableDictionary *inheritsFromDict = parseJSONFromFile([NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), weakSelf.metadata[@"inheritsFrom"]]);
+            NSString *inheritsFromPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), weakSelf.metadata[@"inheritsFrom"]];
+            NSMutableDictionary *inheritsFromDict = parseJSONFromFile(inheritsFromPath);
             if (inheritsFromDict) {
                 [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:inheritsFromDict];
                 weakSelf.metadata = inheritsFromDict;
@@ -796,6 +797,14 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         } else if (json[@"inheritsFrom"]) {
             version = (id)[MinecraftResourceUtils findVersion:json[@"inheritsFrom"] inList:remoteVersionList];
+            
+            // FIX: If we couldn't find the inheritsFrom version in remoteVersionList, just use the local JSON
+            if (!version) {
+                NSLog(@"[MCDL] Warning: Could not find inheritsFrom version %@ in remoteVersionList, using local version", json[@"inheritsFrom"]);
+                wrappedSuccess();
+                return;
+            }
+            
             path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), json[@"inheritsFrom"]];
         } else {
             wrappedSuccess();
