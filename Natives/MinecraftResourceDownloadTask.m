@@ -172,9 +172,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                                        success:(void (^)(void))success
                                        failure:(void (^)(NSError *error))failure {
     @autoreleasepool {
-        // Safety check for invalid URL
+        // Safety check for invalid URL with enhanced logging
         if (!url || url.length == 0) {
             NSLog(@"[MCDL] Error: Invalid or empty download URL");
+            NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path ?: @"(null)");
+            NSLog(@"[MCDL] SHA: %@, Size: %lu", sha ?: @"(null)", (unsigned long)size);
+            
             NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
                                                    code:1001 
                                                userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL"}];
@@ -187,6 +190,10 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             }
             return nil;
         }
+        
+        // Log valid URL information for debugging
+        NSLog(@"[MCDL] Creating download task - URL: %@", url);
+        NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path);
         
         // Check if file already exists and has correct SHA1 - with quick return
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
@@ -765,9 +772,15 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         versionStr = getPrefObject(@"internal.latest_version.snapshot");
     }
 
+    // Log the version we're trying to download
+    NSLog(@"[MCDL] Downloading metadata for version: %@", versionStr);
+
     NSString *path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), versionStr];
     // Find it again to resolve latest-*
     version = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
+    
+    // Log if version was found in the remote list
+    NSLog(@"[MCDL] Version in remote list? %@", version ? @"YES" : @"NO");
 
     // Create a wrapped success callback
     __weak typeof(self) weakSelf = self;
@@ -778,11 +791,14 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         }
         if (weakSelf.metadata[@"inheritsFrom"]) {
+            NSLog(@"[MCDL] Version inherits from: %@", weakSelf.metadata[@"inheritsFrom"]);
             NSString *inheritsFromPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), weakSelf.metadata[@"inheritsFrom"]];
             NSMutableDictionary *inheritsFromDict = parseJSONFromFile(inheritsFromPath);
             if (inheritsFromDict) {
                 [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:inheritsFromDict];
                 weakSelf.metadata = inheritsFromDict;
+            } else {
+                NSLog(@"[MCDL] Failed to load parent version JSON: %@", inheritsFromPath);
             }
         }
         [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
@@ -796,17 +812,33 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             [self finishDownloadWithErrorString:[json[@"NSErrorObject"] localizedDescription]];
             return;
         } else if (json[@"inheritsFrom"]) {
+            NSLog(@"[MCDL] Local version inherits from: %@", json[@"inheritsFrom"]);
             version = (id)[MinecraftResourceUtils findVersion:json[@"inheritsFrom"] inList:remoteVersionList];
-            
-            // FIX: If we couldn't find the inheritsFrom version in remoteVersionList, just use the local JSON
-            if (!version) {
-                NSLog(@"[MCDL] Warning: Could not find inheritsFrom version %@ in remoteVersionList, using local version", json[@"inheritsFrom"]);
-                wrappedSuccess();
-                return;
-            }
-            
             path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), json[@"inheritsFrom"]];
+            
+            // FIX: If inheritsFrom version isn't found
+            if (!version) {
+                NSLog(@"[MCDL] Warning: Could not find inheritsFrom version %@ in remoteVersionList", json[@"inheritsFrom"]);
+                NSString *parentPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), json[@"inheritsFrom"]];
+                NSLog(@"[MCDL] Checking if parent version exists locally at: %@", parentPath);
+                
+                if ([NSFileManager.defaultManager fileExistsAtPath:parentPath]) {
+                    NSLog(@"[MCDL] Parent version exists locally, proceeding with local files");
+                    wrappedSuccess();
+                } else {
+                    NSLog(@"[MCDL] Parent version not found locally, will try to download from Mojang");
+                    // Instead of failing, create a minimal version object to force download
+                    version = @{
+                        @"id": json[@"inheritsFrom"],
+                        @"type": @"release",
+                        @"url": [NSString stringWithFormat:@"https://piston-meta.mojang.com/v1/packages/%@/json", json[@"inheritsFrom"]]
+                    };
+                }
+            } else {
+                NSLog(@"[MCDL] Found parent version in remote list: %@", json[@"inheritsFrom"]);
+            }
         } else {
+            NSLog(@"[MCDL] Using local version without inheritsFrom");
             wrappedSuccess();
             return;
         }
@@ -814,6 +846,8 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
     versionStr = version[@"id"];
     NSString *url = version[@"url"];
+    NSLog(@"[MCDL] Download URL for %@: %@", versionStr, url ?: @"(null)");
+    
     NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
     NSUInteger size = [version[@"size"] unsignedLongLongValue];
 
