@@ -1007,11 +1007,16 @@
 - (void)updateFilterIndicators {
     dispatch_async(dispatch_get_main_queue(), ^{
         // Update navigation title to indicate active filters
-        if (self.activeTagFilters.count > 0) {
-            self.navigationItem.rightBarButtonItems[1].tintColor = [UIColor systemBlueColor];
-        } else {
-            self.navigationItem.rightBarButtonItems[1].tintColor = nil; // Default tint
+        // First check if rightBarButtonItems has enough elements
+        if (self.navigationItem.rightBarButtonItems.count > 1) {
+            if (self.activeTagFilters.count > 0) {
+                self.navigationItem.rightBarButtonItems[1].tintColor = [UIColor systemBlueColor];
+            } else {
+                self.navigationItem.rightBarButtonItems[1].tintColor = nil; // Default tint
+            }
         }
+        // If there aren't enough items, we'll handle it silently
+        // This can happen during UI state transitions
     });
 }
 
