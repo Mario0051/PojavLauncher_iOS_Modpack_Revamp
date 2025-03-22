@@ -623,8 +623,69 @@
     [self.activeTagFilters removeAllObjects];
     [self updateFilterIndicators];
     
+    // Reset search text while preserving search state
+    if (self.searchController.isActive) {
+        self.searchController.searchBar.text = @"";
+        self.searchText = @"";
+    }
+    
     // Update search results with fresh data
     [self updateSearchResults];
+}
+
+- (BOOL)modpack:(NSDictionary *)modpack matchesSearchText:(NSString *)searchText andTags:(NSSet *)tagFilters {
+    // Safely extract values with type checking
+    NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"";
+    NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
+    
+    // Ensure categories is an array
+    id categoriesObj = modpack[@"categories"];
+    NSArray *categories = [categoriesObj isKindOfClass:[NSArray class]] ? categoriesObj : @[];
+    
+    // Create a safe copy of categories to iterate through
+    NSArray *safeCategories = [categories copy];
+    
+    // Check if search text appears in title or description
+    BOOL matchesTextContent = (searchText.length == 0) || 
+                              [title localizedCaseInsensitiveContainsString:searchText] ||
+                              [description localizedCaseInsensitiveContainsString:searchText];
+    
+    // Check if search text matches any tag/category
+    BOOL matchesTextInTags = NO;
+    if (searchText.length > 0) {
+        for (id tagObj in safeCategories) {
+            // Ensure tag is a string
+            if (![tagObj isKindOfClass:[NSString class]]) {
+                continue;
+            }
+            
+            NSString *tag = (NSString *)tagObj;
+            if ([tag localizedCaseInsensitiveContainsString:searchText]) {
+                matchesTextInTags = YES;
+                break;
+            }
+        }
+    }
+    
+    // Check if modpack has at least one of the active tag filters
+    BOOL matchesTagFilters = (tagFilters.count == 0);
+    if (!matchesTagFilters) {
+        for (id tagObj in safeCategories) {
+            // Ensure tag is a string
+            if (![tagObj isKindOfClass:[NSString class]]) {
+                continue;
+            }
+            
+            NSString *tag = (NSString *)tagObj;
+            if ([tagFilters containsObject:[tag lowercaseString]]) {
+                matchesTagFilters = YES;
+                break;
+            }
+        }
+    }
+    
+    // Include if it matches all applicable filters
+    return (matchesTextContent || matchesTextInTags) && matchesTagFilters;
 }
 
 - (void)actionCancelDownload {
@@ -1144,6 +1205,22 @@
     
     [self.dataLock lock];
     
+    // Create a set to track existing modpack IDs
+    NSMutableSet *existingModpackIds = [NSMutableSet set];
+    
+    // Collect all existing modpack IDs to avoid duplicates
+    for (NSArray *categoryModpacks in self.organizedModpacks) {
+        if (![categoryModpacks isKindOfClass:[NSArray class]]) continue;
+        
+        for (NSDictionary *modpack in categoryModpacks) {
+            if (![modpack isKindOfClass:[NSDictionary class]]) continue;
+            
+            if ([modpack[@"id"] isKindOfClass:[NSString class]]) {
+                [existingModpackIds addObject:modpack[@"id"]];
+            }
+        }
+    }
+    
     // For simplicity, we'll just add all new modpacks to the "Other" category
     NSString *otherCategory = localize(@"Other Modpacks", nil);
     
@@ -1157,18 +1234,45 @@
         otherIndex = self.categories.count - 1;
     }
     
-    // Add new modpacks to the "Other" category
+    // Add new modpacks to the "Other" category, checking for duplicates
     if (otherIndex < self.organizedModpacks.count) {
         NSMutableArray *otherModpacks = self.organizedModpacks[otherIndex];
         if ([otherModpacks isKindOfClass:[NSMutableArray class]]) {
-            [otherModpacks addObjectsFromArray:newModpacks];
+            for (NSDictionary *newModpack in newModpacks) {
+                // Skip if not a dictionary
+                if (![newModpack isKindOfClass:[NSDictionary class]]) continue;
+                
+                // Skip if this modpack ID is already in our collection
+                if ([newModpack[@"id"] isKindOfClass:[NSString class]] && 
+                    [existingModpackIds containsObject:newModpack[@"id"]]) {
+                    continue;
+                }
+                
+                // Add this modpack and track its ID
+                [otherModpacks addObject:newModpack];
+                if ([newModpack[@"id"] isKindOfClass:[NSString class]]) {
+                    [existingModpackIds addObject:newModpack[@"id"]];
+                }
+            }
         }
     }
     
     if (otherIndex < self.filteredModpacks.count) {
         NSMutableArray *filteredOtherModpacks = self.filteredModpacks[otherIndex];
         if ([filteredOtherModpacks isKindOfClass:[NSMutableArray class]]) {
-            [filteredOtherModpacks addObjectsFromArray:newModpacks];
+            for (NSDictionary *newModpack in newModpacks) {
+                // Skip if not a dictionary
+                if (![newModpack isKindOfClass:[NSDictionary class]]) continue;
+                
+                // Skip if this modpack ID is already in our collection
+                if ([newModpack[@"id"] isKindOfClass:[NSString class]] && 
+                    [existingModpackIds containsObject:newModpack[@"id"]]) {
+                    continue;
+                }
+                
+                // Add to filtered list as well
+                [filteredOtherModpacks addObject:newModpack];
+            }
         }
     }
     
@@ -1189,58 +1293,17 @@
             
             NSDictionary *modpack = (NSDictionary *)modpackObj;
             
-            // Safely extract values with type checking
-            NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"";
-            NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
-            
-            // Ensure categories is an array
-            id categoriesObj = modpack[@"categories"];
-            NSArray *categories = [categoriesObj isKindOfClass:[NSArray class]] ? categoriesObj : @[];
-            
-            // Create a safe copy of categories to iterate through
-            NSArray *safeCategories = [categories copy];
-            
-            // Check if search text appears in title or description
-            BOOL matchesTextContent = (currentSearchText.length == 0) || 
-                                      [title localizedCaseInsensitiveContainsString:currentSearchText] ||
-                                      [description localizedCaseInsensitiveContainsString:currentSearchText];
-            
-            // Check if search text matches any tag/category
-            BOOL matchesTextInTags = NO;
-            if (currentSearchText.length > 0) {
-                for (id tagObj in safeCategories) {
-                    // Ensure tag is a string
-                    if (![tagObj isKindOfClass:[NSString class]]) {
-                        continue;
-                    }
-                    
-                    NSString *tag = (NSString *)tagObj;
-                    if ([tag localizedCaseInsensitiveContainsString:currentSearchText]) {
-                        matchesTextInTags = YES;
-                        break;
-                    }
-                }
+            // Skip if this modpack ID is already in our collection
+            if ([modpack[@"id"] isKindOfClass:[NSString class]] && 
+                [existingModpackIds containsObject:modpack[@"id"]]) {
+                continue;
             }
             
-            // Check if modpack has at least one of the active tag filters
-            BOOL matchesTagFilters = (activeTagFiltersCopy.count == 0);
-            if (!matchesTagFilters) {
-                for (id tagObj in safeCategories) {
-                    // Ensure tag is a string
-                    if (![tagObj isKindOfClass:[NSString class]]) {
-                        continue;
-                    }
-                    
-                    NSString *tag = (NSString *)tagObj;
-                    if ([activeTagFiltersCopy containsObject:[tag lowercaseString]]) {
-                        matchesTagFilters = YES;
-                        break;
-                    }
-                }
-            }
+            // Check if the modpack passes our current filters
+            BOOL matchesFilters = [self modpack:modpack matchesSearchText:currentSearchText andTags:activeTagFiltersCopy];
             
-            // Include if it matches all applicable filters
-            if ((matchesTextContent || matchesTextInTags) && matchesTagFilters) {
+            // Add the modpack if it matches our filters
+            if (matchesFilters) {
                 [self.unifiedSearchResults addObject:modpack];
             }
         }
@@ -1249,56 +1312,21 @@
     [self.dataLock unlock];
 }
 
-#pragma mark - Search State Handling
-
-- (void)searchActiveChanged:(NSNotification *)notification {
-    // Check if search is becoming active or inactive
-    if ([notification.name isEqualToString:@"UISearchControllerDidBeginSearchNotification"]) {
-        self.isSearchActive = YES;
-        
-        // When search becomes active, create unified search results
-        [self updateUnifiedSearchResults];
-        
-    } else if ([notification.name isEqualToString:@"UISearchControllerDidEndSearchNotification"]) {
-        self.isSearchActive = NO;
-        
-        // When search is dismissed, reload table to restore category view
-        [self.tableView reloadData];
-    }
-}
-
-// Add KVO observation for search controller's active property
-- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
-    if (object == self.searchController && [keyPath isEqualToString:@"active"]) {
-        BOOL isActive = [[change objectForKey:NSKeyValueChangeNewKey] boolValue];
-        
-        // Only update if the state has changed
-        if (isActive != self.isSearchActive) {
-            self.isSearchActive = isActive;
-            
-            if (isActive) {
-                // When search becomes active, create unified search results
-                [self updateUnifiedSearchResults];
-            } else {
-                // When search is dismissed, reload table to restore category view
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self.tableView reloadData];
-                });
-            }
-        }
-    } else {
-        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
-    }
-}
-
 - (void)updateUnifiedSearchResults {
     [self.dataLock lock];
     
     // Clear the existing unified search results
     [self.unifiedSearchResults removeAllObjects];
     
+    // Create a set to track unique modpack IDs
+    NSMutableSet *addedModpackIds = [NSMutableSet set];
+    
+    // Create copies of filter criteria to avoid race conditions
+    NSString *searchTextCopy = [self.searchText copy];
+    NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
+    
     // If we have active filters (tags or search text), apply them
-    if (self.searchText.length > 0 || self.activeTagFilters.count > 0) {
+    if (searchTextCopy.length > 0 || activeTagFiltersCopy.count > 0) {
         // Combine all modpacks from all categories into one array for filtering
         NSMutableArray *allModpacks = [NSMutableArray array];
         
@@ -1315,10 +1343,6 @@
         // Create a copy of allModpacks to avoid mutation issues
         NSArray *safeAllModpacks = [allModpacks copy];
         
-        // Create copies of filter criteria to avoid race conditions
-        NSString *searchTextCopy = [self.searchText copy];
-        NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
-        
         for (id modpackObj in safeAllModpacks) {
             if (![modpackObj isKindOfClass:[NSDictionary class]]) {
                 continue; // Skip invalid modpacks
@@ -1326,57 +1350,20 @@
             
             NSDictionary *modpack = (NSDictionary *)modpackObj;
             
-            NSString *title = [modpack[@"title"] isKindOfClass:[NSString class]] ? modpack[@"title"] : @"";
-            NSString *description = [modpack[@"description"] isKindOfClass:[NSString class]] ? modpack[@"description"] : @"";
-            
-            // Ensure categories is an array
-            id categoriesObj = modpack[@"categories"];
-            NSArray *categories = [categoriesObj isKindOfClass:[NSArray class]] ? categoriesObj : @[];
-            
-            // Create a safe copy of the categories array
-            NSArray *safeCategories = [categories copy];
-            
-            // Check if search text appears in title or description
-            BOOL matchesTextContent = (searchTextCopy.length == 0) || 
-                                      [title localizedCaseInsensitiveContainsString:searchTextCopy] ||
-                                      [description localizedCaseInsensitiveContainsString:searchTextCopy];
-            
-            // Check if search text matches any tag/category
-            BOOL matchesTextInTags = NO;
-            if (searchTextCopy.length > 0) {
-                for (id tagObj in safeCategories) {
-                    // Ensure tag is a string
-                    if (![tagObj isKindOfClass:[NSString class]]) {
-                        continue;
-                    }
-                    
-                    NSString *tag = (NSString *)tagObj;
-                    if ([tag localizedCaseInsensitiveContainsString:searchTextCopy]) {
-                        matchesTextInTags = YES;
-                        break;
-                    }
+            // Skip duplicate modpacks
+            if ([modpack[@"id"] isKindOfClass:[NSString class]]) {
+                NSString *modpackId = modpack[@"id"];
+                if ([addedModpackIds containsObject:modpackId]) {
+                    continue;
                 }
+                [addedModpackIds addObject:modpackId];
             }
             
-            // Check if modpack has at least one of the active tag filters
-            BOOL matchesTagFilters = (activeTagFiltersCopy.count == 0);
-            if (!matchesTagFilters) {
-                for (id tagObj in safeCategories) {
-                    // Ensure tag is a string
-                    if (![tagObj isKindOfClass:[NSString class]]) {
-                        continue;
-                    }
-                    
-                    NSString *tag = (NSString *)tagObj;
-                    if ([activeTagFiltersCopy containsObject:[tag lowercaseString]]) {
-                        matchesTagFilters = YES;
-                        break;
-                    }
-                }
-            }
+            // Check if the modpack passes our current filters
+            BOOL matchesFilters = [self modpack:modpack matchesSearchText:searchTextCopy andTags:activeTagFiltersCopy];
             
-            // Include if it matches all applicable filters
-            if ((matchesTextContent || matchesTextInTags) && matchesTagFilters) {
+            // Add the modpack if it matches our filters
+            if (matchesFilters) {
                 [self.unifiedSearchResults addObject:modpack];
             }
         }
@@ -1402,13 +1389,26 @@
             }];
         }
     } else {
-        // If no active filters, include all modpacks
+        // If no active filters, include all modpacks (but still check for duplicates)
         // Create a copy of organizedModpacks to avoid mutation issues
         NSArray *safeOrganizedModpacks = [self.organizedModpacks copy];
         
         for (NSArray *categoryModpacks in safeOrganizedModpacks) {
-            if ([categoryModpacks isKindOfClass:[NSArray class]]) {
-                [self.unifiedSearchResults addObjectsFromArray:categoryModpacks];
+            if (![categoryModpacks isKindOfClass:[NSArray class]]) continue;
+            
+            for (id modpackObj in categoryModpacks) {
+                if (![modpackObj isKindOfClass:[NSDictionary class]]) continue;
+                
+                // Check for duplicate by ID
+                if ([modpackObj[@"id"] isKindOfClass:[NSString class]]) {
+                    NSString *modpackId = modpackObj[@"id"];
+                    if ([addedModpackIds containsObject:modpackId]) {
+                        continue;
+                    }
+                    [addedModpackIds addObject:modpackId];
+                }
+                
+                [self.unifiedSearchResults addObject:modpackObj];
             }
         }
     }
@@ -1435,6 +1435,56 @@
     // Debounce the search to prevent excessive updates while typing
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateUnifiedSearchResults) object:nil];
     [self performSelector:@selector(updateUnifiedSearchResults) withObject:nil afterDelay:0.5];
+}
+
+#pragma mark - Search State Handling
+
+- (void)searchActiveChanged:(NSNotification *)notification {
+    // Check if search is becoming active or inactive
+    BOOL isBecomingActive = [notification.name isEqualToString:@"UISearchControllerDidBeginSearchNotification"];
+    BOOL isBecomingInactive = [notification.name isEqualToString:@"UISearchControllerDidEndSearchNotification"];
+    
+    if (isBecomingActive) {
+        self.isSearchActive = YES;
+        
+        // When search becomes active, create unified search results
+        [self updateUnifiedSearchResults];
+        
+    } else if (isBecomingInactive) {
+        self.isSearchActive = NO;
+        
+        // Clear search text to avoid any lingering search criteria
+        self.searchText = @"";
+        
+        // When search is dismissed, reload table to restore category view
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.tableView reloadData];
+        });
+    }
+}
+
+// Add KVO observation for search controller's active property
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary<NSKeyValueChangeKey,id> *)change context:(void *)context {
+    if (object == self.searchController && [keyPath isEqualToString:@"active"]) {
+        BOOL isActive = [[change objectForKey:NSKeyValueChangeNewKey] boolValue];
+        
+        // Only update if the state has changed
+        if (isActive != self.isSearchActive) {
+            self.isSearchActive = isActive;
+            
+            if (isActive) {
+                // When search becomes active, create unified search results
+                [self updateUnifiedSearchResults];
+            } else {
+                // When search is dismissed, reload table to restore category view
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self.tableView reloadData];
+                });
+            }
+        }
+    } else {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+    }
 }
 
 #pragma mark - UIScrollViewDelegate
