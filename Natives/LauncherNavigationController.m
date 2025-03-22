@@ -1,3 +1,4 @@
+#import <dlfcn.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import "authenticator/BaseAuthenticator.h"
 #import "AFNetworking.h"
@@ -24,6 +25,9 @@
 
 static void *ProgressObserverContext = &ProgressObserverContext;
 
+// Lock for thread-safe access to version lists
+static NSLock *versionListLock;
+
 @interface LauncherNavigationController () <UIDocumentPickerDelegate, UIPickerViewDataSource, PLPickerViewDelegate, UIPopoverPresentationControllerDelegate> {
 }
 
@@ -40,6 +44,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+
+    // Initialize lock for thread-safe access to version lists
+    versionListLock = [[NSLock alloc] init];
 
     if ([self respondsToSelector:@selector(setNeedsUpdateOfScreenEdgesDeferringSystemGestures)]) {
         [self setNeedsUpdateOfScreenEdgesDeferringSystemGestures];
@@ -118,6 +125,20 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     }
 }
 
+- (void)dealloc {
+    // Clean up KVO observers
+    @try {
+        if (self.task && self.task.progress) {
+            [self.task.progress removeObserver:self forKeyPath:@"fractionCompleted"];
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"Exception removing observer in dealloc: %@", exception);
+    }
+    
+    // Remove notification observers
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"InstallModpack" object:nil];
+}
+
 - (BOOL)isVersionInstalled:(NSString *)versionId {
     NSString *localPath = [NSString stringWithFormat:@"%s/versions/%@", getenv("POJAV_GAME_DIR"), versionId];
     BOOL isDirectory;
@@ -129,34 +150,68 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     if (!localVersionList) {
         localVersionList = [NSMutableArray new];
     }
-    [localVersionList removeAllObjects];
+    
+    // Create a temporary array to hold results while we're building it
+    NSMutableArray *tempVersionList = [NSMutableArray array];
 
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSString *versionPath = [NSString stringWithFormat:@"%s/versions/", getenv("POJAV_GAME_DIR")];
-    NSArray *list = [fileManager contentsOfDirectoryAtPath:versionPath error:Nil];
+    
+    // Get the directory contents safely
+    NSError *dirError = nil;
+    NSArray *list = [fileManager contentsOfDirectoryAtPath:versionPath error:&dirError];
+    
+    if (dirError) {
+        NSLog(@"[MCDL] Error reading versions directory: %@", dirError.localizedDescription);
+        // Still proceed with an empty list
+        list = @[];
+    }
+    
+    // Process each version
     for (NSString *versionId in list) {
+        // Skip invalid entries
+        if (!versionId || ![versionId isKindOfClass:[NSString class]]) {
+            continue;
+        }
+        
         if (![self isVersionInstalled:versionId]) continue;
-        [localVersionList addObject:@{
+        
+        // Create version dictionary
+        NSDictionary *versionDict = @{
             @"id": versionId,
             @"type": @"custom"
-        }];
+        };
+        
+        [tempVersionList addObject:versionDict];
     }
+    
+    // Now safely update the shared global array
+    [versionListLock lock];
+    [localVersionList removeAllObjects];
+    [localVersionList addObjectsFromArray:tempVersionList];
+    [versionListLock unlock];
 }
 
 - (void)fetchRemoteVersionList {
     self.buttonInstall.enabled = NO;
+    
+    [versionListLock lock];
     remoteVersionList = @[
         @{@"id": @"latest-release", @"type": @"release"},
         @{@"id": @"latest-snapshot", @"type": @"snapshot"}
     ].mutableCopy;
+    [versionListLock unlock];
 
     AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
     [manager GET:@"https://piston-meta.mojang.com/mc/game/version_manifest_v2.json" parameters:nil headers:nil progress:^(NSProgress * _Nonnull progress) {
         self.progressViewMain.progress = progress.fractionCompleted;
     } success:^(NSURLSessionTask *task, NSDictionary *responseObject) {
+        [versionListLock lock];
         [remoteVersionList addObjectsFromArray:responseObject[@"versions"]];
         NSDebugLog(@"[VersionList] Got %d versions", remoteVersionList.count);
         setPrefObject(@"internal.latest_version", responseObject[@"latest"]);
+        [versionListLock unlock];
+        
         self.buttonInstall.enabled = YES;
     } failure:^(NSURLSessionTask *operation, NSError *error) {
         NSDebugLog(@"[VersionList] Warning: Unable to fetch version list: %@", error.localizedDescription);
@@ -255,7 +310,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [self setInteractionEnabled:NO forDownloading:YES];
 
     NSString *versionId = PLProfiles.current.profiles[self.versionTextField.text][@"lastVersionId"];
+    
+    // Thread-safe access to remoteVersionList
+    [versionListLock lock];
     NSDictionary *object = [remoteVersionList filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(id == %@)", versionId]].firstObject;
+    [versionListLock unlock];
+    
     if (!object) {
         object = @{
             @"id": versionId,
@@ -276,10 +336,16 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         [self.task downloadVersion:object];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.progressViewMain.observedProgress = self.task.progress;
-            [self.task.progress addObserver:self
-                forKeyPath:@"fractionCompleted"
-                options:NSKeyValueObservingOptionInitial
-                context:ProgressObserverContext];
+            
+            // Safely add observer
+            @try {
+                [self.task.progress addObserver:self
+                    forKeyPath:@"fractionCompleted"
+                    options:NSKeyValueObservingOptionInitial
+                    context:ProgressObserverContext];
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Exception adding observer: %@", exception);
+            }
         });
     });
 }
@@ -325,6 +391,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         }
     }
 
+    // Always update UI on main thread
     dispatch_async(dispatch_get_main_queue(), ^{
         // Compute total downloaded and expected sizes
         long long completedBytes = self.task.progress.completedUnitCount;
@@ -359,9 +426,10 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             self.progressText.text = [NSString stringWithFormat:@"%@ (%d%%)", sizeText, percentage];
         }
 
+        // Only proceed with completion handling if we're actually done
         if (!self.task.progress.finished && self.task.progress.fractionCompleted < 1.0) return;
         
-        // The download is finished, make sure to dismiss the progress view if present
+        // The download is finished, clean up
         if (self.progressVC) {
             [self.progressVC dismissViewControllerAnimated:NO completion:nil];
             self.progressVC = nil;
@@ -398,25 +466,57 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     if (![notification.name isEqualToString:@"InstallModpack"]) {
         return;
     }
-    [self setInteractionEnabled:NO forDownloading:YES];
-    self.task = [MinecraftResourceDownloadTask new];
-    NSDictionary *userInfo = notification.userInfo;
+    
+    // Always perform UI updates on the main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self setInteractionEnabled:NO forDownloading:YES];
+    });
+    
+    // Create the task on a background thread
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        MinecraftResourceDownloadTask *newTask = [MinecraftResourceDownloadTask new];
+        
+        // Get a strong reference to self for the block
         __weak LauncherNavigationController *weakSelf = self;
-        self.task.handleError = ^{
+        
+        newTask.handleError = ^{
             dispatch_async(dispatch_get_main_queue(), ^{
                 [weakSelf setInteractionEnabled:YES forDownloading:YES];
                 weakSelf.task = nil;
                 weakSelf.progressVC = nil;
             });
         };
-        [self.task downloadModpackFromAPI:notification.object detail:userInfo[@"detail"] atIndex:[userInfo[@"index"] unsignedLongValue]];
+        
+        // Set task safely
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.progressViewMain.observedProgress = self.task.progress;
-            [self.task.progress addObserver:self
-                forKeyPath:@"fractionCompleted"
-                options:NSKeyValueObservingOptionInitial
-                context:ProgressObserverContext];
+            self.task = newTask;
+        });
+        
+        // Extract user info data with safe access
+        NSDictionary *userInfo = [notification.userInfo copy];
+        id notificationObject = notification.object;
+        
+        // Start the download task
+        [self.task downloadModpackFromAPI:notificationObject 
+                                   detail:userInfo[@"detail"] 
+                                  atIndex:[userInfo[@"index"] unsignedLongValue]];
+        
+        // Set up progress observation on main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!weakSelf || !weakSelf.task || !weakSelf.task.progress) {
+                return; // Safety check
+            }
+            
+            weakSelf.progressViewMain.observedProgress = weakSelf.task.progress;
+            
+            @try {
+                [weakSelf.task.progress addObserver:weakSelf
+                                        forKeyPath:@"fractionCompleted"
+                                           options:NSKeyValueObservingOptionInitial
+                                           context:ProgressObserverContext];
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Exception adding observer: %@", exception);
+            }
         });
     });
 }
@@ -432,7 +532,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     } else if (hasTrollStoreJIT) {
         NSURL *jitURL = [NSURL URLWithString:[NSString stringWithFormat:@"apple-magnifier://enable-jit?bundle-id=%@", NSBundle.mainBundle.bundleIdentifier]];
         [UIApplication.sharedApplication openURL:jitURL options:@{} completionHandler:nil];
-        // Do not return, wait for TrollStore to enable JIT and jump back
+        // Continue to show alert and wait
     } else if (getPrefBool(@"debug.debug_skip_wait_jit")) {
         NSLog(@"Debug option skipped waiting for JIT. Java might not work.");
         handler();
@@ -444,23 +544,23 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:localize(@"launcher.wait_jit.title", nil)
         message:hasTrollStoreJIT ? localize(@"launcher.wait_jit_trollstore.message", nil) : localize(@"launcher.wait_jit.message", nil)
         preferredStyle:UIAlertControllerStyleAlert];
-/* TODO:
-    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^{
-        
-    }];
-    [alert addAction:cancel];
-*/
+
     [self presentViewController:alert animated:YES completion:nil];
 
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        while (!isJITEnabled(false)) {
-            // Perform check for every 200ms
-            usleep(1000*200);
+    // Use a dispatch source timer instead of busy-waiting
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), 200 * NSEC_PER_MSEC, 100 * NSEC_PER_MSEC);
+    
+    dispatch_source_set_event_handler(timer, ^{
+        if (isJITEnabled(false)) {
+            dispatch_source_cancel(timer);
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [alert dismissViewControllerAnimated:YES completion:handler];
+            });
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:handler];
-        });
     });
+    
+    dispatch_resume(timer);
 }
 
 #pragma mark - UIPopoverPresentationControllerDelegate
