@@ -522,7 +522,7 @@ static NSLock *versionListLock;
     } else if (hasTrollStoreJIT) {
         NSURL *jitURL = [NSURL URLWithString:[NSString stringWithFormat:@"apple-magnifier://enable-jit?bundle-id=%@", NSBundle.mainBundle.bundleIdentifier]];
         [UIApplication.sharedApplication openURL:jitURL options:@{} completionHandler:nil];
-        // Continue to show alert and wait
+        // Do not return, wait for TrollStore to enable JIT and jump back
     } else if (getPrefBool(@"debug.debug_skip_wait_jit")) {
         NSLog(@"Debug option skipped waiting for JIT. Java might not work.");
         handler();
@@ -534,23 +534,23 @@ static NSLock *versionListLock;
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:localize(@"launcher.wait_jit.title", nil)
         message:hasTrollStoreJIT ? localize(@"launcher.wait_jit_trollstore.message", nil) : localize(@"launcher.wait_jit.message", nil)
         preferredStyle:UIAlertControllerStyleAlert];
-
+/* TODO:
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:localize(@"Cancel", nil) style:UIAlertActionStyleCancel handler:^{
+        
+    }];
+    [alert addAction:cancel];
+*/
     [self presentViewController:alert animated:YES completion:nil];
 
-    // Use a dispatch source timer instead of busy-waiting
-    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
-    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), 200 * NSEC_PER_MSEC, 100 * NSEC_PER_MSEC);
-    
-    dispatch_source_set_event_handler(timer, ^{
-        if (isJITEnabled(false)) {
-            dispatch_source_cancel(timer);
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [alert dismissViewControllerAnimated:YES completion:handler];
-            });
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        while (!isJITEnabled(false)) {
+            // Perform check for every 200ms
+            usleep(1000*200);
         }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [alert dismissViewControllerAnimated:YES completion:handler];
+        });
     });
-    
-    dispatch_resume(timer);
 }
 
 #pragma mark - UIPopoverPresentationControllerDelegate
