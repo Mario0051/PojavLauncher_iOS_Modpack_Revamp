@@ -842,6 +842,11 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 BOOL isComplete = NO;
                 @try {
                     isComplete = progress.fractionCompleted >= 1.0 || progress.finished;
+                    
+                    // Also check if task completion is marked in metadata
+                    if (self.task.metadata && self.task.metadata[@"allTasksComplete"]) {
+                        isComplete = isComplete || [self.task.metadata[@"allTasksComplete"] boolValue];
+                    }
                 } @catch (NSException *exception) {
                     NSLog(@"[ProgressView] Warning: Exception checking completion: %@", exception);
                     isComplete = NO;
@@ -875,6 +880,19 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                     
                     // Update status text
                     self.statusLabel.text = @"Download complete";
+                    
+                    // Auto-dismiss after a short delay to allow the user to see the completion
+                    // Only dismiss if we're still presented and active
+                    if (self.presentingViewController && self.view.window) {
+                        double delayInSeconds = 1.0;
+                        dispatch_time_t popTime = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayInSeconds * NSEC_PER_SEC));
+                        dispatch_after(popTime, dispatch_get_main_queue(), ^{
+                            // Check again if the view controller is still being presented
+                            if (self.presentingViewController && self.view.window) {
+                                [self dismissViewControllerAnimated:YES completion:nil];
+                            }
+                        });
+                    }
                 }
             });
         }
