@@ -800,7 +800,19 @@
     // Get current search text, ensure it's not nil
     NSString *name = self.searchController.searchBar.text ?: @"";
 
-    [self switchToLoadingState];
+    // Check if this is the initial load (no existing categories and not appending)
+    BOOL isInitialLoad = !prevList && self.categories.count == 0;
+    
+    // Only show loading state for subsequent loads, not the initial load
+    if (!isInitialLoad) {
+        [self switchToLoadingState];
+    } else {
+        // For initial load, ensure isDataLoading is NO so we don't show loading indicator
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.isDataLoading = NO;
+        });
+    }
+
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Create a copy of the filters for this specific search operation to avoid thread safety issues
         NSMutableDictionary *searchFilters = [NSMutableDictionary dictionaryWithDictionary:self.filters];
@@ -828,9 +840,9 @@
         // Check for pagination status
         self.hasMoreResults = !self.modrinth.reachedLastPage;
         
-        if (newResults) {
-            // Ensure UI updates happen on main thread
-            dispatch_async(dispatch_get_main_queue(), ^{
+        // Update UI on the main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (newResults) {
                 // If we're not appending, reorganize completely
                 if (!prevList) {
                     [self organizeModpacksByCategory:newResults];
@@ -843,22 +855,20 @@
                 if (self.isSearchActive) {
                     [self updateUnifiedSearchResults];
                 }
-                
-                self.isLoadingMoreResults = NO;
-                [self switchToReadyState];
-                [self.tableView reloadData];
-            });
-        } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                self.isLoadingMoreResults = NO;
+            } else {
+                // Handle error
                 if (self.modrinth.lastError) {
                     showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
                 } else {
                     showDialog(localize(@"Error", nil), @"Could not load modpacks. Please check your network connection.");
                 }
-                [self switchToReadyState];
-            });
-        }
+            }
+            
+            // Always reset loading state and update UI
+            self.isLoadingMoreResults = NO;
+            [self switchToReadyState];
+            [self.tableView reloadData];
+        });
     });
 }
 
