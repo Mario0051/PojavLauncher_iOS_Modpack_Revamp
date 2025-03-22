@@ -895,23 +895,53 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     for (NSDictionary *library in self.metadata[@"libraries"]) {
         NSString *name = library[@"name"];
 
-        NSMutableDictionary *artifact = library[@"downloads"][@"artifact"];
-        if (artifact == nil && [name containsString:@":"]) {
+        NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
+        if (artifactDict == nil && [name containsString:@":"]) {
             NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
-            artifact = [[NSMutableDictionary alloc] init];
+            artifactDict = [[NSMutableDictionary alloc] init];
             NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
             NSArray *libParts = [name componentsSeparatedByString:@":"];
-            artifact[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], libParts[1], libParts[2]];
-            artifact[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifact[@"path"]];
-            artifact[@"sha1"] = library[@"checksums"][0];
+            
+            // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
+            if (libParts.count >= 3) {
+                NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
+                NSString *artifactName = libParts[1];
+                NSString *version = libParts[2];
+                
+                // Check if we have a classifier (4th component)
+                NSString *classifier = @"";
+                if (libParts.count > 3) {
+                    classifier = [NSString stringWithFormat:@"-%@", libParts[3]];
+                }
+                
+                // Construct path and URL correctly
+                artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
+                                     group, artifactName, version, artifactName, version, classifier];
+                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                
+                if (library[@"checksums"] && [library[@"checksums"] isKindOfClass:[NSArray class]] && library[@"checksums"].count > 0) {
+                    artifactDict[@"sha1"] = library[@"checksums"][0];
+                }
+            } else {
+                // Fallback to the original logic for standard 3-part library names
+                artifactDict[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", 
+                                     [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], 
+                                     libParts[1], 
+                                     libParts[2]];
+                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                
+                if (library[@"checksums"] && [library[@"checksums"] isKindOfClass:[NSArray class]] && library[@"checksums"].count > 0) {
+                    artifactDict[@"sha1"] = library[@"checksums"][0];
+                }
+            }
         }
 
-        NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifact[@"path"]];
-        NSString *sha = artifact[@"sha1"];
-        NSUInteger size = [artifact[@"size"] unsignedLongLongValue];
-        NSString *url = artifact[@"url"];
+        NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
+        NSString *sha = artifactDict[@"sha1"];
+        NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
+        NSString *url = artifactDict[@"url"];
         if ([library[@"skip"] boolValue]) {
-            NSLog(@"[MDCL] Skipped library %@", name);
+            NSLog(@"[MCDL] Skipped library %@", name);
             continue;
         }
 
