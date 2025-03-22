@@ -958,7 +958,7 @@ extern void showDialog(NSString *title, NSString *message);
         // No Forge dependency, nothing to install
         return;
     }
-    
+
     NSString *vendor = forgeVersion ? @"Forge" : @"NeoForge";
     NSString *version = forgeVersion ?: neoForgeVersion;
     NSString *fullVersion;
@@ -1088,12 +1088,15 @@ extern void showDialog(NSString *title, NSString *message);
                             navVC.progressText.text = nil;
                             
                             // Show a simple notification and launch the installer
+                            // CRITICAL: This alert must be shown BEFORE launching the Java window
                             showDialog(@"Installing Forge", 
-                                      [NSString stringWithFormat:@"%@ installer will now run. After installation completes, please restart the app.", vendor]);
+                                     [NSString stringWithFormat:@"%@ installer will now run. After installation completes, please restart the app.", vendor]);
                             
-                            // Use the exact same method as ForgeInstallViewController
-                            // This is the critical line that launches the JAR
-                            [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
+                            // Use a slight delay to ensure the alert is displayed before launching
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                                // This is the critical line that launches the JAR
+                                [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
+                            });
                         } else {
                             // Fallback if we couldn't get the navigation controller
                             showDialog(@"Error", @"Could not locate navigation controller for installer launch");
