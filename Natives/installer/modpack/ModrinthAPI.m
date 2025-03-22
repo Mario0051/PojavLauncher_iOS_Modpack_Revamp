@@ -968,7 +968,7 @@ extern void showDialog(NSString *title, NSString *message);
         fullVersion = [NSString stringWithFormat:@"%@-%@", minecraftVersion, version];
     } else {
         // NeoForge uses a different format
-        fullVersion = [NSString stringWithFormat:@"%@-neoforge-%@", minecraftVersion, version];
+        fullVersion = version;
     }
     
     // Check if this Forge version is already installed
@@ -1087,16 +1087,12 @@ extern void showDialog(NSString *title, NSString *message);
                             navVC.progressViewMain.hidden = YES;
                             navVC.progressText.text = nil;
                             
-                            // Show a simple notification and launch the installer
-                            // CRITICAL: This alert must be shown BEFORE launching the Java window
-                            showDialog(@"Installing Forge", 
-                                     [NSString stringWithFormat:@"%@ installer will now run. After installation completes, please restart the app.", vendor]);
+                            // CRITICAL CHANGE: Don't show another alert before launching
+                            // Remove the showDialog and delay that was causing problems
+                            NSLog(@"[ModrinthAPI] %@ installer download complete, launching...", vendor);
                             
-                            // Use a slight delay to ensure the alert is displayed before launching
-                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                                // This is the critical line that launches the JAR
-                                [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
-                            });
+                            // Launch the installer directly
+                            [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
                         } else {
                             // Fallback if we couldn't get the navigation controller
                             showDialog(@"Error", @"Could not locate navigation controller for installer launch");
