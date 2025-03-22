@@ -799,6 +799,9 @@
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
     // Get current search text, ensure it's not nil
     NSString *name = self.searchController.searchBar.text ?: @"";
+    
+    // Capture search state at beginning of method
+    BOOL wasSearchActive = self.isSearchActive;
 
     // Check if this is the initial load (no existing categories and not appending)
     BOOL isInitialLoad = !prevList && self.categories.count == 0;
@@ -842,6 +845,9 @@
         
         // Update UI on the main thread
         dispatch_async(dispatch_get_main_queue(), ^{
+            // Ensure we haven't lost the search state during the background operation
+            BOOL currentlySearchActive = self.isSearchActive;
+            
             if (newResults) {
                 // If we're not appending, reorganize completely
                 if (!prevList) {
@@ -850,18 +856,24 @@
                     // If appending, just update our existing organization
                     [self updateOrganizedModpacks:newResults];
                 }
-                
-                // Update unified search results if search is active
-                if (self.isSearchActive) {
-                    [self updateUnifiedSearchResults];
-                }
             } else {
-                // Handle error
+                // Handle error - but still set up an empty state with categories
                 if (self.modrinth.lastError) {
                     showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
                 } else {
                     showDialog(localize(@"Error", nil), @"Could not load modpacks. Please check your network connection.");
                 }
+                
+                // Set up empty categories if we don't have any
+                if (self.categories.count == 0) {
+                    [self organizeModpacksByCategory:@[]];
+                }
+            }
+            
+            // Always update unified search results if search is active
+            // This ensures the unified search results are properly populated
+            if (wasSearchActive || currentlySearchActive) {
+                [self updateUnifiedSearchResults];
             }
             
             // Always reset loading state and update UI
