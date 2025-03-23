@@ -58,6 +58,27 @@
     } else if ([arg hasPrefix:@"-cp"]) {
         // Skip "-cp <classpath>"
         return 2;
+    } else if ([arg isEqualToString:@"-p"] || [arg isEqualToString:@"--module-path"]) {
+        // Skip "-p <module-path>" or "--module-path <module-path>"
+        return 2;
+    } else if ([arg isEqualToString:@"--add-modules"]) {
+        // Skip "--add-modules <module-list>"
+        return 2;
+    } else if ([arg isEqualToString:@"--add-opens"]) {
+        // Skip "--add-opens <module/package=target>"
+        return 2;
+    } else if ([arg isEqualToString:@"--add-exports"]) {
+        // Skip "--add-exports <module/package=target>"
+        return 2;
+    } else if ([arg isEqualToString:@"--add-reads"]) {
+        // Skip "--add-reads <module=target>"
+        return 2;
+    } else if ([arg isEqualToString:@"--patch-module"]) {
+        // Skip "--patch-module <module=file>"
+        return 2;
+    } else if ([arg isEqualToString:@"--limit-modules"]) {
+        // Skip "--limit-modules <module-list>"
+        return 2;
     } else if ([arg hasPrefix:@"-Djava.library.path="]) {
         return 1;
     } else if ([arg hasPrefix:@"-XX:HeapDumpPath"]) {
@@ -122,26 +143,77 @@
     if (json[@"inheritsFrom"] == nil || json[@"arguments"][@"jvm"] == nil) {
         return;
     }
+    
     json[@"arguments"][@"jvm_processed"] = [[NSMutableArray alloc] init];
     NSDictionary *varArgMap = @{
         @"${classpath_separator}": @":",
         @"${library_directory}": [NSString stringWithFormat:@"%s/libraries", getenv("POJAV_GAME_DIR")],
         @"${version_name}": json[@"id"]
     };
+    
+    // Keep track of the parameter we're processing to handle -p flag correctly
+    BOOL isProcessingModulePath = NO;
     int argsToSkip = 0;
+    
     for (NSString *arg in json[@"arguments"][@"jvm"]) {
         if (argsToSkip == 0) {
             argsToSkip = [self numberOfArgsToSkipForArg:arg];
         }
+        
         if (argsToSkip == 0) {
             NSString *argStr = arg;
+            
+            // Special handling for all module-related flags
+            if ([argStr isEqualToString:@"-p"] || 
+                [argStr isEqualToString:@"--module-path"] ||
+                [argStr isEqualToString:@"--add-modules"] ||
+                [argStr isEqualToString:@"--add-opens"] ||
+                [argStr isEqualToString:@"--add-exports"] ||
+                [argStr isEqualToString:@"--add-reads"] ||
+                [argStr isEqualToString:@"--patch-module"] ||
+                [argStr isEqualToString:@"--limit-modules"]) {
+                isProcessingModulePath = YES;
+                // Add the flag to the processed arguments
+                [json[@"arguments"][@"jvm_processed"] addObject:argStr];
+                continue;
+            }
+            
+            // If we're supposed to be processing a module path or other module argument
+            if (isProcessingModulePath) {
+                // Check if the path is empty or missing
+                if (argStr.length == 0 || [argStr hasPrefix:@"-"]) {
+                    // If the next arg is another flag, add a dummy module path to prevent errors
+                    [json[@"arguments"][@"jvm_processed"] addObject:@"."];
+                    isProcessingModulePath = NO;
+                    
+                    // Process the current arg if it's a new flag
+                    if ([argStr hasPrefix:@"-"]) {
+                        for (NSString *key in varArgMap.allKeys) {
+                            argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
+                        }
+                        [json[@"arguments"][@"jvm_processed"] addObject:argStr];
+                    }
+                    continue;
+                } else {
+                    // We have a valid module path or parameter
+                    isProcessingModulePath = NO;
+                }
+            }
+            
+            // Process variable replacements for normal args
             for (NSString *key in varArgMap.allKeys) {
                 argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
             }
+            
             [json[@"arguments"][@"jvm_processed"] addObject:argStr];
         } else {
             argsToSkip--;
         }
+    }
+    
+    // If we ended processing with a pending module path or module argument, add a default one
+    if (isProcessingModulePath) {
+        [json[@"arguments"][@"jvm_processed"] addObject:@"."];
     }
 }
 
