@@ -9,6 +9,9 @@
 @property NSMutableDictionary* metadata;
 @property(nonatomic, copy) void(^handleError)(void);
 @property(nonatomic, readonly) AFURLSessionManager* manager;
+@property(nonatomic, assign) NSInteger successfulDownloads;
+@property(nonatomic, assign) NSInteger totalDownloads;
+@property(nonatomic, assign) BOOL verboseLogging;
 
 // Basic download task method without success callback
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
