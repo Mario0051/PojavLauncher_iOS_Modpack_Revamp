@@ -150,31 +150,53 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 }
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path 
-                                        success:(void (^)(void))success
-                                        failure:(void (^)(NSError *error))failure {
+                                          size:(NSUInteger)size 
+                                           sha:(NSString *)sha 
+                                       altName:(NSString *)altName 
+                                        toPath:(NSString *)path 
+                                       success:(void (^)(void))success
+                                       failure:(void (^)(NSError *error))failure {
     @autoreleasepool {
-        // Safety check for invalid URL
+        // Safety check for invalid URL with enhanced logging
         if (!url || url.length == 0) {
             NSLog(@"[MCDL] Error: Invalid or empty download URL");
+            NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path ?: @"(null)");
+            
             NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
-                                                code:1001 
-                                            userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL"}];
+                                                   code:1001 
+                                               userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL"}];
             if (failure) {
-                failure(urlError);
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    failure(urlError);
+                });
             } else {
                 [self finishDownloadWithErrorString:@"Invalid download URL"];
             }
             return nil;
         }
         
+        // Only log detailed URL information in verbose mode
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Creating download task - URL: %@", url);
+            NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path);
+        }
+        
+        // Track total downloads
+        self.totalDownloads++;
+        
         // Check if file already exists and has correct SHA1 - with quick return
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
         
         if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+            // Increment successful downloads counter
+            self.successfulDownloads++;
+            
+            // Log summary every 50 files if not in verbose mode
+            if (!self.verboseLogging && self.successfulDownloads % 50 == 0) {
+                NSLog(@"[MCDL] Progress: %ld of %ld files verified/downloaded", 
+                      (long)self.successfulDownloads, (long)self.totalDownloads);
+            }
+            
             // Optimization: Handle success callback on background thread
             if (success) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -197,10 +219,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         if (!requestURL) {
             NSLog(@"[MCDL] Error: Invalid download URL format: %@", url);
             NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
-                                                code:1001 
-                                            userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL format"}];
+                                                   code:1001 
+                                               userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL format"}];
             if (failure) {
-                failure(urlError);
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    failure(urlError);
+                });
             } else {
                 [self finishDownloadWithErrorString:@"Invalid download URL format"];
             }
@@ -211,221 +235,216 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         request.timeoutInterval = 60; // Set a reasonable timeout
         request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData; // Avoid cache issues
         
-        __block NSProgress *downloadProgress = nil;
-        __block BOOL sizeUpdated = NO;
-        
         // Add to file list for UI tracking (before creating the task to avoid race conditions)
-        [self.fileListLock lock];
-        [self.fileList addObject:name];
-        [self.fileListLock unlock];
+        @synchronized(self.fileList) {
+            [self.fileList addObject:name];
+        }
         
         // Create a progress object for this download before the task is created
-        downloadProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
+        NSProgress *downloadProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
         downloadProgress.kind = NSProgressKindFile;
         
-        // Add this progress to our tracking list
-        [self.progressLock lock];
-        [self.progressList addObject:downloadProgress];
+        // Add this progress to our tracking list - using synchronization for thread safety
+        BOOL progressAdded = NO;
         
-        // Update overall progress total
-        if (!self.progress) {
-            self.progress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
-        } else {
-            self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+        @synchronized(self) {
+            @try {
+                @synchronized(self.progressList) {
+                    [self.progressList addObject:downloadProgress];
+                }
+                
+                // Update overall progress total
+                if (!self.progress) {
+                    self.progress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
+                } else {
+                    self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+                }
+                
+                if (!self.textProgress) {
+                    self.textProgress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
+                } else {
+                    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                }
+                
+                // Add the progress as a child to our overall progress
+                [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
+                progressAdded = YES;
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Exception adding progress: %@", exception);
+            }
         }
         
-        if (!self.textProgress) {
-            self.textProgress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
-        } else {
-            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+        if (!progressAdded) {
+            NSLog(@"[MCDL] Failed to add progress for %@", name);
         }
-        
-        // Add the progress as a child to our overall progress
-        [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
-        [self.progressLock unlock];
         
         // Mark the progress object as tracked by this task
         objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         
-        // Create download task with proper completion handling
+        // Create weak reference to self to avoid retain cycles
         __weak typeof(self) weakSelf = self;
+        
+        // Create download task with proper completion handling
         NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull taskProgress) {
-            // Throttle progress updates to reduce overhead - only update if significant change
+            // Only update progress every 10% to reduce overhead
             static NSInteger lastReportedPercent = -1;
             NSInteger currentPercent = (NSInteger)(taskProgress.fractionCompleted * 100);
             
-            if (currentPercent != lastReportedPercent && currentPercent % 5 == 0) { // Update every 5%
+            if (currentPercent != lastReportedPercent && currentPercent % 10 == 0) {
                 lastReportedPercent = currentPercent;
                 
-                if (taskProgress && downloadProgress) {
-                    [weakSelf.progressLock lock];
-                    
-                    // Update completion amount with safeguards
-                    CGFloat fraction = taskProgress.fractionCompleted;
-                    if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
-                        downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
-                        
-                        // Flag for UI update instead of updating immediately
-                        weakSelf.needsUIUpdate = YES;
+                // Safely update progress
+                @synchronized(weakSelf) {
+                    @try {
+                        // Update completion amount with safeguards
+                        CGFloat fraction = taskProgress.fractionCompleted;
+                        if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
+                            downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
+                            
+                            // Flag for UI update instead of updating immediately
+                            weakSelf.needsUIUpdate = YES;
+                        }
+                    } @catch (NSException *exception) {
+                        // Just log and continue
                     }
-                    
-                    [weakSelf.progressLock unlock];
                 }
             }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-            NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
+            // Only log in verbose mode
+            if (weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
+            }
             
             // If size wasn't provided but response has size info, update progress
             if (size == 0 && response.expectedContentLength > 0) {
                 NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
-                [weakSelf.progressLock lock];
                 
-                // Update progress size and overall progress total
-                NSUInteger oldSize = downloadProgress.totalUnitCount;
-                downloadProgress.totalUnitCount = actualSize;
-                
-                // Update parent progress total
-                if (weakSelf.progress) {
-                    weakSelf.progress.totalUnitCount = weakSelf.progress.totalUnitCount - oldSize + actualSize;
+                @synchronized(weakSelf) {
+                    @try {
+                        // Update progress size and overall progress total
+                        NSUInteger oldSize = downloadProgress.totalUnitCount;
+                        downloadProgress.totalUnitCount = actualSize;
+                        
+                        // Update parent progress total
+                        if (weakSelf.progress) {
+                            weakSelf.progress.totalUnitCount = weakSelf.progress.totalUnitCount - oldSize + actualSize;
+                        }
+                        
+                        if (weakSelf.textProgress) {
+                            weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
+                        }
+                    } @catch (NSException *exception) {
+                        // Just log and continue
+                    }
                 }
-                
-                if (weakSelf.textProgress) {
-                    weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
-                }
-                
-                sizeUpdated = YES;
-                [weakSelf.progressLock unlock];
-                
-                NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
             }
             
             // Create directory structure if needed
-            NSError *dirError;
             NSString *dirPath = [path stringByDeletingLastPathComponent];
-            BOOL success = [NSFileManager.defaultManager createDirectoryAtPath:dirPath 
-                                                withIntermediateDirectories:YES 
-                                                                 attributes:nil 
-                                                                      error:&dirError];
-            if (!success) {
-                NSLog(@"[MCDL] Warning: Could not create directory for %@: %@", name, dirError.localizedDescription);
-            }
+            [[NSFileManager defaultManager] createDirectoryAtPath:dirPath 
+                                     withIntermediateDirectories:YES 
+                                                      attributes:nil 
+                                                           error:nil];
             
-            // Remove existing file if it exists
+            // Remove existing file if it exists to avoid write errors
             if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
-                NSError *removeError;
-                [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
-                if (removeError) {
-                    NSLog(@"[MCDL] Warning: Could not remove existing file %@: %@", path, removeError.localizedDescription);
-                }
+                [NSFileManager.defaultManager removeItemAtPath:path error:nil];
             }
             
             return [NSURL fileURLWithPath:path];
         } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
-            // Decrement active downloads count and process next download
+            // Always decrement active downloads count
             @synchronized(weakSelf.pendingDownloads) {
-                weakSelf.activeDownloads--;
+                weakSelf.activeDownloads = MAX(0, weakSelf.activeDownloads - 1);
+                
                 // Process next download on the serial queue
                 dispatch_async(weakSelf.downloadQueue, ^{
                     [weakSelf processNextDownloadInQueue];
                 });
             }
             
-            // Safely check if progress is cancelled
+            // Safely check if progress is cancelled to avoid potential crashes
             BOOL isCancelled = NO;
-            @try {
-                isCancelled = weakSelf.progress.cancelled;
-            } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
-                isCancelled = NO;
+            @synchronized(weakSelf) {
+                @try {
+                    isCancelled = weakSelf.progress.cancelled;
+                } @catch (NSException *exception) {
+                    isCancelled = NO;
+                }
             }
             
             if (isCancelled) {
-                // Ignore any further errors when cancelled
-                NSLog(@"[MCDL] Download cancelled for %@", name);
                 return;
             } 
             
             if (error != nil) {
+                // Always log errors
                 NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
                 if (failure) {
-                    failure(error);
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        failure(error);
+                    });
                 } else {
                     [weakSelf finishDownloadWithError:error file:name];
                 }
                 return;
             }
             
-            if (![weakSelf checkSHA:sha forFile:path altName:altName]) {
+            // Increment successful download counter
+            weakSelf.successfulDownloads++;
+            
+            // Log progress summary periodically instead of every file
+            if (!weakSelf.verboseLogging && weakSelf.successfulDownloads % 50 == 0) {
+                NSLog(@"[MCDL] Progress: %ld of %ld files downloaded", 
+                      (long)weakSelf.successfulDownloads, (long)weakSelf.totalDownloads);
+            }
+            
+            // Verify the downloaded file if checksum is provided
+            if (sha.length > 0 && ![weakSelf checkSHA:sha forFile:path altName:altName]) {
+                NSLog(@"[MCDL] Error: SHA1 verification failed for %@", path.lastPathComponent);
                 NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
-                                                    code:1000 
-                                                userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
+                                                       code:1000 
+                                                   userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
                 if (failure) {
-                    failure(shaError);
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        failure(shaError);
+                    });
                 } else {
                     [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
                 }
                 return;
             }
             
-            // If we didn't have an accurate size initially and didn't update it from the response
-            if (!sizeUpdated && size == 0 && downloadProgress) {
-                // Get the actual file size for more accurate progress reporting
-                NSError *fileError;
-                NSDictionary *fileAttrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:&fileError];
-                if (!fileError && fileAttrs) {
-                    NSUInteger fileSize = [fileAttrs fileSize];
-                    NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
+            // Ensure progress is marked as complete
+            @synchronized(weakSelf) {
+                @try {
+                    downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
                     
-                    // Update progress with actual file size - safely
-                    @try {
-                        [weakSelf.progressLock lock];
-                        if (fileSize > 0 && fileSize != downloadProgress.totalUnitCount && weakSelf.progress) {
-                            // Add the difference to total progress
-                            NSUInteger oldSize = downloadProgress.totalUnitCount;
-                            weakSelf.progress.totalUnitCount += (fileSize - oldSize);
-                            
-                            if (weakSelf.textProgress) {
-                                weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
-                            }
-                            
-                            downloadProgress.totalUnitCount = fileSize;
-                        }
-                        [weakSelf.progressLock unlock];
-                    } @catch (NSException *exception) {
-                        [weakSelf.progressLock unlock];
-                        NSLog(@"[MCDL] Warning: Exception updating progress size: %@", exception);
-                    }
+                    // Flag for UI update
+                    weakSelf.needsUIUpdate = YES;
+                } @catch (NSException *exception) {
+                    // Just log and continue
                 }
             }
             
-            // Ensure progress is marked as complete
-            @try {
-                [weakSelf.progressLock lock];
-                downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
-                
-                // Flag for UI update
-                weakSelf.needsUIUpdate = YES;
-                [weakSelf.progressLock unlock];
-            } @catch (NSException *exception) {
-                [weakSelf.progressLock unlock];
-                NSLog(@"[MCDL] Warning: Exception setting progress as complete: %@", exception);
-            }
-            
-            NSLog(@"[MCDL] Download completed for %@", name);
             if (success) {
-                success();
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    success();
+                });
             }
         }];
 
         // Instead of immediately resuming, queue it for controlled execution
         @synchronized(self.pendingDownloads) {
             [self.pendingDownloads addObject:task];
+            
+            // Only process next download if we're not at the limit
+            if (self.activeDownloads < kMaxConcurrentDownloads) {
+                dispatch_async(self.downloadQueue, ^{
+                    [self processNextDownloadInQueue];
+                });
+            }
         }
-        
-        // Process the download queue on our serial queue
-        dispatch_async(self.downloadQueue, ^{
-            [self processNextDownloadInQueue];
-        });
 
         return task;
     }
