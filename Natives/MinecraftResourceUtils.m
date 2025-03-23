@@ -61,6 +61,9 @@
     } else if ([arg isEqualToString:@"-p"] || [arg isEqualToString:@"--module-path"]) {
         // Skip "-p <module-path>" or "--module-path <module-path>"
         return 2;
+    } else if ([arg isEqualToString:@"--add-modules"]) {
+        // Skip "--add-modules <module-list>"
+        return 2;
     } else if ([arg hasPrefix:@"-Djava.library.path="]) {
         return 1;
     } else if ([arg hasPrefix:@"-XX:HeapDumpPath"]) {
@@ -145,8 +148,9 @@
         if (argsToSkip == 0) {
             NSString *argStr = arg;
             
-            // Special handling for the -p flag
-            if ([argStr isEqualToString:@"-p"] || [argStr isEqualToString:@"--module-path"]) {
+            // Special handling for the -p flag and --add-modules flag
+            if ([argStr isEqualToString:@"-p"] || [argStr isEqualToString:@"--module-path"] ||
+                [argStr isEqualToString:@"--add-modules"]) {
                 isProcessingModulePath = YES;
                 // Add the flag to the processed arguments
                 [json[@"arguments"][@"jvm_processed"] addObject:argStr];
