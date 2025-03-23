@@ -895,6 +895,40 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     for (NSDictionary *library in self.metadata[@"libraries"]) {
         NSString *name = library[@"name"];
 
+        // Skip Forge/NeoForge client JARs that should already be installed
+        if ((([name containsString:@"net.minecraftforge:forge:"] || 
+             [name containsString:@"net.neoforged:neoforge:"]) && 
+            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"]))) {
+            
+            // Extract path information to check if file exists
+            NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
+            NSString *path = nil;
+            
+            if (artifactDict && artifactDict[@"path"]) {
+                path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
+            } else if ([name containsString:@":"]) {
+                // Parse the version information from the name
+                NSArray *parts = [name componentsSeparatedByString:@":"];
+                if (parts.count >= 4) {
+                    NSString *groupId = parts[0];
+                    NSString *artifactId = parts[1];
+                    NSString *version = parts[2];
+                    NSString *classifier = parts[3];
+                    
+                    NSString *artifactPath = [NSString stringWithFormat:@"%@/%@/%@/%@-%@-%@.jar", 
+                                             [groupId stringByReplacingOccurrencesOfString:@"." withString:@"/"],
+                                             artifactId, version, artifactId, version, classifier];
+                    path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactPath];
+                }
+            }
+            
+            // If path exists, check if file exists and skip download
+            if (path && [NSFileManager.defaultManager fileExistsAtPath:path]) {
+                NSLog(@"[MCDL] Skipping Forge/NeoForge client JAR %@ - already installed at %@", name, path);
+                continue;
+            }
+        }
+
         NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
         if (artifactDict == nil && [name containsString:@":"]) {
             NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
@@ -940,6 +974,13 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                             if (checksumsArray.count > 0) {
                                 artifactDict[@"sha1"] = checksumsArray[0];
                             }
+                        }
+                        
+                        NSString *fullPath = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactPath];
+                        // Check if file already exists locally
+                        if ([NSFileManager.defaultManager fileExistsAtPath:fullPath]) {
+                            NSLog(@"[MCDL] Forge/NeoForge client JAR already exists at %@, skipping download", fullPath);
+                            continue;
                         }
                         
                         NSLog(@"[MCDL] Generated special URL for %@: %@", name, artifactDict[@"url"]);
@@ -992,6 +1033,19 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                         }
                     }
                 }
+            }
+        }
+
+        // Forge/NeoForge client JARs check - second check after artifact dict is built
+        if (artifactDict && artifactDict[@"path"] && (
+            ([name containsString:@"net.minecraftforge:forge:"] || 
+             [name containsString:@"net.neoforged:neoforge:"]) && 
+            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"]))) {
+            
+            NSString *fullPath = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
+            if ([NSFileManager.defaultManager fileExistsAtPath:fullPath]) {
+                NSLog(@"[MCDL] Forge/NeoForge client JAR already exists at %@, skipping download", fullPath);
+                continue;
             }
         }
 
