@@ -58,6 +58,9 @@
     } else if ([arg hasPrefix:@"-cp"]) {
         // Skip "-cp <classpath>"
         return 2;
+    } else if ([arg isEqualToString:@"-p"] || [arg isEqualToString:@"--module-path"]) {
+        // Skip "-p <module-path>" or "--module-path <module-path>"
+        return 2;
     } else if ([arg hasPrefix:@"-Djava.library.path="]) {
         return 1;
     } else if ([arg hasPrefix:@"-XX:HeapDumpPath"]) {
