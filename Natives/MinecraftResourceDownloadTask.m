@@ -895,38 +895,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     for (NSDictionary *library in self.metadata[@"libraries"]) {
         NSString *name = library[@"name"];
 
-        // Skip Forge/NeoForge client JARs that should already be installed
-        if ((([name containsString:@"net.minecraftforge:forge:"] || 
+        // Skip Forge/NeoForge client JARs entirely - they're already installed by the installer
+        if (([name containsString:@"net.minecraftforge:forge:"] || 
              [name containsString:@"net.neoforged:neoforge:"]) && 
-            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"]))) {
-            
-            // Extract path information to check if file exists
-            NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
-            NSString *path = nil;
-            
-            if (artifactDict && artifactDict[@"path"]) {
-                path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
-            } else if ([name containsString:@":"]) {
-                // Parse the version information from the name
-                NSArray *parts = [name componentsSeparatedByString:@":"];
-                if (parts.count >= 4) {
-                    NSString *groupId = parts[0];
-                    NSString *artifactId = parts[1];
-                    NSString *version = parts[2];
-                    NSString *classifier = parts[3];
-                    
-                    NSString *artifactPath = [NSString stringWithFormat:@"%@/%@/%@/%@-%@-%@.jar", 
-                                             [groupId stringByReplacingOccurrencesOfString:@"." withString:@"/"],
-                                             artifactId, version, artifactId, version, classifier];
-                    path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactPath];
-                }
-            }
-            
-            // If path exists, check if file exists and skip download
-            if (path && [NSFileManager.defaultManager fileExistsAtPath:path]) {
-                NSLog(@"[MCDL] Skipping Forge/NeoForge client JAR %@ - already installed at %@", name, path);
-                continue;
-            }
+            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"])) {
+            NSLog(@"[MCDL] Skipping Forge/NeoForge client JAR %@ - already installed by the installer", name);
+            continue;
         }
 
         NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
@@ -934,118 +908,51 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
             artifactDict = [[NSMutableDictionary alloc] init];
             
-            // Special handling for Forge/NeoForge client JARs
-            if (([name containsString:@"net.minecraftforge:forge:"] || 
-                 [name containsString:@"net.neoforged:neoforge:"]) && 
-                ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"])) {
+            // Standard library URL construction
+            NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
+            NSArray *libParts = [name componentsSeparatedByString:@":"];
+            
+            // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
+            if (libParts.count >= 3) {
+                NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
+                NSString *artifactName = libParts[1];
+                NSString *version = libParts[2];
                 
-                // Parse the version information from the name
-                NSArray *parts = [name componentsSeparatedByString:@":"];
-                if (parts.count >= 4) {
-                    NSString *groupId = parts[0];
-                    NSString *artifactId = parts[1];
-                    NSString *version = parts[2];
-                    NSString *classifier = parts[3];
-                    
-                    // Determine the correct repository URL based on the library name
-                    NSString *baseRepoUrl;
-                    NSString *artifactPath;
-                    
-                    if ([groupId isEqualToString:@"net.minecraftforge"]) {
-                        baseRepoUrl = @"https://maven.minecraftforge.net/";
-                        artifactPath = [NSString stringWithFormat:@"%@/%@/%@/%@-%@-%@.jar", 
-                                       [groupId stringByReplacingOccurrencesOfString:@"." withString:@"/"],
-                                       artifactId, version, artifactId, version, classifier];
-                    } else if ([groupId isEqualToString:@"net.neoforged"]) {
-                        baseRepoUrl = @"https://maven.neoforged.net/releases/";
-                        artifactPath = [NSString stringWithFormat:@"%@/%@/%@/%@-%@-%@.jar", 
-                                       [groupId stringByReplacingOccurrencesOfString:@"." withString:@"/"],
-                                       artifactId, version, artifactId, version, classifier];
-                    }
-                    
-                    if (baseRepoUrl && artifactPath) {
-                        artifactDict[@"path"] = artifactPath;
-                        artifactDict[@"url"] = [baseRepoUrl stringByAppendingString:artifactPath];
-                        
-                        // If SHA1 is available in library[@"checksums"], use it
-                        id checksums = library[@"checksums"];
-                        if (checksums && [checksums isKindOfClass:[NSArray class]]) {
-                            NSArray *checksumsArray = (NSArray *)checksums;
-                            if (checksumsArray.count > 0) {
-                                artifactDict[@"sha1"] = checksumsArray[0];
-                            }
-                        }
-                        
-                        NSString *fullPath = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactPath];
-                        // Check if file already exists locally
-                        if ([NSFileManager.defaultManager fileExistsAtPath:fullPath]) {
-                            NSLog(@"[MCDL] Forge/NeoForge client JAR already exists at %@, skipping download", fullPath);
-                            continue;
-                        }
-                        
-                        NSLog(@"[MCDL] Generated special URL for %@: %@", name, artifactDict[@"url"]);
+                // Check if we have a classifier (4th component)
+                NSString *classifier = @"";
+                if (libParts.count > 3) {
+                    classifier = [NSString stringWithFormat:@"-%@", libParts[3]];
+                }
+                
+                // Construct path and URL correctly
+                artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
+                                     group, artifactName, version, artifactName, version, classifier];
+                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                
+                // Safely get SHA1 from checksums if available
+                id checksums = library[@"checksums"];
+                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                    NSArray *checksumsArray = (NSArray *)checksums;
+                    if (checksumsArray.count > 0) {
+                        artifactDict[@"sha1"] = checksumsArray[0];
                     }
                 }
             } else {
-                // Standard library URL construction (unmodified from original code)
-                NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
-                NSArray *libParts = [name componentsSeparatedByString:@":"];
+                // Fallback to the original logic for standard 3-part library names
+                artifactDict[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", 
+                                     [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], 
+                                     libParts[1], 
+                                     libParts[2]];
+                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
                 
-                // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
-                if (libParts.count >= 3) {
-                    NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
-                    NSString *artifactName = libParts[1];
-                    NSString *version = libParts[2];
-                    
-                    // Check if we have a classifier (4th component)
-                    NSString *classifier = @"";
-                    if (libParts.count > 3) {
-                        classifier = [NSString stringWithFormat:@"-%@", libParts[3]];
-                    }
-                    
-                    // Construct path and URL correctly
-                    artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
-                                         group, artifactName, version, artifactName, version, classifier];
-                    artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
-                    
-                    // Safely get SHA1 from checksums if available
-                    id checksums = library[@"checksums"];
-                    if (checksums && [checksums isKindOfClass:[NSArray class]]) {
-                        NSArray *checksumsArray = (NSArray *)checksums;
-                        if (checksumsArray.count > 0) {
-                            artifactDict[@"sha1"] = checksumsArray[0];
-                        }
-                    }
-                } else {
-                    // Fallback to the original logic for standard 3-part library names
-                    artifactDict[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", 
-                                         [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], 
-                                         libParts[1], 
-                                         libParts[2]];
-                    artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
-                    
-                    // Safely get SHA1 from checksums if available
-                    id checksums = library[@"checksums"];
-                    if (checksums && [checksums isKindOfClass:[NSArray class]]) {
-                        NSArray *checksumsArray = (NSArray *)checksums;
-                        if (checksumsArray.count > 0) {
-                            artifactDict[@"sha1"] = checksumsArray[0];
-                        }
+                // Safely get SHA1 from checksums if available
+                id checksums = library[@"checksums"];
+                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                    NSArray *checksumsArray = (NSArray *)checksums;
+                    if (checksumsArray.count > 0) {
+                        artifactDict[@"sha1"] = checksumsArray[0];
                     }
                 }
-            }
-        }
-
-        // Forge/NeoForge client JARs check - second check after artifact dict is built
-        if (artifactDict && artifactDict[@"path"] && (
-            ([name containsString:@"net.minecraftforge:forge:"] || 
-             [name containsString:@"net.neoforged:neoforge:"]) && 
-            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"]))) {
-            
-            NSString *fullPath = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
-            if ([NSFileManager.defaultManager fileExistsAtPath:fullPath]) {
-                NSLog(@"[MCDL] Forge/NeoForge client JAR already exists at %@, skipping download", fullPath);
-                continue;
             }
         }
 
