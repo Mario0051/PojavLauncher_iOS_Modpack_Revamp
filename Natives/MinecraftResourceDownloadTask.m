@@ -137,7 +137,6 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     }
 }
 
-
 - (void)processNextDownloadInQueue {
     @synchronized(self.pendingDownloads) {
         // Check if we're at the concurrency limit or if there are no pending downloads
