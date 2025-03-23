@@ -25,6 +25,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 @property(nonatomic, assign) NSInteger activeDownloads; // Track active downloads
 @property(nonatomic, strong) NSTimer *uiUpdateTimer; // Timer for batched UI updates
 @property(nonatomic, assign) BOOL needsUIUpdate; // Flag for pending UI updates
+@property(nonatomic, assign) NSInteger successfulDownloads; // Count of successful downloads
+@property(nonatomic, assign) NSInteger totalDownloads; // Count of total download attempts
+@property(nonatomic, assign) BOOL verboseLogging; // Whether to log detailed information
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -63,6 +66,11 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         self.textProgress = [NSProgress new];
         self.textProgress.totalUnitCount = 0;
         self.textProgress.cancellable = YES;
+        
+        // Initialize counters for logging
+        self.successfulDownloads = 0;
+        self.totalDownloads = 0;
+        self.verboseLogging = getPrefBool(@"general.debug_logging");
         
         // Setup timer for batched UI updates
         self.needsUIUpdate = NO;
@@ -109,6 +117,10 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         self.textProgress = [NSProgress new];
         self.textProgress.totalUnitCount = 0;
         self.textProgress.cancellable = YES;
+        
+        // Reset download counters
+        self.successfulDownloads = 0;
+        self.totalDownloads = 0;
     }
     
     // Reset tracking lists
@@ -191,14 +203,28 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return nil;
         }
         
-        // Log valid URL information for debugging
-        NSLog(@"[MCDL] Creating download task - URL: %@", url);
-        NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path);
+        // Only log detailed URL information in verbose mode
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Creating download task - URL: %@", url);
+            NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path);
+        }
+        
+        // Track total downloads
+        self.totalDownloads++;
         
         // Check if file already exists and has correct SHA1 - with quick return
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
         
         if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+            // Increment successful downloads counter
+            self.successfulDownloads++;
+            
+            // Log summary every 50 files if not in verbose mode
+            if (!self.verboseLogging && self.successfulDownloads % 50 == 0) {
+                NSLog(@"[MCDL] Progress: %ld of %ld files verified/downloaded", 
+                      (long)self.successfulDownloads, (long)self.totalDownloads);
+            }
+            
             // Optimization: Handle success callback on background thread
             if (success) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -338,7 +364,10 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                 }
             }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-            NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
+            // Only log in verbose mode
+            if (weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
+            }
             
             // If size wasn't provided but response has size info, update progress
             if (size == 0 && response.expectedContentLength > 0) {
@@ -365,7 +394,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                     }
                 }
                 
-                NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
+                if (weakSelf.verboseLogging) {
+                    NSLog(@"[MCDL] Using response size: %lu for %@", (unsigned long)actualSize, name);
+                }
             }
             
             // Create directory structure if needed
@@ -412,11 +443,14 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             
             if (isCancelled) {
                 // Ignore any further errors when cancelled
-                NSLog(@"[MCDL] Download cancelled for %@", name);
+                if (weakSelf.verboseLogging) {
+                    NSLog(@"[MCDL] Download cancelled for %@", name);
+                }
                 return;
             } 
             
             if (error != nil) {
+                // Always log errors
                 NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
                 if (failure) {
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -428,8 +462,18 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                 return;
             }
             
+            // Increment successful download counter
+            weakSelf.successfulDownloads++;
+            
+            // Log progress summary periodically instead of every file
+            if (!weakSelf.verboseLogging && weakSelf.successfulDownloads % 50 == 0) {
+                NSLog(@"[MCDL] Progress: %ld of %ld files downloaded", 
+                      (long)weakSelf.successfulDownloads, (long)weakSelf.totalDownloads);
+            }
+            
             // Verify the downloaded file if checksum is provided
             if (sha.length > 0 && ![weakSelf checkSHA:sha forFile:path altName:altName]) {
+                NSLog(@"[MCDL] Error: SHA1 verification failed for %@", path.lastPathComponent);
                 NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
                                                        code:1000 
                                                    userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
@@ -451,7 +495,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                 if (!fileError && fileAttrs) {
                     NSUInteger fileSize = [fileAttrs fileSize];
                     if (fileSize > 0) {
-                        NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
+                        if (weakSelf.verboseLogging) {
+                            NSLog(@"[MCDL] Updating progress with actual file size: %lu for %@", (unsigned long)fileSize, name);
+                        }
                         
                         // Update progress with actual file size - safely
                         @synchronized(weakSelf) {
@@ -487,7 +533,11 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                 }
             }
             
-            NSLog(@"[MCDL] Download completed for %@", name);
+            // Only log completion in verbose mode
+            if (weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Download completed for %@", name);
+            }
+            
             if (success) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     success();
@@ -684,7 +734,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     if (sha.length == 0) {
         // When sha = skip, only check for file existence
         BOOL existence = [NSFileManager.defaultManager fileExistsAtPath:path];
-        if (existence) {
+        if (existence && self.verboseLogging) {
             NSLog(@"[MCDL] Warning: couldn't find SHA for %@, have to assume it's good.", path);
         }
         return existence;
@@ -704,7 +754,8 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     }
 
     BOOL check = [sha isEqualToString:localSHA];
-    if (!check || (getPrefBool(@"general.debug_logging") && logSuccess)) {
+    // Only log failures or if verbose logging is enabled and we want to log success
+    if (!check || (self.verboseLogging && logSuccess)) {
         NSLog(@"[MCDL] SHA1 %@ for %@%@",
           (check ? @"passed" : @"failed"), 
           (altName ? altName : path.lastPathComponent),
@@ -729,8 +780,17 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
 - (void)downloadVersion:(NSDictionary *)version {
     [self prepareForDownload];
+    
+    // Reset counters
+    self.successfulDownloads = 0;
+    self.totalDownloads = 0;
+    
+    NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
+    
     [self downloadVersionMetadata:version success:^{
         [self downloadAssetMetadataWithSuccess:^{
+            NSLog(@"[MCDL] Downloading libraries and assets...");
+            
             [self downloadClientLibraries];
             [self downloadClientAssets];
             
@@ -755,7 +815,8 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                 }
             }
             
-            // Tasks are now automatically queued and will be processed by the download queue
+            // Log summary when all tasks have been queued
+            NSLog(@"[MCDL] Queued %ld files for download/verification", (long)self.totalDownloads);
             
             // Clean up large metadata we don't need anymore
             [self.metadata removeObjectForKey:@"assetIndexObj"];
@@ -780,7 +841,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     version = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
     
     // Log if version was found in the remote list
-    NSLog(@"[MCDL] Version in remote list? %@", version ? @"YES" : @"NO");
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Version in remote list? %@", version ? @"YES" : @"NO");
+    }
 
     // Create a wrapped success callback
     __weak typeof(self) weakSelf = self;
@@ -846,7 +909,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
     versionStr = version[@"id"];
     NSString *url = version[@"url"];
-    NSLog(@"[MCDL] Download URL for %@: %@", versionStr, url ?: @"(null)");
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Download URL for %@: %@", versionStr, url ?: @"(null)");
+    }
     
     NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
     NSUInteger size = [version[@"size"] unsignedLongLongValue];
@@ -892,6 +957,15 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 - (NSArray *)downloadClientLibraries {
     NSMutableArray *tasks = [NSMutableArray new];
     
+    NSInteger libraryCount = 0;
+    if (self.metadata[@"libraries"] && [self.metadata[@"libraries"] isKindOfClass:[NSArray class]]) {
+        libraryCount = [(NSArray *)self.metadata[@"libraries"] count];
+    }
+    
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Processing %ld libraries for download", (long)libraryCount);
+    }
+    
     for (NSDictionary *library in self.metadata[@"libraries"]) {
         NSString *name = library[@"name"];
 
@@ -899,13 +973,17 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         if (([name containsString:@"net.minecraftforge:forge:"] || 
              [name containsString:@"net.neoforged:neoforge:"]) && 
             ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"])) {
-            NSLog(@"[MCDL] Skipping Forge/NeoForge client JAR %@ - already installed by the installer", name);
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Skipping Forge/NeoForge client JAR %@ - already installed by the installer", name);
+            }
             continue;
         }
 
         NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
         if (artifactDict == nil && [name containsString:@":"]) {
-            NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
+            }
             artifactDict = [[NSMutableDictionary alloc] init];
             
             // Standard library URL construction
@@ -961,7 +1039,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
         NSString *url = artifactDict[@"url"];
         if ([library[@"skip"] boolValue]) {
-            NSLog(@"[MCDL] Skipped library %@", name);
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Skipped library %@", name);
+            }
             continue;
         }
 
@@ -972,6 +1052,10 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return nil;
         }
     }
+    
+    // Log summary of library downloads
+    NSLog(@"[MCDL] Completed library processing, queued %lu downloads", (unsigned long)tasks.count);
+    
     return tasks;
 }
 
@@ -1003,6 +1087,8 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     
     NSInteger totalAssets = assetNames.count;
     NSInteger batchSize = 100; // Process 100 assets at a time
+    
+    NSLog(@"[MCDL] Processing %ld asset files in batches of %ld", (long)totalAssets, (long)batchSize);
     
     for (NSInteger startIndex = 0; startIndex < totalAssets; startIndex += batchSize) {
         NSInteger endIndex = MIN(startIndex + batchSize, totalAssets);
@@ -1063,11 +1149,18 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     // Wait for all batches to be processed
     dispatch_group_wait(assetGroup, DISPATCH_TIME_FOREVER);
     
+    // Log summary of asset downloads
+    NSLog(@"[MCDL] Completed asset processing, queued %lu downloads", (unsigned long)tasks.count);
+    
     return tasks;
 }
 
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     [self prepareForDownload];
+    
+    // Reset counters
+    self.successfulDownloads = 0;
+    self.totalDownloads = 0;
     
     // Set flag in metadata that this is a modpack installation
     if (!self.metadata) {
@@ -1084,6 +1177,8 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     // For the filesystem paths, create a sanitized version of the name (for the zip file only)
     NSString *sanitizedName = [[name lowercaseString] stringByReplacingOccurrencesOfString:@" " withString:@"_"];
     NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", sanitizedName];
+    
+    NSLog(@"[MCDL] Starting download for modpack: %@", name);
     
     // Get the game directory for this modpack
     NSString *gameDir = [PLProfiles uniqueGameDirForProfileName:name];
