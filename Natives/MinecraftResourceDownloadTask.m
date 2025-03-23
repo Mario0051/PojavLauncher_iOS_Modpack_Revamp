@@ -182,12 +182,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 }
 
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                          size:(NSUInteger)size 
-                                           sha:(NSString *)sha 
-                                       altName:(NSString *)altName 
-                                        toPath:(NSString *)path 
-                                       success:(void (^)(void))success
-                                       failure:(void (^)(NSError *error))failure {
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path 
+                                        success:(void (^)(void))success
+                                        failure:(void (^)(NSError *error))failure {
     @autoreleasepool {
         // Safety check for invalid URL with enhanced logging
         if (!url || url.length == 0) {
@@ -207,12 +207,6 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return nil;
         }
         
-        // Only log detailed URL information in verbose mode
-        if (self.verboseLogging) {
-            NSLog(@"[MCDL] Creating download task - URL: %@", url);
-            NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path);
-        }
-        
         // Track total downloads
         self.totalDownloads++;
         
@@ -223,8 +217,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             // Increment successful downloads counter
             self.successfulDownloads++;
             
-            // Log summary every 50 files if not in verbose mode
-            if (!self.verboseLogging && self.successfulDownloads % 50 == 0) {
+            // Only log skipped files in verbose mode
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Skipping download - file exists and SHA1 matched: %@", 
+                      altName ?: path.lastPathComponent);
+            } else if (self.successfulDownloads % 50 == 0) {
+                // Log periodic summaries if not in verbose mode
                 NSLog(@"[MCDL] Progress: %ld of %ld files verified/downloaded", 
                       (long)self.successfulDownloads, (long)self.totalDownloads);
             }
@@ -241,6 +239,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return nil;
         } else if (![self checkAccessWithDialog:YES]) {
             return nil;
+        }
+
+        // Only log detailed URL information for files we're actually downloading
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Creating download task - URL: %@", url);
+            NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path);
         }
 
         // Use filename as display name if no alternate name provided
@@ -426,7 +430,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             weakSelf.successfulDownloads++;
             
             // Log progress summary periodically instead of every file
-            if (!weakSelf.verboseLogging && weakSelf.successfulDownloads % 50 == 0) {
+            if (weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Successfully downloaded %@", name);
+            } else if (weakSelf.successfulDownloads % 50 == 0) {
                 NSLog(@"[MCDL] Progress: %ld of %ld files downloaded", 
                       (long)weakSelf.successfulDownloads, (long)weakSelf.totalDownloads);
             }
