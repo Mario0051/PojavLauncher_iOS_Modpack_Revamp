@@ -899,48 +899,97 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         if (artifactDict == nil && [name containsString:@":"]) {
             NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
             artifactDict = [[NSMutableDictionary alloc] init];
-            NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
-            NSArray *libParts = [name componentsSeparatedByString:@":"];
             
-            // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
-            if (libParts.count >= 3) {
-                NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
-                NSString *artifactName = libParts[1];
-                NSString *version = libParts[2];
+            // Special handling for Forge/NeoForge client JARs
+            if (([name containsString:@"net.minecraftforge:forge:"] || 
+                 [name containsString:@"net.neoforged:neoforge:"]) && 
+                ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"])) {
                 
-                // Check if we have a classifier (4th component)
-                NSString *classifier = @"";
-                if (libParts.count > 3) {
-                    classifier = [NSString stringWithFormat:@"-%@", libParts[3]];
-                }
-                
-                // Construct path and URL correctly
-                artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
-                                     group, artifactName, version, artifactName, version, classifier];
-                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
-                
-                // Safely get SHA1 from checksums if available
-                id checksums = library[@"checksums"];
-                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
-                    NSArray *checksumsArray = (NSArray *)checksums;
-                    if (checksumsArray.count > 0) {
-                        artifactDict[@"sha1"] = checksumsArray[0];
+                // Parse the version information from the name
+                NSArray *parts = [name componentsSeparatedByString:@":"];
+                if (parts.count >= 4) {
+                    NSString *groupId = parts[0];
+                    NSString *artifactId = parts[1];
+                    NSString *version = parts[2];
+                    NSString *classifier = parts[3];
+                    
+                    // Determine the correct repository URL based on the library name
+                    NSString *baseRepoUrl;
+                    NSString *artifactPath;
+                    
+                    if ([groupId isEqualToString:@"net.minecraftforge"]) {
+                        baseRepoUrl = @"https://maven.minecraftforge.net/";
+                        artifactPath = [NSString stringWithFormat:@"%@/%@/%@/%@-%@-%@.jar", 
+                                       [groupId stringByReplacingOccurrencesOfString:@"." withString:@"/"],
+                                       artifactId, version, artifactId, version, classifier];
+                    } else if ([groupId isEqualToString:@"net.neoforged"]) {
+                        baseRepoUrl = @"https://maven.neoforged.net/releases/";
+                        artifactPath = [NSString stringWithFormat:@"%@/%@/%@/%@-%@-%@.jar", 
+                                       [groupId stringByReplacingOccurrencesOfString:@"." withString:@"/"],
+                                       artifactId, version, artifactId, version, classifier];
+                    }
+                    
+                    if (baseRepoUrl && artifactPath) {
+                        artifactDict[@"path"] = artifactPath;
+                        artifactDict[@"url"] = [baseRepoUrl stringByAppendingString:artifactPath];
+                        
+                        // If SHA1 is available in library[@"checksums"], use it
+                        id checksums = library[@"checksums"];
+                        if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                            NSArray *checksumsArray = (NSArray *)checksums;
+                            if (checksumsArray.count > 0) {
+                                artifactDict[@"sha1"] = checksumsArray[0];
+                            }
+                        }
+                        
+                        NSLog(@"[MCDL] Generated special URL for %@: %@", name, artifactDict[@"url"]);
                     }
                 }
             } else {
-                // Fallback to the original logic for standard 3-part library names
-                artifactDict[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", 
-                                     [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], 
-                                     libParts[1], 
-                                     libParts[2]];
-                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                // Standard library URL construction (unmodified from original code)
+                NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
+                NSArray *libParts = [name componentsSeparatedByString:@":"];
                 
-                // Safely get SHA1 from checksums if available
-                id checksums = library[@"checksums"];
-                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
-                    NSArray *checksumsArray = (NSArray *)checksums;
-                    if (checksumsArray.count > 0) {
-                        artifactDict[@"sha1"] = checksumsArray[0];
+                // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
+                if (libParts.count >= 3) {
+                    NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
+                    NSString *artifactName = libParts[1];
+                    NSString *version = libParts[2];
+                    
+                    // Check if we have a classifier (4th component)
+                    NSString *classifier = @"";
+                    if (libParts.count > 3) {
+                        classifier = [NSString stringWithFormat:@"-%@", libParts[3]];
+                    }
+                    
+                    // Construct path and URL correctly
+                    artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
+                                         group, artifactName, version, artifactName, version, classifier];
+                    artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                    
+                    // Safely get SHA1 from checksums if available
+                    id checksums = library[@"checksums"];
+                    if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                        NSArray *checksumsArray = (NSArray *)checksums;
+                        if (checksumsArray.count > 0) {
+                            artifactDict[@"sha1"] = checksumsArray[0];
+                        }
+                    }
+                } else {
+                    // Fallback to the original logic for standard 3-part library names
+                    artifactDict[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", 
+                                         [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], 
+                                         libParts[1], 
+                                         libParts[2]];
+                    artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                    
+                    // Safely get SHA1 from checksums if available
+                    id checksums = library[@"checksums"];
+                    if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                        NSArray *checksumsArray = (NSArray *)checksums;
+                        if (checksumsArray.count > 0) {
+                            artifactDict[@"sha1"] = checksumsArray[0];
+                        }
                     }
                 }
             }
@@ -964,6 +1013,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     }
     return tasks;
 }
+
 - (NSArray *)downloadClientAssets {
     NSMutableArray *tasks = [NSMutableArray new];
     NSDictionary *assets = self.metadata[@"assetIndexObj"];
