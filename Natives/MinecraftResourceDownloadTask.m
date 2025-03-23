@@ -231,10 +231,10 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             if (success) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     success();
+                    
+                    // Mark as needing UI update
+                    self.needsUIUpdate = YES;
                 });
-                
-                // Mark as needing UI update
-                self.needsUIUpdate = YES;
             }
             return nil;
         } else if (![self checkAccessWithDialog:YES]) {
@@ -669,9 +669,27 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         return existence;
     }
 
+    // Get file attributes to check file size
+    NSError *attributesError = nil;
+    NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:&attributesError];
+    
+    if (attributesError || !fileAttributes) {
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] SHA1 checker: couldn't get file attributes: %@", attributesError ?: @"Unknown error");
+        }
+        return NO;
+    }
+    
+    // Check if file size is zero, which would indicate a corrupted download
+    unsigned long long fileSize = [fileAttributes fileSize];
+    if (fileSize == 0) {
+        NSLog(@"[MCDL] SHA1 checker: file exists but has zero size: %@", path.lastPathComponent);
+        return NO;
+    }
+
     NSData *data = [NSData dataWithContentsOfFile:path];
     if (data == nil) {
-        NSLog(@"[MCDL] SHA1 checker: file doesn't exist: %@", altName ? altName : path.lastPathComponent);
+        NSLog(@"[MCDL] SHA1 checker: file doesn't exist or couldn't be read: %@", altName ? altName : path.lastPathComponent);
         return NO;
     }
 
@@ -683,13 +701,16 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     }
 
     BOOL check = [sha isEqualToString:localSHA];
-    // Only log failures or if verbose logging is enabled and we want to log success
-    if (!check || (self.verboseLogging && logSuccess)) {
-        NSLog(@"[MCDL] SHA1 %@ for %@%@",
-          (check ? @"passed" : @"failed"), 
-          (altName ? altName : path.lastPathComponent),
-          (check ? @"" : [NSString stringWithFormat:@" (expected: %@, got: %@)", sha, localSHA]));
+    // Always log detailed information for SHA1 failures to help diagnose issues
+    if (!check) {
+        NSLog(@"[MCDL] SHA1 failed for %@", altName ? altName : path.lastPathComponent);
+        NSLog(@"[MCDL] Expected: %@", sha);
+        NSLog(@"[MCDL] Got:      %@", localSHA);
+        NSLog(@"[MCDL] File size: %llu bytes", fileSize);
+    } else if (self.verboseLogging && logSuccess) {
+        NSLog(@"[MCDL] SHA1 passed for %@", altName ? altName : path.lastPathComponent);
     }
+    
     return check;
 }
 
