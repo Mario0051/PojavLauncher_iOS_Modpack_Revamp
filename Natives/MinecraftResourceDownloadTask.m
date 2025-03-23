@@ -25,9 +25,6 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 @property(nonatomic, assign) NSInteger activeDownloads; // Track active downloads
 @property(nonatomic, strong) NSTimer *uiUpdateTimer; // Timer for batched UI updates
 @property(nonatomic, assign) BOOL needsUIUpdate; // Flag for pending UI updates
-@property(nonatomic, assign) NSInteger successfulDownloads; // Count of successful downloads
-@property(nonatomic, assign) NSInteger totalDownloads; // Count of total download attempts
-@property(nonatomic, assign) BOOL verboseLogging; // Whether to log detailed information
 @end
 
 @implementation MinecraftResourceDownloadTask
