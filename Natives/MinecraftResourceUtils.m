@@ -118,7 +118,12 @@
     client[@"name"] = [NSString stringWithFormat:@"%@.jar", json[@"id"]];
     [json[@"libraries"] addObject:client];
 
-    // Parse Forge 1.17+ additional JVM Arguments
+    // Process Forge 1.17+ JVM Arguments
+    [self processJvmArguments:json];
+}
+
++ (void)processJvmArguments:(NSMutableDictionary *)json {
+    // Only process if this is a Forge version with inheritsFrom and JVM arguments
     if (json[@"inheritsFrom"] == nil || json[@"arguments"][@"jvm"] == nil) {
         return;
     }
@@ -128,94 +133,110 @@
         json[@"arguments"] = [NSMutableDictionary dictionary];
     }
     
-    // Initialize processed JVM arguments with deduplication
-    json[@"arguments"][@"jvm_processed"] = [NSMutableArray array];
-    NSMutableSet *uniqueProcessedArgs = [NSMutableSet new];
-    NSMutableSet *uniqueFullArgs = [NSMutableSet new];
+    // Create array for processed JVM arguments
+    NSMutableArray *processedJvmArgs = [NSMutableArray array];
+    json[@"arguments"][@"jvm_processed"] = processedJvmArgs;
     
-    // Variable replacement map
+    // Variable replacement map for placeholders
     NSDictionary *varArgMap = @{
         @"${classpath_separator}": @":",
         @"${library_directory}": [NSString stringWithFormat:@"%s/libraries", getenv("POJAV_GAME_DIR")],
         @"${version_name}": json[@"id"]
     };
     
-    // Track which type of flag we're processing
-    NSString *currentModuleFlag = nil;
-    NSMutableArray *moduleArgBuffer = [NSMutableArray new];
+    // Process each JVM argument
+    [self processJvmArgumentArray:json[@"arguments"][@"jvm"] 
+                     withVarMap:varArgMap 
+                     intoResult:processedJvmArgs];
     
-    for (NSString *arg in json[@"arguments"][@"jvm"]) {
-        // Skip empty or nil arguments
-        if (!arg || arg.length == 0) continue;
-        
-        // Skip if already processed
-        if ([uniqueProcessedArgs containsObject:arg]) {
-            continue;
-        }
-        
-        // Apply variable replacements
-        NSString *processedArg = arg;
-        for (NSString *key in varArgMap.allKeys) {
-            processedArg = [processedArg stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
-        }
-        
-        // Module-related flags handling
-        BOOL isModuleFlag = [processedArg isEqualToString:@"-p"] || 
-            [processedArg isEqualToString:@"--module-path"] ||
-            [processedArg isEqualToString:@"--add-modules"] ||
-            [processedArg isEqualToString:@"--add-opens"] ||
-            [processedArg isEqualToString:@"--add-exports"] ||
-            [processedArg isEqualToString:@"--add-reads"] ||
-            [processedArg isEqualToString:@"--patch-module"] ||
-            [processedArg isEqualToString:@"--limit-modules"];
-        
-        // If this is a module flag, prepare for special handling
-        if (isModuleFlag) {
-            currentModuleFlag = processedArg;
-            [moduleArgBuffer removeAllObjects];
-            continue;
-        }
-        
-        // If we have a current module flag, collect its arguments
-        if (currentModuleFlag) {
-            [moduleArgBuffer addObject:processedArg];
-            
-            // If we've collected enough for this flag, process it
-            if (moduleArgBuffer.count > 0) {
-                NSString *fullModuleArg = [moduleArgBuffer componentsJoinedByString:@" "];
-                
-                // Avoid duplicates
-                if (![uniqueFullArgs containsObject:fullModuleArg]) {
-                    NSString *moduleEntry = [NSString stringWithFormat:@"%@ %@", currentModuleFlag, fullModuleArg];
-                    [json[@"arguments"][@"jvm_processed"] addObject:moduleEntry];
-                    [uniqueFullArgs addObject:fullModuleArg];
-                }
-                
-                // Reset module flag processing
-                currentModuleFlag = nil;
-                [moduleArgBuffer removeAllObjects];
-            }
-        } else {
-            // For non-module arguments, add directly if not a duplicate
-            if (![uniqueFullArgs containsObject:processedArg]) {
-                [json[@"arguments"][@"jvm_processed"] addObject:processedArg];
-                [uniqueFullArgs addObject:processedArg];
-            }
-        }
-        
-        // Mark this argument as processed
-        [uniqueProcessedArgs addObject:arg];
+    // Log results
+    NSLog(@"[MCDL] Processed JVM Arguments (%lu):", (unsigned long)processedJvmArgs.count);
+    for (NSString *arg in processedJvmArgs) {
+        NSLog(@"  %@", arg);
+    }
+}
+
++ (void)processJvmArgumentArray:(NSArray *)jvmArgs 
+                     withVarMap:(NSDictionary *)varArgMap 
+                     intoResult:(NSMutableArray *)processedJvmArgs {
+    // Skip if arguments array is nil or empty
+    if (!jvmArgs || jvmArgs.count == 0) {
+        return;
     }
     
-    // Safe logging
-    NSArray *processedJvmArgs = json[@"arguments"][@"jvm_processed"];
-    if ([processedJvmArgs isKindOfClass:[NSArray class]]) {
-        NSLog(@"[MCDL] Processed JVM Arguments (%lu unique):", (unsigned long)processedJvmArgs.count);
-        for (NSString *arg in processedJvmArgs) {
-            NSLog(@"  %@", arg);
+    // These keys will be deduplicated by checking the entire argument string
+    NSMutableSet *moduleTypeArgs = [NSMutableSet setWithArray:@[
+        @"--add-modules", 
+        @"--add-opens",
+        @"--add-exports",
+        @"--add-reads",
+        @"--patch-module",
+        @"--limit-modules"
+    ]];
+    
+    // Track already added arguments to avoid duplicates
+    NSMutableSet *addedArgs = [NSMutableSet set];
+    
+    // Process arguments one by one
+    NSUInteger i = 0;
+    while (i < jvmArgs.count) {
+        id currentArg = jvmArgs[i];
+        
+        // Skip non-string arguments
+        if (![currentArg isKindOfClass:[NSString class]]) {
+            i++;
+            continue;
         }
-    } else {
-        NSLog(@"[MCDL] No processed JVM arguments found");
+        
+        NSString *argStr = currentArg;
+        
+        // Apply variable replacements
+        for (NSString *key in varArgMap.allKeys) {
+            argStr = [argStr stringByReplacingOccurrencesOfString:key 
+                                                       withString:varArgMap[key]];
+        }
+        
+        // Handle module-type arguments that need their own parameter
+        if ([moduleTypeArgs containsObject:argStr] && i + 1 < jvmArgs.count) {
+            // Get the next argument which is the parameter
+            id nextArg = jvmArgs[i + 1];
+            
+            // Skip if nextArg is not a string
+            if (![nextArg isKindOfClass:[NSString class]]) {
+                i += 2;
+                continue;
+            }
+            
+            // Apply variable replacements to parameter
+            NSString *paramStr = nextArg;
+            for (NSString *key in varArgMap.allKeys) {
+                paramStr = [paramStr stringByReplacingOccurrencesOfString:key 
+                                                               withString:varArgMap[key]];
+            }
+            
+            // Combine the flag and parameter
+            NSString *combinedArg = [NSString stringWithFormat:@"%@ %@", argStr, paramStr];
+            
+            // Only add if not already added
+            if (![addedArgs containsObject:combinedArg]) {
+                [processedJvmArgs addObject:combinedArg];
+                [addedArgs addObject:combinedArg];
+            }
+            
+            // Skip both arguments
+            i += 2;
+        }
+        // Handle single arguments
+        else {
+            // Only add if not already added
+            if (![addedArgs containsObject:argStr]) {
+                [processedJvmArgs addObject:argStr];
+                [addedArgs addObject:argStr];
+            }
+            
+            // Move to next argument
+            i++;
+        }
     }
 }
 
