@@ -123,8 +123,13 @@
         return;
     }
     
+    // Ensure arguments dictionary exists
+    if (!json[@"arguments"]) {
+        json[@"arguments"] = [NSMutableDictionary dictionary];
+    }
+    
     // Initialize processed JVM arguments with deduplication
-    json[@"arguments"][@"jvm_processed"] = [[NSMutableArray alloc] init];
+    json[@"arguments"][@"jvm_processed"] = [NSMutableArray array];
     NSMutableSet *processedArgs = [NSMutableSet new];
     NSMutableSet *processedFullArgs = [NSMutableSet new];
     
@@ -140,10 +145,10 @@
     NSMutableArray *moduleArgBuffer = [NSMutableArray new];
     
     for (NSString *arg in json[@"arguments"][@"jvm"]) {
-        // Skip empty arguments
-        if (arg.length == 0) continue;
+        // Skip empty or nil arguments
+        if (!arg || arg.length == 0) continue;
         
-        // Check if this argument is already processed
+        // Skip if already processed
         if ([processedArgs containsObject:arg]) {
             continue;
         }
@@ -181,7 +186,8 @@
                 
                 // Avoid duplicates
                 if (![processedFullArgs containsObject:fullModuleArg]) {
-                    [json[@"arguments"][@"jvm_processed"] addObject:[NSString stringWithFormat:@"%@ %@", currentModuleFlag, fullModuleArg]];
+                    NSString *moduleEntry = [NSString stringWithFormat:@"%@ %@", currentModuleFlag, fullModuleArg];
+                    [json[@"arguments"][@"jvm_processed"] addObject:moduleEntry];
                     [processedFullArgs addObject:fullModuleArg];
                 }
                 
@@ -201,10 +207,15 @@
         [processedArgs addObject:arg];
     }
     
-    // Logging for debugging
-    NSLog(@"[MCDL] Processed JVM Arguments (%lu unique):", (unsigned long)json[@"arguments"][@"jvm_processed"].count);
-    for (NSString *arg in json[@"arguments"][@"jvm_processed"]) {
-        NSLog(@"  %@", arg);
+    // Safe logging
+    NSArray *processedArgs = json[@"arguments"][@"jvm_processed"];
+    if ([processedArgs isKindOfClass:[NSArray class]]) {
+        NSLog(@"[MCDL] Processed JVM Arguments (%lu unique):", (unsigned long)processedArgs.count);
+        for (NSString *arg in processedArgs) {
+            NSLog(@"  %@", arg);
+        }
+    } else {
+        NSLog(@"[MCDL] No processed JVM arguments found");
     }
 }
 
