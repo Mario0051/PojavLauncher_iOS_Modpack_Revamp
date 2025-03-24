@@ -69,54 +69,14 @@
 
 + (void)tweakVersionJson:(NSMutableDictionary *)json {
     // Exclude some libraries
-    NSMutableArray *librariesArray = [NSMutableArray array];
-    
-    // Make sure we have a mutable array for libraries
-    if ([json[@"libraries"] isKindOfClass:[NSArray class]]) {
-        librariesArray = [json[@"libraries"] mutableCopy];
-        json[@"libraries"] = librariesArray;
-    } else {
-        NSLog(@"[MCDL] Warning: libraries is not an array in version JSON");
-        return;
-    }
-    
-    for (NSInteger i = 0; i < librariesArray.count; i++) {
-        id libraryObj = librariesArray[i];
-        
-        // If the library is not already a mutable dictionary, make it mutable
-        NSMutableDictionary *library;
-        if ([libraryObj isKindOfClass:[NSDictionary class]] && ![libraryObj isKindOfClass:[NSMutableDictionary class]]) {
-            library = [libraryObj mutableCopy];
-            librariesArray[i] = library;
-        } else if ([libraryObj isKindOfClass:[NSMutableDictionary class]]) {
-            library = (NSMutableDictionary *)libraryObj;
-        } else {
-            NSLog(@"[MCDL] Warning: skipping non-dictionary library entry");
-            continue;
-        }
-        
-        // Set the skip property
-        BOOL shouldSkip = NO;
-        
-        // Check library classifiers or natives for platform dependency
-        id downloads = library[@"downloads"];
-        if ([downloads isKindOfClass:[NSDictionary class]]) {
-            shouldSkip = (downloads[@"classifiers"] != nil);
-        }
-        
-        // Check for LWJGL libraries
-        NSString *name = library[@"name"];
-        if ([name isKindOfClass:[NSString class]] && [name hasPrefix:@"org.lwjgl"]) {
-            shouldSkip = YES;
-        }
-        
-        // Check for natives
-        if (library[@"natives"] != nil) {
-            shouldSkip = YES;
-        }
-        
-        // Set the skip flag
-        library[@"skip"] = @(shouldSkip);
+    for (NSMutableDictionary *library in json[@"libraries"]) {
+        library[@"skip"] = @(
+            // Exclude platform-dependant libraries
+            library[@"downloads"][@"classifiers"] != nil ||
+            library[@"natives"] != nil ||
+            // Exclude LWJGL libraries
+            [library[@"name"] hasPrefix:@"org.lwjgl"]
+        );
 
         NSString *versionStr = [library[@"name"] componentsSeparatedByString:@":"][2];
         NSArray<NSString *> *version = [versionStr componentsSeparatedByString:@"."];
@@ -130,101 +90,33 @@
                 continue;
             }
             library[@"name"] = @"net.java.dev.jna:jna:5.13.0";
-            
-            // Handle downloads dictionary
-            NSMutableDictionary *safeDownloads;
-            if ([library[@"downloads"] isKindOfClass:[NSDictionary class]]) {
-                if (![library[@"downloads"] isKindOfClass:[NSMutableDictionary class]]) {
-                    safeDownloads = [library[@"downloads"] mutableCopy];
-                    library[@"downloads"] = safeDownloads;
-                } else {
-                    safeDownloads = library[@"downloads"];
-                }
-            } else {
-                safeDownloads = [NSMutableDictionary dictionary];
-                library[@"downloads"] = safeDownloads;
-            }
-            
-            // Handle artifact dictionary
-            NSMutableDictionary *safeArtifact;
-            if ([safeDownloads[@"artifact"] isKindOfClass:[NSDictionary class]]) {
-                if (![safeDownloads[@"artifact"] isKindOfClass:[NSMutableDictionary class]]) {
-                    safeArtifact = [safeDownloads[@"artifact"] mutableCopy];
-                    safeDownloads[@"artifact"] = safeArtifact;
-                } else {
-                    safeArtifact = safeDownloads[@"artifact"];
-                }
-            } else {
-                safeArtifact = [NSMutableDictionary dictionary];
-                safeDownloads[@"artifact"] = safeArtifact;
-            }
-            
-            safeArtifact[@"path"] = @"net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
-            safeArtifact[@"url"] = @"https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
-            safeArtifact[@"sha1"] = @"1200e7ebeedbe0d10062093f32925a912020e747";
+            library[@"downloads"][@"artifact"][@"path"] = @"net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
+            library[@"downloads"][@"artifact"][@"url"] = @"https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
+            library[@"downloads"][@"artifact"][@"sha1"] = @"1200e7ebeedbe0d10062093f32925a912020e747";
         } else if ([library[@"name"] hasPrefix:@"org.ow2.asm:asm-all:"]) {
             // Early versions of the ASM library get replaced with 5.0.4 because Pojav's LWJGL is compiled for
             // Java 8, which is not supported by old ASM versions. Mod loaders like Forge, which depend on this
             // library, often include lwjgl in their class transformations, which causes errors with old ASM versions.
             if(version[0].intValue >= 5) continue;
             library[@"name"] = @"org.ow2.asm:asm-all:5.0.4";
-            
-            // Handle downloads dictionary
-            NSMutableDictionary *safeDownloads;
-            if ([library[@"downloads"] isKindOfClass:[NSDictionary class]]) {
-                if (![library[@"downloads"] isKindOfClass:[NSMutableDictionary class]]) {
-                    safeDownloads = [library[@"downloads"] mutableCopy];
-                    library[@"downloads"] = safeDownloads;
-                } else {
-                    safeDownloads = library[@"downloads"];
-                }
-            } else {
-                safeDownloads = [NSMutableDictionary dictionary];
-                library[@"downloads"] = safeDownloads;
-            }
-            
-            // Handle artifact dictionary
-            NSMutableDictionary *safeArtifact;
-            if ([safeDownloads[@"artifact"] isKindOfClass:[NSDictionary class]]) {
-                if (![safeDownloads[@"artifact"] isKindOfClass:[NSMutableDictionary class]]) {
-                    safeArtifact = [safeDownloads[@"artifact"] mutableCopy];
-                    safeDownloads[@"artifact"] = safeArtifact;
-                } else {
-                    safeArtifact = safeDownloads[@"artifact"];
-                }
-            } else {
-                safeArtifact = [NSMutableDictionary dictionary];
-                safeDownloads[@"artifact"] = safeArtifact;
-            }
-            
-            safeArtifact[@"path"] = @"org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
-            safeArtifact[@"sha1"] = @"e6244859997b3d4237a552669279780876228909";
-            safeArtifact[@"url"] = @"https://repo1.maven.org/maven2/org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
+            library[@"downloads"][@"artifact"][@"path"] = @"org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
+            library[@"downloads"][@"artifact"][@"sha1"] = @"e6244859997b3d4237a552669279780876228909";
+            library[@"downloads"][@"artifact"][@"url"] = @"https://repo1.maven.org/maven2/org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
         }
     }
 
     // Add the client as a library
     NSMutableDictionary *client = [[NSMutableDictionary alloc] init];
-    NSMutableDictionary *clientDownloads = [[NSMutableDictionary alloc] init];
-    client[@"downloads"] = clientDownloads;
-    
+    client[@"downloads"] = [[NSMutableDictionary alloc] init];
     if (json[@"downloads"][@"client"] == nil) {
-        NSMutableDictionary *clientArtifact = [[NSMutableDictionary alloc] init];
-        clientDownloads[@"artifact"] = clientArtifact;
+        client[@"downloads"][@"artifact"] = [[NSMutableDictionary alloc] init];
         client[@"skip"] = @YES;
     } else {
-        // Make sure this is mutable if it's not already
-        id clientObj = json[@"downloads"][@"client"];
-        if ([clientObj isKindOfClass:[NSDictionary class]] && ![clientObj isKindOfClass:[NSMutableDictionary class]]) {
-            clientDownloads[@"artifact"] = [clientObj mutableCopy];
-        } else {
-            clientDownloads[@"artifact"] = clientObj;
-        }
+        client[@"downloads"][@"artifact"] = json[@"downloads"][@"client"];
     }
-    
-    clientDownloads[@"artifact"][@"path"] = [NSString stringWithFormat:@"../versions/%1$@/%1$@.jar", json[@"id"]];
+    client[@"downloads"][@"artifact"][@"path"] = [NSString stringWithFormat:@"../versions/%1$@/%1$@.jar", json[@"id"]];
     client[@"name"] = [NSString stringWithFormat:@"%@.jar", json[@"id"]];
-    [librariesArray addObject:client];
+    [json[@"libraries"] addObject:client];
 
     // Process Forge 1.17+ JVM Arguments
     [self processJvmArguments:json];
@@ -236,21 +128,14 @@
         return;
     }
     
-    // Ensure arguments dictionary exists and is mutable
-    NSMutableDictionary *argsDict;
+    // Ensure arguments dictionary exists
     if (!json[@"arguments"]) {
-        argsDict = [NSMutableDictionary dictionary];
-        json[@"arguments"] = argsDict;
-    } else if ([json[@"arguments"] isKindOfClass:[NSMutableDictionary class]]) {
-        argsDict = json[@"arguments"];
-    } else {
-        argsDict = [json[@"arguments"] mutableCopy];
-        json[@"arguments"] = argsDict;
+        json[@"arguments"] = [NSMutableDictionary dictionary];
     }
     
     // Create array for processed JVM arguments
     NSMutableArray *processedJvmArgs = [NSMutableArray array];
-    argsDict[@"jvm_processed"] = processedJvmArgs;
+    json[@"arguments"][@"jvm_processed"] = processedJvmArgs;
     
     // Variable replacement map for placeholders
     NSDictionary *varArgMap = @{
