@@ -229,26 +229,35 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
     LAUNCH_LOG(@"Max RAM allocation set to %d MB", allocmem);
 
-    // Argument preparation
-    int margc = -1;
-    const char *margv[1000];
-
-    margv[++margc] = [NSString stringWithFormat:@"%@/bin/java", javaHome].UTF8String;
-    margv[++margc] = "-XstartOnFirstThread";
+    // Create array of arguments with proper capacity
+    NSMutableArray<NSString *> *jvmArgs = [NSMutableArray arrayWithCapacity:100];
+    
+    // Core JVM arguments
+    [jvmArgs addObject:[NSString stringWithFormat:@"%@/bin/java", javaHome]];
+    [jvmArgs addObject:@"-XstartOnFirstThread"];
+    
     if (!launchJar) {
-        margv[++margc] = "-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader";
+        [jvmArgs addObject:@"-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader"];
     }
-    margv[++margc] = "-Xms128M";
-    margv[++margc] = [NSString stringWithFormat:@"-Xmx%dM", allocmem].UTF8String;
-    margv[++margc] = [NSString stringWithFormat:@"-Djava.library.path=%@/Frameworks", NSBundle.mainBundle.bundlePath].UTF8String;
-    margv[++margc] = [NSString stringWithFormat:@"-Duser.dir=%@", gameDir].UTF8String;
-    margv[++margc] = [NSString stringWithFormat:@"-Duser.home=%s", getenv("POJAV_HOME")].UTF8String;
-    margv[++margc] = [NSString stringWithFormat:@"-Duser.timezone=%@", NSTimeZone.localTimeZone.name].UTF8String;
-    margv[++margc] = [NSString stringWithFormat:@"-DUIScreen.maximumFramesPerSecond=%d", (int)UIScreen.mainScreen.maximumFramesPerSecond].UTF8String;
-    margv[++margc] = "-Dorg.lwjgl.glfw.checkThread0=false";
-    margv[++margc] = "-Dorg.lwjgl.system.allocator=system";
-    margv[++margc] = "-Dlog4j2.formatMsgNoLookups=true";
-
+    
+    // Memory settings
+    [jvmArgs addObject:@"-Xms128M"];
+    [jvmArgs addObject:[NSString stringWithFormat:@"-Xmx%dM", allocmem]];
+    
+    // Path and environment settings
+    [jvmArgs addObject:[NSString stringWithFormat:@"-Djava.library.path=%@/Frameworks", NSBundle.mainBundle.bundlePath]];
+    [jvmArgs addObject:[NSString stringWithFormat:@"-Duser.dir=%@", gameDir]];
+    [jvmArgs addObject:[NSString stringWithFormat:@"-Duser.home=%s", getenv("POJAV_HOME")]];
+    [jvmArgs addObject:[NSString stringWithFormat:@"-Duser.timezone=%@", NSTimeZone.localTimeZone.name]];
+    [jvmArgs addObject:[NSString stringWithFormat:@"-DUIScreen.maximumFramesPerSecond=%d", (int)UIScreen.mainScreen.maximumFramesPerSecond]];
+    
+    // LWJGL settings
+    [jvmArgs addObject:@"-Dorg.lwjgl.glfw.checkThread0=false"];
+    [jvmArgs addObject:@"-Dorg.lwjgl.system.allocator=system"];
+    
+    // Security settings
+    [jvmArgs addObject:@"-Dlog4j2.formatMsgNoLookups=true"];
+    
     // Preset OpenGL libname
     const char *glLibName = getenv("POJAV_RENDERER");
     if (glLibName) {
@@ -256,22 +265,24 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
             // workaround only applies to 1.20.2+
             glLibName = RENDERER_NAME_MTL_ANGLE;
         }
-        margv[++margc] = [NSString stringWithFormat:@"-Dorg.lwjgl.opengl.libname=%s", glLibName].UTF8String;
+        [jvmArgs addObject:[NSString stringWithFormat:@"-Dorg.lwjgl.opengl.libname=%s", glLibName]];
     }
-
+    
+    // Java agents
     NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
-    margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath].UTF8String;
-    if(getPrefBool(@"general.cosmetica")) {
-        margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
+    [jvmArgs addObject:[NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath]];
+    
+    if (getPrefBool(@"general.cosmetica")) {
+        [jvmArgs addObject:[NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath]];
     }
-
-    // Workaround random stack guard allocation crashes
-    margv[++margc] = "-XX:+UnlockExperimentalVMOptions";
-    margv[++margc] = "-XX:+DisablePrimordialThreadGuardPages";
-
+    
+    // Workaround for stack guard allocation crashes
+    [jvmArgs addObject:@"-XX:+UnlockExperimentalVMOptions"];
+    [jvmArgs addObject:@"-XX:+DisablePrimordialThreadGuardPages"];
+    
     // Disable Forge 1.16.x early progress window
-    margv[++margc] = "-Dfml.earlyprogresswindow=false";
-
+    [jvmArgs addObject:@"-Dfml.earlyprogresswindow=false"];
+    
     // Load java
     NSString *libjlipath8 = [NSString stringWithFormat:@"%@/lib/jli/libjli.dylib", javaHome]; // java 8
     NSString *libjlipath11 = [NSString stringWithFormat:@"%@/lib/libjli.dylib", javaHome]; // java 11+
@@ -286,45 +297,45 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         showDialog(localize(@"Error", nil), @(error));
         return 1;
     }
-
+    
     // Setup Caciocavallo
-    margv[++margc] = "-Djava.awt.headless=false";
-    margv[++margc] = "-Dcacio.font.fontmanager=sun.awt.X11FontManager";
-    margv[++margc] = "-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler";
-    margv[++margc] = [NSString stringWithFormat:@"-Dcacio.managed.screensize=%dx%d", width, height].UTF8String;
-    margv[++margc] = "-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel";
+    [jvmArgs addObject:@"-Djava.awt.headless=false"];
+    [jvmArgs addObject:@"-Dcacio.font.fontmanager=sun.awt.X11FontManager"];
+    [jvmArgs addObject:@"-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler"];
+    [jvmArgs addObject:[NSString stringWithFormat:@"-Dcacio.managed.screensize=%dx%d", width, height]];
+    [jvmArgs addObject:@"-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel"];
     
     if (isJava8) {
         // Setup Caciocavallo for Java 8
-        margv[++margc] = "-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit";
-        margv[++margc] = "-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment";
+        [jvmArgs addObject:@"-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit"];
+        [jvmArgs addObject:@"-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment"];
     } else {
         // Required by Cosmetica to inject DNS
-        margv[++margc] = "--add-opens=java.base/java.net=ALL-UNNAMED";
+        [jvmArgs addObject:@"--add-opens=java.base/java.net=ALL-UNNAMED"];
 
         // Setup Caciocavallo for Java 11+
-        margv[++margc] = "-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit";
-        margv[++margc] = "-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment";
+        [jvmArgs addObject:@"-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit"];
+        [jvmArgs addObject:@"-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment"];
 
         // Required by Caciocavallo17 to access internal API
-        margv[++margc] = "--add-exports=java.desktop/java.awt=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.java2d=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/java.awt.dnd.peer=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.awt=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.awt.event=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.awt.datatransfer=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.desktop/sun.font=ALL-UNNAMED";
-        margv[++margc] = "--add-exports=java.base/sun.security.action=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.base/java.util=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.desktop/java.awt=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.desktop/sun.font=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED";
-        margv[++margc] = "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED";
+        [jvmArgs addObject:@"--add-exports=java.desktop/java.awt=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.desktop/sun.java2d=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.desktop/java.awt.dnd.peer=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.desktop/sun.awt=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.desktop/sun.awt.event=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.desktop/sun.awt.datatransfer=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.desktop/sun.font=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-exports=java.base/sun.security.action=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-opens=java.base/java.util=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-opens=java.desktop/java.awt=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-opens=java.desktop/sun.font=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-opens=java.desktop/sun.java2d=ALL-UNNAMED"];
+        [jvmArgs addObject:@"--add-opens=java.base/java.lang.reflect=ALL-UNNAMED"];
 
         // TODO: workaround, will be removed once the startup part works without PLaunchApp
-        margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
+        [jvmArgs addObject:@"--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED"];
     }
 
     // Add Caciocavallo bootclasspath
@@ -336,42 +347,77 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
             cacio_classpath = [NSString stringWithFormat:@"%@:%@/%@", cacio_classpath, cacio_libs_path, file];
         }
     }
-    margv[++margc] = cacio_classpath.UTF8String;
+    [jvmArgs addObject:cacio_classpath];
 
     if (!getEntitlementValue(@"com.apple.developer.kernel.extended-virtual-addressing")) {
         // In jailed environment, where extended virtual addressing entitlement isn't
         // present (for free dev account), allocating compressed space fails.
         // FIXME: does extended VA allow allocating compressed class space?
-        margv[++margc] = "-XX:-UseCompressedClassPointers";
+        [jvmArgs addObject:@"-XX:-UseCompressedClassPointers"];
     }
 
-    if ([launchTarget isKindOfClass:NSDictionary.class]) {
-        for (NSString *arg in launchTarget[@"arguments"][@"jvm_processed"]) {
-            margv[++margc] = arg.UTF8String;
+    // Add forge/mod JVM arguments if available
+    if ([launchTarget isKindOfClass:NSDictionary.class] && launchTarget[@"arguments"][@"jvm_processed"]) {
+        NSArray *processedJvmArgs = launchTarget[@"arguments"][@"jvm_processed"];
+        [jvmArgs addObjectsFromArray:processedJvmArgs];
+    }
+
+    // Add custom JVM flags from preferences
+    NSString *jvmFlagsStr = [PLProfiles resolveKeyForCurrentProfile:@"javaArgs"];
+    if (jvmFlagsStr.length > 0) {
+        // Make the separator happy
+        jvmFlagsStr = [jvmFlagsStr stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        
+        // Split by space after ensuring each flag has a preceding space
+        jvmFlagsStr = [@" " stringByAppendingString:jvmFlagsStr];
+        NSArray *customFlags = [jvmFlagsStr componentsSeparatedByString:@" -"];
+        
+        // Skip empty first element
+        for (NSUInteger i = 1; i < customFlags.count; i++) {
+            NSString *flag = [customFlags[i] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            if (flag.length == 0) continue;
+            
+            // Skip memory flags which we already set
+            if ([flag hasPrefix:@"Xms"] || [flag hasPrefix:@"Xmx"] || 
+                [flag isEqualToString:@"d32"] || [flag isEqualToString:@"d64"]) {
+                LAUNCH_LOG(@"Ignored JVM flag: -%@", flag);
+                continue;
+            }
+            
+            NSString *fullFlag = [@"-" stringByAppendingString:flag];
+            [jvmArgs addObject:fullFlag];
+            LAUNCH_LOG(@"Added custom JVM flag: %@", fullFlag);
         }
     }
 
-    init_loadCustomJvmFlags(&margc, (const char **)margv);
-    LAUNCH_LOG(@"Found JLI lib");
-
+    // Set classpath
     NSString *classpath = [NSString stringWithFormat:@"%@/*", librariesPath];
     if (launchJar) {
         classpath = [classpath stringByAppendingFormat:@":%@", launchTarget];
     }
-    margv[++margc] = "-cp";
-    margv[++margc] = classpath.UTF8String;
-    margv[++margc] = "net.kdt.pojavlaunch.PojavLauncher";
+    [jvmArgs addObject:@"-cp"];
+    [jvmArgs addObject:classpath];
+    [jvmArgs addObject:@"net.kdt.pojavlaunch.PojavLauncher"];
 
     if (launchJar) {
-        margv[++margc] = "-jar";
+        [jvmArgs addObject:@"-jar"];
     } else {
-        margv[++margc] = username.UTF8String;
+        [jvmArgs addObject:username];
     }
 
     if ([launchTarget isKindOfClass:NSDictionary.class]) {
-        margv[++margc] = [launchTarget[@"id"] UTF8String];
+        [jvmArgs addObject:launchTarget[@"id"]];
     } else {
-        margv[++margc] = [launchTarget UTF8String];
+        [jvmArgs addObject:launchTarget];
+    }
+
+    // Convert NSArray to C-style array for JLI_Launch
+    int margc = (int)jvmArgs.count;
+    const char *margv[margc];
+    
+    for (int i = 0; i < margc; i++) {
+        margv[i] = [jvmArgs[i] UTF8String];
+        LAUNCH_LOG(@"JVM arg %d: %s", i, margv[i]);
     }
 
     pJLI_Launch = (JLI_Launch_func *)dlsym(libjli, "JLI_Launch");
@@ -381,7 +427,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         return -2;
     }
 
-    LAUNCH_LOG(@"Calling JLI_Launch");
+    LAUNCH_LOG(@"Calling JLI_Launch with %d arguments", margc);
 
     // Cr4shed known issue: exit after crash dump,
     // reset signal handler so that JVM can catch them
@@ -395,7 +441,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     tmpRootVC = nil;
 
     // Final launch with comprehensive arguments
-    return pJLI_Launch(++margc, margv,
+    return pJLI_Launch(margc, margv,
                    0, NULL,
                    0, NULL,
                    "1.8.0-internal",
@@ -405,17 +451,42 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
                    JNI_TRUE, JNI_FALSE, JNI_TRUE);
 }
 
-// Additional support function for main.m (often included in the same file)
-int launchJVMWithArgs(int argc, const char **argv) {
-    if (pJLI_Launch) {
-        return pJLI_Launch(argc, argv,
-                   0, NULL,
-                   0, NULL,
-                   "1.8.0-internal",
-                   "1.8",
-                   "java", "openjdk",
-                   JNI_FALSE,
-                   JNI_TRUE, JNI_FALSE, JNI_TRUE);
+// Missing validation function - add this to JavaLauncher.m
+static BOOL validateJARFile(NSString *jarPath) {
+    NSError *error = nil;
+    
+    // Check file existence
+    if (![fm fileExistsAtPath:jarPath]) {
+        LAUNCH_LOG(@"Error: JAR file does not exist at path %@", jarPath);
+        return NO;
     }
-    return -1;
+    
+    // Get file attributes
+    NSDictionary *attributes = [fm attributesOfItemAtPath:jarPath error:&error];
+    if (error) {
+        LAUNCH_LOG(@"Error getting file attributes: %@", error.localizedDescription);
+        return NO;
+    }
+    
+    // File size validation
+    unsigned long long fileSize = [attributes fileSize];
+    if (fileSize == 0 || fileSize > 1024 * 1024 * 500) { // 500MB max
+        LAUNCH_LOG(@"Invalid file size: %llu bytes", fileSize);
+        return NO;
+    }
+    
+    // Basic JAR file signature check
+    NSData *jarData = [NSData dataWithContentsOfFile:jarPath options:NSDataReadingMappedIfSafe range:NSMakeRange(0, 4) error:&error];
+    if (error) {
+        LAUNCH_LOG(@"Error reading JAR data: %@", error.localizedDescription);
+        return NO;
+    }
+    
+    const char *bytes = [jarData bytes];
+    if (!bytes || jarData.length < 4 || bytes[0] != 'P' || bytes[1] != 'K') {
+        LAUNCH_LOG(@"Invalid JAR file signature");
+        return NO;
+    }
+    
+    return YES;
 }
