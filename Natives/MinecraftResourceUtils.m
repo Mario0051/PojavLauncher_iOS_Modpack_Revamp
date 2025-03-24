@@ -122,26 +122,146 @@
     if (json[@"inheritsFrom"] == nil || json[@"arguments"][@"jvm"] == nil) {
         return;
     }
+    
     json[@"arguments"][@"jvm_processed"] = [[NSMutableArray alloc] init];
     NSDictionary *varArgMap = @{
         @"${classpath_separator}": @":",
         @"${library_directory}": [NSString stringWithFormat:@"%s/libraries", getenv("POJAV_GAME_DIR")],
         @"${version_name}": json[@"id"]
     };
+    
+    // Track which type of flag we're processing
+    NSString *currentModuleFlag = nil;
     int argsToSkip = 0;
+    
     for (NSString *arg in json[@"arguments"][@"jvm"]) {
         if (argsToSkip == 0) {
             argsToSkip = [self numberOfArgsToSkipForArg:arg];
         }
+        
         if (argsToSkip == 0) {
             NSString *argStr = arg;
+            
+            // Check if this is a module-related flag
+            BOOL isModuleFlag = [argStr isEqualToString:@"-p"] || 
+                [argStr isEqualToString:@"--module-path"] ||
+                [argStr isEqualToString:@"--add-modules"] ||
+                [argStr isEqualToString:@"--add-opens"] ||
+                [argStr isEqualToString:@"--add-exports"] ||
+                [argStr isEqualToString:@"--add-reads"] ||
+                [argStr isEqualToString:@"--patch-module"] ||
+                [argStr isEqualToString:@"--limit-modules"];
+                
+            if (isModuleFlag) {
+                currentModuleFlag = argStr;
+                // Add the flag to the processed arguments
+                [json[@"arguments"][@"jvm_processed"] addObject:argStr];
+                continue;
+            }
+            
+            // If we have a pending module flag to process
+            if (currentModuleFlag != nil) {
+                // Check if the next argument is empty or another flag
+                if (argStr.length == 0 || [argStr hasPrefix:@"-"]) {
+                    // We need to provide an appropriate default value based on the flag type
+                    NSString *defaultValue = nil;
+                    
+                    if ([currentModuleFlag isEqualToString:@"-p"] || 
+                        [currentModuleFlag isEqualToString:@"--module-path"]) {
+                        defaultValue = @"."; // Empty dir is a valid module path
+                    } else if ([currentModuleFlag isEqualToString:@"--add-modules"]) {
+                        defaultValue = @"java.base"; // Basic module
+                    } else if ([currentModuleFlag isEqualToString:@"--add-opens"]) {
+                        defaultValue = @"java.base/java.lang=ALL-UNNAMED"; // Common default
+                    } else if ([currentModuleFlag isEqualToString:@"--add-exports"]) {
+                        defaultValue = @"java.base/java.lang=ALL-UNNAMED"; // Common default 
+                    } else if ([currentModuleFlag isEqualToString:@"--add-reads"]) {
+                        defaultValue = @"java.base=ALL-UNNAMED"; // Common default
+                    } else if ([currentModuleFlag isEqualToString:@"--patch-module"]) {
+                        defaultValue = @"java.base=."; // Default to empty path
+                    } else if ([currentModuleFlag isEqualToString:@"--limit-modules"]) {
+                        defaultValue = @"java.base"; // Limit to base module
+                    } else {
+                        defaultValue = @"java.base"; // Generic fallback
+                    }
+                    
+                    // Apply variable replacements to the default value
+                    for (NSString *key in varArgMap.allKeys) {
+                        defaultValue = [defaultValue stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
+                    }
+                    
+                    // Add the default value
+                    [json[@"arguments"][@"jvm_processed"] addObject:defaultValue];
+                    
+                    // Reset the current module flag
+                    currentModuleFlag = nil;
+                    
+                    // If this is a new flag, process it now
+                    if ([argStr hasPrefix:@"-"]) {
+                        // Do variable replacements
+                        for (NSString *key in varArgMap.allKeys) {
+                            argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
+                        }
+                        [json[@"arguments"][@"jvm_processed"] addObject:argStr];
+                    }
+                    continue;
+                } else {
+                    // We have a valid value for the module flag
+                    // Apply variable replacements to the module flag value
+                    for (NSString *key in varArgMap.allKeys) {
+                        argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
+                    }
+                    
+                    // Add the module flag value to the processed arguments
+                    [json[@"arguments"][@"jvm_processed"] addObject:argStr];
+                    
+                    // Reset the module flag
+                    currentModuleFlag = nil;
+                    
+                    continue; // Skip further processing for this argument
+                }
+            }
+            
+            // Process variable replacements for normal args
             for (NSString *key in varArgMap.allKeys) {
                 argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
             }
+            
             [json[@"arguments"][@"jvm_processed"] addObject:argStr];
         } else {
             argsToSkip--;
         }
+    }
+    
+    // If we ended with a pending module flag, add the appropriate default
+    if (currentModuleFlag != nil) {
+        NSString *defaultValue = nil;
+        
+        if ([currentModuleFlag isEqualToString:@"-p"] || 
+            [currentModuleFlag isEqualToString:@"--module-path"]) {
+            defaultValue = @"."; // Empty dir is a valid module path
+        } else if ([currentModuleFlag isEqualToString:@"--add-modules"]) {
+            defaultValue = @"java.base"; // Basic module
+        } else if ([currentModuleFlag isEqualToString:@"--add-opens"]) {
+            defaultValue = @"java.base/java.lang=ALL-UNNAMED"; // Common default
+        } else if ([currentModuleFlag isEqualToString:@"--add-exports"]) {
+            defaultValue = @"java.base/java.lang=ALL-UNNAMED"; // Common default 
+        } else if ([currentModuleFlag isEqualToString:@"--add-reads"]) {
+            defaultValue = @"java.base=ALL-UNNAMED"; // Common default
+        } else if ([currentModuleFlag isEqualToString:@"--patch-module"]) {
+            defaultValue = @"java.base=."; // Default to empty path
+        } else if ([currentModuleFlag isEqualToString:@"--limit-modules"]) {
+            defaultValue = @"java.base"; // Limit to base module
+        } else {
+            defaultValue = @"java.base"; // Generic fallback
+        }
+        
+        // Apply variable replacements to the default value
+        for (NSString *key in varArgMap.allKeys) {
+            defaultValue = [defaultValue stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
+        }
+        
+        [json[@"arguments"][@"jvm_processed"] addObject:defaultValue];
     }
 }
 
