@@ -20,14 +20,52 @@
 
 extern char **environ;
 
+// Enhanced logging macro
+#define LAUNCH_LOG(fmt, ...) NSLog((@"[JavaLauncher] " fmt), ##__VA_ARGS__)
+
+// Define external variables if not already defined in the header
+JLI_Launch_func *pJLI_Launch;
+
+// Pre-launch validation function
+static BOOL validateJARFile(NSString *jarPath) {
+    NSError *error = nil;
+    
+    // Check file existence
+    if (![fm fileExistsAtPath:jarPath]) {
+        LAUNCH_LOG(@"Error: JAR file does not exist at path %@", jarPath);
+        return NO;
+    }
+    
+    // Get file attributes
+    NSDictionary *attributes = [fm attributesOfItemAtPath:jarPath error:&error];
+    if (error) {
+        LAUNCH_LOG(@"Error getting file attributes: %@", error.localizedDescription);
+        return NO;
+    }
+    
+    // File size validation
+    unsigned long long fileSize = [attributes fileSize];
+    if (fileSize == 0 || fileSize > 1024 * 1024 * 500) { // 500MB max
+        LAUNCH_LOG(@"Invalid file size: %llu bytes", fileSize);
+        return NO;
+    }
+    
+    // Basic JAR file signature check
+    NSData *jarData = [NSData dataWithContentsOfFile:jarPath];
+    const char *bytes = [jarData bytes];
+    if (!bytes || bytes[0] != 'P' || bytes[1] != 'K') {
+        LAUNCH_LOG(@"Invalid JAR file signature");
+        return NO;
+    }
+    
+    return YES;
+}
+
 void init_loadDefaultEnv() {
-    /* Define default env */
+    LAUNCH_LOG(@"Initializing default environment variables");
 
     // Silent Caciocavallo NPE error in locating Android-only lib
     setenv("LD_LIBRARY_PATH", "", 1);
-
-    // Ignore mipmap for performance(?) seems does not affect iOS
-    //setenv("LIBGL_MIPMAP", "3", 1);
 
     // Disable overloaded functions hack for Minecraft 1.17+
     setenv("LIBGL_NOINTOVLHACK", "1", 1);
@@ -45,36 +83,39 @@ void init_loadDefaultEnv() {
 void init_loadCustomEnv() {
     NSString *envvars = getPrefObject(@"java.env_variables");
     if (envvars == nil) return;
-    NSLog(@"[JavaLauncher] Reading custom environment variables");
+    
+    LAUNCH_LOG(@"Loading custom environment variables");
     for (NSString *line in [envvars componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet]) {
         if (![line containsString:@"="]) {
-            NSLog(@"[JavaLauncher] Warning: skipped empty value custom env variable: %@", line);
+            LAUNCH_LOG(@"Warning: skipped empty value custom env variable: %@", line);
             continue;
         }
         NSRange range = [line rangeOfString:@"="];
         NSString *key = [line substringToIndex:range.location];
         NSString *value = [line substringFromIndex:range.location+range.length];
         setenv(key.UTF8String, value.UTF8String, 1);
-        NSLog(@"[JavaLauncher] Added custom env variable: %@", line);
+        LAUNCH_LOG(@"Added custom env variable: %@", line);
     }
 }
 
 void init_loadCustomJvmFlags(int* argc, const char** argv) {
     NSString *jvmargs = [PLProfiles resolveKeyForCurrentProfile:@"javaArgs"];
     if (jvmargs == nil) return;
+    
     // Make the separator happy
     jvmargs = [jvmargs stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
     jvmargs = [@" " stringByAppendingString:jvmargs];
 
-    NSLog(@"[JavaLauncher] Reading custom JVM flags");
+    LAUNCH_LOG(@"Reading custom JVM flags");
     NSArray *argsToPurge = @[@"Xms", @"Xmx", @"d32", @"d64"];
     for (NSString *arg in [jvmargs componentsSeparatedByString:@" -"]) {
         NSString *jvmarg = [arg stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
         if (jvmarg.length == 0) continue;
+        
         BOOL ignore = NO;
         for (NSString *argToPurge in argsToPurge) {
             if ([jvmarg hasPrefix:argToPurge]) {
-                NSLog(@"[JavaLauncher] Ignored JVM flag: -%@", jvmarg);
+                LAUNCH_LOG(@"Ignored JVM flag: -%@", jvmarg);
                 ignore = YES;
                 break;
             }
@@ -84,15 +125,28 @@ void init_loadCustomJvmFlags(int* argc, const char** argv) {
         ++*argc;
         argv[*argc] = [@"-" stringByAppendingString:jvmarg].UTF8String;
 
-        NSLog(@"[JavaLauncher] Added custom JVM flag: %s", argv[*argc]);
+        LAUNCH_LOG(@"Added custom JVM flag: %s", argv[*argc]);
     }
 }
 
 int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
-    NSLog(@"[JavaLauncher] Beginning JVM launch");
+    LAUNCH_LOG(@"Beginning JVM launch process");
+    LAUNCH_LOG(@"Launch Target: %@", launchTarget);
+    LAUNCH_LOG(@"Minimum Java Version: %d", minVersion);
+    
+    // Comprehensive pre-launch validation
+    if ([launchTarget isKindOfClass:NSString.class]) {
+        if (!validateJARFile(launchTarget)) {
+            LAUNCH_LOG(@"JAR file validation failed");
+            UIKit_returnToSplitView();
+            showDialog(localize(@"Error", nil), 
+                [NSString stringWithFormat:@"Invalid JAR file: %@", [launchTarget lastPathComponent]]);
+            return 1;
+        }
+    }
 
     if (NSBundle.mainBundle.infoDictionary[@"LCDataUUID"]) {
-        NSDebugLog(@"[JavaLauncher] Running in LiveContainer, skipping dyld patch");
+        LAUNCH_LOG(@"Running in LiveContainer, skipping dyld patch");
     } else {
         // Activate Library Validation bypass for external runtime and dylibs (JNA, etc)
         init_bypassDyldLibValidation();
@@ -104,66 +158,68 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     BOOL launchJar = NO;
     NSString *gameDir;
     NSString *defaultJRETag;
+    
     if ([launchTarget isKindOfClass:NSDictionary.class]) {
-        // Get preferred Java version from current profile
+        // Java version selection logic
         int preferredJavaVersion = [PLProfiles resolveKeyForCurrentProfile:@"javaVersion"].intValue;
         if (preferredJavaVersion > 0) {
             if (minVersion > preferredJavaVersion) {
-                NSLog(@"[JavaLauncher] Profile's preferred Java version (%d) does not meet the minimum version (%d), dropping request", preferredJavaVersion, minVersion);
+                LAUNCH_LOG(@"Profile's preferred Java version (%d) does not meet the minimum version (%d)", preferredJavaVersion, minVersion);
             } else {
-                NSDebugLog(@"[PLProfiles] Applying javaVersion");
+                LAUNCH_LOG(@"Applying profile's Java version");
                 minVersion = preferredJavaVersion;
             }
         }
-        if (minVersion <= 8) {
-            defaultJRETag = @"1_16_5_older";
-        } else {
-            defaultJRETag = @"1_17_newer";
-        }
+        
+        // JRE tag selection
+        defaultJRETag = minVersion <= 8 ? @"1_16_5_older" : @"1_17_newer";
 
-        // Setup POJAV_RENDERER
+        // Renderer setup
         NSString *renderer = [PLProfiles resolveKeyForCurrentProfile:@"renderer"];
-        NSLog(@"[JavaLauncher] RENDERER is set to %@\n", renderer);
+        LAUNCH_LOG(@"RENDERER is set to %@", renderer);
         setenv("POJAV_RENDERER", renderer.UTF8String, 1);
         
-        // Setup gameDir using the profile's gameDir
+        // Game directory setup
         NSString *profileName = [PLProfiles current].selectedProfileName;
         NSMutableDictionary *profile = [PLProfiles current].selectedProfile;
         NSString *profileGameDir = profile[@"gameDir"];
         
-        // Get the full path to the profile directory
         gameDir = [PLProfiles fullPathForProfileWithName:profileName gameDir:profileGameDir];
         
-        // Ensure the profile directory exists
         [PLProfiles ensureProfileDirectoryExists:profileName gameDir:profileGameDir];
     } else {
         defaultJRETag = @"execute_jar";
         gameDir = @(getenv("POJAV_GAME_DIR"));
         launchJar = YES;
     }
-    NSLog(@"[JavaLauncher] Looking for Java %d or later", minVersion);
+    
+    LAUNCH_LOG(@"Looking for Java %d or later", minVersion);
     NSString *javaHome = getSelectedJavaHome(defaultJRETag, minVersion);
 
     if (javaHome == nil) {
+        LAUNCH_LOG(@"No suitable Java runtime found");
         UIKit_returnToSplitView();
         BOOL isExecuteJar = [defaultJRETag isEqualToString:@"execute_jar"];
         showDialog(localize(@"Error", nil), [NSString stringWithFormat:localize(@"java.error.missing_runtime", nil),
             isExecuteJar ? [launchTarget lastPathComponent] : PLProfiles.current.selectedProfile[@"lastVersionId"], minVersion]);
         return 1;
-    } else if ([javaHome hasPrefix:@(getenv("POJAV_HOME"))]) {
-        // Symlink libawt_xawt.dylib
+    }
+    
+    // Symlink libawt_xawt.dylib for custom Java runtimes
+    if ([javaHome hasPrefix:@(getenv("POJAV_HOME"))]) {
         NSString *dest = [NSString stringWithFormat:@"%@/lib/libawt_xawt.dylib", javaHome];
         NSString *source = [NSString stringWithFormat:@"%@/Frameworks/libawt_xawt.dylib", NSBundle.mainBundle.bundlePath];
         NSError *error;
         [fm createSymbolicLinkAtPath:dest withDestinationPath:source error:&error];
         if (error) {
-            NSLog(@"[JavaLauncher] Symlink libawt_xawt.dylib failed: %@", error.localizedDescription);
+            LAUNCH_LOG(@"Symlink libawt_xawt.dylib failed: %@", error.localizedDescription);
         }
     }
 
     setenv("JAVA_HOME", javaHome.UTF8String, 1);
-    NSLog(@"[JavaLauncher] JAVA_HOME has been set to %@", javaHome);
+    LAUNCH_LOG(@"JAVA_HOME set to %@", javaHome);
 
+    // RAM allocation logic
     int allocmem;
     if (getPrefBool(@"java.auto_ram")) {
         CGFloat autoRatio = getEntitlementValue(@"com.apple.private.memorystatus") ? 0.4 : 0.25;
@@ -171,8 +227,9 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     } else {
         allocmem = getPrefInt(@"java.allocated_memory");
     }
-    NSLog(@"[JavaLauncher] Max RAM allocation is set to %d MB", allocmem);
+    LAUNCH_LOG(@"Max RAM allocation set to %d MB", allocmem);
 
+    // Argument preparation
     int margc = -1;
     const char *margv[1000];
 
@@ -190,7 +247,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = [NSString stringWithFormat:@"-DUIScreen.maximumFramesPerSecond=%d", (int)UIScreen.mainScreen.maximumFramesPerSecond].UTF8String;
     margv[++margc] = "-Dorg.lwjgl.glfw.checkThread0=false";
     margv[++margc] = "-Dorg.lwjgl.system.allocator=system";
-    //margv[++margc] = "-Dorg.lwjgl.util.NoChecks=true";
     margv[++margc] = "-Dlog4j2.formatMsgNoLookups=true";
 
     // Preset OpenGL libname
@@ -225,7 +281,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
 
     if (!libjli) {
         const char *error = dlerror();
-        NSLog(@"[Init] JLI lib = NULL: %s", error);
+        LAUNCH_LOG(@"JLI lib = NULL: %s", error);
         UIKit_returnToSplitView();
         showDialog(localize(@"Error", nil), @(error));
         return 1;
@@ -237,15 +293,16 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler";
     margv[++margc] = [NSString stringWithFormat:@"-Dcacio.managed.screensize=%dx%d", width, height].UTF8String;
     margv[++margc] = "-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel";
+    
     if (isJava8) {
-        // Setup Caciocavallo
+        // Setup Caciocavallo for Java 8
         margv[++margc] = "-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit";
         margv[++margc] = "-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment";
     } else {
         // Required by Cosmetica to inject DNS
         margv[++margc] = "--add-opens=java.base/java.net=ALL-UNNAMED";
 
-        // Setup Caciocavallo
+        // Setup Caciocavallo for Java 11+
         margv[++margc] = "-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit";
         margv[++margc] = "-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment";
 
@@ -295,7 +352,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
 
     init_loadCustomJvmFlags(&margc, (const char **)margv);
-    NSLog(@"[Init] Found JLI lib");
+    LAUNCH_LOG(@"Found JLI lib");
 
     NSString *classpath = [NSString stringWithFormat:@"%@/*", librariesPath];
     if (launchJar) {
@@ -316,16 +373,15 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     } else {
         margv[++margc] = [launchTarget UTF8String];
     }
-    //margv[++margc] = "ghidra.GhidraRun";
 
     pJLI_Launch = (JLI_Launch_func *)dlsym(libjli, "JLI_Launch");
 
     if (NULL == pJLI_Launch) {
-        NSLog(@"[Init] JLI_Launch = NULL");
+        LAUNCH_LOG(@"JLI_Launch = NULL");
         return -2;
     }
 
-    NSLog(@"[Init] Calling JLI_Launch");
+    LAUNCH_LOG(@"Calling JLI_Launch");
 
     // Cr4shed known issue: exit after crash dump,
     // reset signal handler so that JVM can catch them
@@ -338,14 +394,28 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     // Free split VC
     tmpRootVC = nil;
 
+    // Final launch with comprehensive arguments
     return pJLI_Launch(++margc, margv,
-                   0, NULL, // sizeof(const_jargs) / sizeof(char *), const_jargs,
-                   0, NULL, // sizeof(const_appclasspath) / sizeof(char *), const_appclasspath,
-                   // These values are ignored in Java 17, so keep it anyways
+                   0, NULL,
+                   0, NULL,
                    "1.8.0-internal",
                    "1.8",
-
                    "java", "openjdk",
-                   /* (const_jargs != NULL) ? JNI_TRUE : */ JNI_FALSE,
+                   JNI_FALSE,
                    JNI_TRUE, JNI_FALSE, JNI_TRUE);
+}
+
+// Additional support function for main.m (often included in the same file)
+int launchJVMWithArgs(int argc, const char **argv) {
+    if (pJLI_Launch) {
+        return pJLI_Launch(argc, argv,
+                   0, NULL,
+                   0, NULL,
+                   "1.8.0-internal",
+                   "1.8",
+                   "java", "openjdk",
+                   JNI_FALSE,
+                   JNI_TRUE, JNI_FALSE, JNI_TRUE);
+    }
+    return -1;
 }
