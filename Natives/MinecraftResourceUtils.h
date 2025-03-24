@@ -13,5 +13,6 @@
 
 + (NSObject *)findVersion:(NSString *)version inList:(NSArray *)list;
 + (NSObject *)findNearestVersion:(NSObject *)version expectedType:(int)type;
++ (NSInteger)numberOfArgsToSkip:(NSString *)arg;
 
 @end
