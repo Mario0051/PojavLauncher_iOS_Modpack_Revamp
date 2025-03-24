@@ -88,6 +88,8 @@ void init_loadCustomJvmFlags(int* argc, const char** argv) {
     }
 }
 
+// In JavaLauncher.m, modify the launchJVM function:
+
 int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
     NSLog(@"[JavaLauncher] Beginning JVM launch");
 
@@ -178,6 +180,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
 
     margv[++margc] = [NSString stringWithFormat:@"%@/bin/java", javaHome].UTF8String;
     margv[++margc] = "-XstartOnFirstThread";
+    // Only set custom class loader for Minecraft launcher, not for JAR files
     if (!launchJar) {
         margv[++margc] = "-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader";
     }
@@ -303,11 +306,15 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
     margv[++margc] = "-cp";
     margv[++margc] = classpath.UTF8String;
-    margv[++margc] = "net.kdt.pojavlaunch.PojavLauncher";
-
+    
+    // For JAR files, use the JAR file's main class instead of PojavLauncher
     if (launchJar) {
+        // For JAR files, use main manifest class
+        margv[++margc] = "net.kdt.pojavlaunch.PLaunchApp";
         margv[++margc] = "-jar";
     } else {
+        // For regular Minecraft, use the PojavLauncher class
+        margv[++margc] = "net.kdt.pojavlaunch.PojavLauncher";
         margv[++margc] = username.UTF8String;
     }
 
