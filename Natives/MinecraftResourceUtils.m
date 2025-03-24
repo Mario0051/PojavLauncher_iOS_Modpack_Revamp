@@ -130,8 +130,8 @@
     
     // Initialize processed JVM arguments with deduplication
     json[@"arguments"][@"jvm_processed"] = [NSMutableArray array];
-    NSMutableSet *processedArgs = [NSMutableSet new];
-    NSMutableSet *processedFullArgs = [NSMutableSet new];
+    NSMutableSet *uniqueProcessedArgs = [NSMutableSet new];
+    NSMutableSet *uniqueFullArgs = [NSMutableSet new];
     
     // Variable replacement map
     NSDictionary *varArgMap = @{
@@ -149,7 +149,7 @@
         if (!arg || arg.length == 0) continue;
         
         // Skip if already processed
-        if ([processedArgs containsObject:arg]) {
+        if ([uniqueProcessedArgs containsObject:arg]) {
             continue;
         }
         
@@ -185,10 +185,10 @@
                 NSString *fullModuleArg = [moduleArgBuffer componentsJoinedByString:@" "];
                 
                 // Avoid duplicates
-                if (![processedFullArgs containsObject:fullModuleArg]) {
+                if (![uniqueFullArgs containsObject:fullModuleArg]) {
                     NSString *moduleEntry = [NSString stringWithFormat:@"%@ %@", currentModuleFlag, fullModuleArg];
                     [json[@"arguments"][@"jvm_processed"] addObject:moduleEntry];
-                    [processedFullArgs addObject:fullModuleArg];
+                    [uniqueFullArgs addObject:fullModuleArg];
                 }
                 
                 // Reset module flag processing
@@ -197,21 +197,21 @@
             }
         } else {
             // For non-module arguments, add directly if not a duplicate
-            if (![processedFullArgs containsObject:processedArg]) {
+            if (![uniqueFullArgs containsObject:processedArg]) {
                 [json[@"arguments"][@"jvm_processed"] addObject:processedArg];
-                [processedFullArgs addObject:processedArg];
+                [uniqueFullArgs addObject:processedArg];
             }
         }
         
         // Mark this argument as processed
-        [processedArgs addObject:arg];
+        [uniqueProcessedArgs addObject:arg];
     }
     
     // Safe logging
-    NSArray *processedArgs = json[@"arguments"][@"jvm_processed"];
-    if ([processedArgs isKindOfClass:[NSArray class]]) {
-        NSLog(@"[MCDL] Processed JVM Arguments (%lu unique):", (unsigned long)processedArgs.count);
-        for (NSString *arg in processedArgs) {
+    NSArray *processedJvmArgs = json[@"arguments"][@"jvm_processed"];
+    if ([processedJvmArgs isKindOfClass:[NSArray class]]) {
+        NSLog(@"[MCDL] Processed JVM Arguments (%lu unique):", (unsigned long)processedJvmArgs.count);
+        for (NSString *arg in processedJvmArgs) {
             NSLog(@"  %@", arg);
         }
     } else {
