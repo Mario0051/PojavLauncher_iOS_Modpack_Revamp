@@ -26,7 +26,7 @@ extern char **environ;
 // Define external variables if not already defined in the header
 JLI_Launch_func *pJLI_Launch;
 
-// Pre-launch validation function
+// Validation function for JAR files
 static BOOL validateJARFile(NSString *jarPath) {
     NSError *error = nil;
     
@@ -50,10 +50,23 @@ static BOOL validateJARFile(NSString *jarPath) {
         return NO;
     }
     
-    // Basic JAR file signature check
-    NSData *jarData = [NSData dataWithContentsOfFile:jarPath];
-    const char *bytes = [jarData bytes];
-    if (!bytes || bytes[0] != 'P' || bytes[1] != 'K') {
+    // Basic JAR file signature check - read first 4 bytes
+    NSFileHandle *fileHandle = [NSFileHandle fileHandleForReadingAtPath:jarPath];
+    if (!fileHandle) {
+        LAUNCH_LOG(@"Error: Could not open file for reading");
+        return NO;
+    }
+    
+    NSData *headerData = [fileHandle readDataOfLength:4];
+    [fileHandle closeFile];
+    
+    if (headerData.length < 4) {
+        LAUNCH_LOG(@"Error: Could not read file header");
+        return NO;
+    }
+    
+    const char *bytes = [headerData bytes];
+    if (!bytes || headerData.length < 4 || bytes[0] != 'P' || bytes[1] != 'K') {
         LAUNCH_LOG(@"Invalid JAR file signature");
         return NO;
     }
@@ -449,44 +462,4 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
                    "java", "openjdk",
                    JNI_FALSE,
                    JNI_TRUE, JNI_FALSE, JNI_TRUE);
-}
-
-// Missing validation function - add this to JavaLauncher.m
-static BOOL validateJARFile(NSString *jarPath) {
-    NSError *error = nil;
-    
-    // Check file existence
-    if (![fm fileExistsAtPath:jarPath]) {
-        LAUNCH_LOG(@"Error: JAR file does not exist at path %@", jarPath);
-        return NO;
-    }
-    
-    // Get file attributes
-    NSDictionary *attributes = [fm attributesOfItemAtPath:jarPath error:&error];
-    if (error) {
-        LAUNCH_LOG(@"Error getting file attributes: %@", error.localizedDescription);
-        return NO;
-    }
-    
-    // File size validation
-    unsigned long long fileSize = [attributes fileSize];
-    if (fileSize == 0 || fileSize > 1024 * 1024 * 500) { // 500MB max
-        LAUNCH_LOG(@"Invalid file size: %llu bytes", fileSize);
-        return NO;
-    }
-    
-    // Basic JAR file signature check
-    NSData *jarData = [NSData dataWithContentsOfFile:jarPath options:NSDataReadingMappedIfSafe range:NSMakeRange(0, 4) error:&error];
-    if (error) {
-        LAUNCH_LOG(@"Error reading JAR data: %@", error.localizedDescription);
-        return NO;
-    }
-    
-    const char *bytes = [jarData bytes];
-    if (!bytes || jarData.length < 4 || bytes[0] != 'P' || bytes[1] != 'K') {
-        LAUNCH_LOG(@"Invalid JAR file signature");
-        return NO;
-    }
-    
-    return YES;
 }
