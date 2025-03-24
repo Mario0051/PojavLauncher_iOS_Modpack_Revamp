@@ -7,6 +7,9 @@
 @property(nonatomic) NSString *title, *imageName;
 @property(nonatomic, copy) void (^action)(void);
 @property(nonatomic) NSArray<UIViewController *> *vcArray;
+
++ (LauncherMenuCustomItem *)title:(NSString *)title imageName:(NSString *)imageName action:(id)action;
++ (LauncherMenuCustomItem *)vcClass:(Class)class;
 @end
 
 @interface LauncherMenuViewController : UITableViewController
