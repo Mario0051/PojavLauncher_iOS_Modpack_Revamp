@@ -71,63 +71,6 @@ static BOOL validateJARFile(NSString *jarPath) {
     return YES;
 }
 
-// Function to detect Java major version
-static int getJavaMajorVersion(NSString *javaHome) {
-    NSString *versionFilePath = [javaHome stringByAppendingPathComponent:@"release"];
-    NSError *error = nil;
-    NSString *versionFileContent = [NSString stringWithContentsOfFile:versionFilePath 
-                                                            encoding:NSUTF8StringEncoding 
-                                                               error:&error];
-    if (error || !versionFileContent) {
-        LAUNCH_LOG(@"Warning: Unable to read Java version file, assuming Java 8");
-        return 8; // Default to Java 8 if can't detect
-    }
-    
-    // Extract JAVA_VERSION="x.y.z" or similar format
-    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"JAVA_VERSION=\"([0-9]+)(?:\\.[0-9]+)*\"" 
-                                                                          options:0 
-                                                                            error:nil];
-    NSTextCheckingResult *match = [regex firstMatchInString:versionFileContent 
-                                                    options:0 
-                                                      range:NSMakeRange(0, versionFileContent.length)];
-    
-    if (match && match.numberOfRanges > 1) {
-        NSRange versionRange = [match rangeAtIndex:1];
-        NSString *versionString = [versionFileContent substringWithRange:versionRange];
-        return versionString.intValue;
-    }
-    
-    // Try alternate format: JAVA_VERSION="1.8.0_xxx"
-    regex = [NSRegularExpression regularExpressionWithPattern:@"JAVA_VERSION=\"1\\.([0-9]+)\\." 
-                                                     options:0 
-                                                       error:nil];
-    match = [regex firstMatchInString:versionFileContent 
-                              options:0 
-                                range:NSMakeRange(0, versionFileContent.length)];
-    
-    if (match && match.numberOfRanges > 1) {
-        NSRange versionRange = [match rangeAtIndex:1];
-        NSString *versionString = [versionFileContent substringWithRange:versionRange];
-        return versionString.intValue;
-    }
-    
-    LAUNCH_LOG(@"Warning: Could not parse Java version, assuming Java 8");
-    return 8; // Default to Java 8 if can't parse
-}
-
-// Function to check jar file existence - we can't reliably check for specific classes on iOS
-static BOOL doesJarFileExist(NSString *jarPath) {
-    BOOL exists = [fm fileExistsAtPath:jarPath];
-    
-    if (exists) {
-        LAUNCH_LOG(@"Found JAR file: %@", jarPath);
-    } else {
-        LAUNCH_LOG(@"JAR file not found: %@", jarPath);
-    }
-    
-    return exists;
-}
-
 void init_loadDefaultEnv() {
     LAUNCH_LOG(@"Initializing default environment variables");
 
@@ -226,14 +169,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     NSString *gameDir;
     NSString *defaultJRETag;
     
-    // Flag to check if launching a Forge/NeoForge version
-    BOOL isForgeVersion = NO;
-    
     if ([launchTarget isKindOfClass:NSDictionary.class]) {
-        // Check if this is a Forge or NeoForge version
-        NSString *versionId = [launchTarget[@"id"] lowercaseString];
-        isForgeVersion = [versionId containsString:@"forge"] || [versionId containsString:@"neoforge"];
-        
         // Java version selection logic
         int preferredJavaVersion = [PLProfiles resolveKeyForCurrentProfile:@"javaVersion"].intValue;
         if (preferredJavaVersion > 0) {
@@ -275,10 +211,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         return 1;
     }
     
-    // Detect actual Java version
-    int javaMajorVersion = getJavaMajorVersion(javaHome);
-    LAUNCH_LOG(@"Detected Java major version: %d", javaMajorVersion);
-    
     // Symlink libawt_xawt.dylib for custom Java runtimes
     if ([javaHome hasPrefix:@(getenv("POJAV_HOME"))]) {
         NSString *dest = [NSString stringWithFormat:@"%@/lib/libawt_xawt.dylib", javaHome];
@@ -311,25 +243,8 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = [NSString stringWithFormat:@"%@/bin/java", javaHome].UTF8String;
     margv[++margc] = "-XstartOnFirstThread";
     
-    // Path to check for PojavClassLoader jar
-    NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
-    NSString *pojavLauncherJarPath = [NSString stringWithFormat:@"%@/pojavlauncher.jar", librariesPath];
-    
-    // Check if we should use the custom class loader
-    // For Java 21+, we need to handle this differently
     if (!launchJar) {
-        if (javaMajorVersion < 21) {
-            // For Java 8-20, use the custom class loader
-            margv[++margc] = "-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader";
-        } else {
-            // For Java 21+, add a system property to indicate custom class loader is not in use
-            // This allows Java code to adapt its behavior without causing ClassCastException
-            LAUNCH_LOG(@"Using built-in class loader for Java 21+ with compatibility flag");
-            margv[++margc] = "-Dpojavlauncher.usesCustomClassLoader=false";
-            
-            // Add any additional modules that might be needed for Java 21
-            margv[++margc] = "--add-opens=java.base/jdk.internal.loader=ALL-UNNAMED";
-        }
+        margv[++margc] = "-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader";
     }
     
     // Memory settings
@@ -361,15 +276,11 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
     
     // Java agents
+    NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
     margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath].UTF8String;
     
-    // Only add Cosmetica agent for Java versions < 21
     if (getPrefBool(@"general.cosmetica")) {
-        if (javaMajorVersion < 21) {
-            margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
-        } else {
-            LAUNCH_LOG(@"Skipping Cosmetica DNS agent for Java 21+ (not compatible)");
-        }
+        margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
     }
     
     // Workaround for stack guard allocation crashes
@@ -430,10 +341,8 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED";
         margv[++margc] = "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED";
 
-        // Only add bootstraplauncher exports if we're launching Forge/NeoForge AND Java version < 21
-        if (isForgeVersion && javaMajorVersion < 21) {
-            margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
-        }
+        // TODO: workaround, will be removed once the startup part works without PLaunchApp
+        margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
     }
 
     // Add Caciocavallo bootclasspath
@@ -457,25 +366,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     // Add forge/mod JVM arguments if available
     if ([launchTarget isKindOfClass:NSDictionary.class] && launchTarget[@"arguments"][@"jvm_processed"]) {
         for (NSString *arg in launchTarget[@"arguments"][@"jvm_processed"]) {
-            // Fix common formatting issues in args for Java 21+
-            if (javaMajorVersion >= 21) {
-                // Fix malformed module arguments containing equals signs
-                if ([arg containsString:@"java.base.java.util.jar="]) {
-                    NSString *fixedArg = [arg stringByReplacingOccurrencesOfString:@"java.base.java.util.jar=" 
-                                                                        withString:@"java.base/java.util.jar "];
-                    LAUNCH_LOG(@"Fixing malformed argument: %@ -> %@", arg, fixedArg);
-                    margv[++margc] = fixedArg.UTF8String;
-                    continue;
-                }
-                
-                // Skip any other problematic arguments
-                if ([arg containsString:@"cpw.mods.bootstraplauncher"]) {
-                    LAUNCH_LOG(@"Skipping bootstraplauncher argument for Java 21+: %@", arg);
-                    continue;
-                }
-            }
-            
-            // Add the argument
             margv[++margc] = arg.UTF8String;
         }
     }
