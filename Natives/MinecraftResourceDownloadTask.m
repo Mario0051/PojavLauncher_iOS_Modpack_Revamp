@@ -185,7 +185,14 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     }
 }
 
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+// This should match the declaration in the header file
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path 
+                                        success:(void (^)(void))success
+                                        failure:(void (^)(NSError *error))failure {
     @autoreleasepool {
         // Safety check for invalid URL with enhanced logging
         if (!url || url.length == 0) {
@@ -553,13 +560,13 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     }
 }
 
-// Compatibility method that calls the full version without failure callback
+// This is the backward compatibility version without the failure parameter
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                          size:(NSUInteger)size 
-                                           sha:(NSString *)sha 
-                                       altName:(NSString *)altName 
-                                        toPath:(NSString *)path 
-                                       success:(void (^)(void))success {
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path 
+                                        success:(void (^)(void))success {
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:success failure:nil];
 }
 
