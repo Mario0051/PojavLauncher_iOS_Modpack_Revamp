@@ -261,8 +261,39 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED";
         margv[++margc] = "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED";
 
-        // TODO: workaround, will be removed once the startup part works without PLaunchApp
-        margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
+        // Check if we're using NeoForge before adding bootstraplauncher export
+        BOOL isNeoForge = NO;
+        if ([launchTarget isKindOfClass:[NSDictionary class]]) {
+            // Check for neoforge in various launch properties
+            if ([PLProfiles.current.selectedProfile[@"gameDir"] containsString:@"neoforge"] ||
+                [PLProfiles.current.selectedProfile[@"name"] containsString:@"neoforge"] ||
+                ([launchTarget[@"id"] isKindOfClass:[NSString class]] && 
+                 [launchTarget[@"id"] containsString:@"neoforge"])) {
+                isNeoForge = YES;
+            }
+            
+            // Also check if libraries contain neoforge
+            NSArray *libraries = launchTarget[@"libraries"];
+            if (libraries && [libraries isKindOfClass:[NSArray class]]) {
+                for (NSDictionary *lib in libraries) {
+                    if ([lib[@"name"] isKindOfClass:[NSString class]] && 
+                        [lib[@"name"] containsString:@"neoforge"]) {
+                        isNeoForge = YES;
+                        break;
+                    }
+                }
+            }
+        } else if ([launchTarget isKindOfClass:[NSString class]]) {
+            // If launch target is a string (jar path), check if it contains neoforge
+            if ([launchTarget containsString:@"neoforge"]) {
+                isNeoForge = YES;
+            }
+        }
+        
+        // Only add the bootstraplauncher export if we're NOT using NeoForge
+        if (!isNeoForge) {
+            margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
+        }
     }
 
     // Add Caciocavallo bootclasspath
