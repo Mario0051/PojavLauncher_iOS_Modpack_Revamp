@@ -104,24 +104,26 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 }
 
 - (void)prepareForDownload {
-    // Reset progress tracking
+    // Create a fresh progress object with proper initial values
     @synchronized(self) {
-        // Reset progress tracking
+        // Create a new progress tracking object starting with 1 unit
         self.progress = [NSProgress new];
-        self.progress.totalUnitCount = 1;
+        self.progress.totalUnitCount = 1; // Critical: Start with 1 instead of 0
         self.progress.cancellable = YES;
         
-        // Reset text progress for UI
+        // Create a text progress for UI display
         self.textProgress = [NSProgress new];
-        self.textProgress.totalUnitCount = 1;
+        self.textProgress.kind = NSProgressKindFile;
+        self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
+        self.textProgress.totalUnitCount = 1; // Critical: Start with 1 instead of 0
         self.textProgress.cancellable = YES;
         
-        // Reset download counters
+        // Reset counters
         self.successfulDownloads = 0;
         self.totalDownloads = 0;
     }
     
-    // Reset tracking lists
+    // Reset tracking lists with proper synchronization
     @synchronized(self.fileList) {
         [self.fileList removeAllObjects];
     }
@@ -130,11 +132,14 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         [self.progressList removeAllObjects];
     }
     
-    // Reset download tracking
+    // Reset download queue
     @synchronized(self.pendingDownloads) {
         [self.pendingDownloads removeAllObjects];
         self.activeDownloads = 0;
     }
+    
+    // Flag that UI update is needed
+    self.needsUIUpdate = YES;
 }
 
 - (void)processNextDownloadInQueue {
@@ -667,7 +672,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 }
 
 - (void)finishDownloadWithErrorString:(NSString *)error {
-    // Safely cancel progress
+    // Cancel progress safely
     @synchronized(self) {
         @try {
             [self.progress cancel];
@@ -677,6 +682,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         }
     }
     
+    // Cancel all active downloads and reset session
     [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
     
     // Clear pending downloads
@@ -685,7 +691,10 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         self.activeDownloads = 0;
     }
     
+    // Show error dialog
     showDialog(localize(@"Error", nil), error);
+    
+    // Call error handler if set
     if (self.handleError) {
         self.handleError();
     }
@@ -693,28 +702,26 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
 // Check if the account has permission to download
 - (BOOL)checkAccessWithDialog:(BOOL)show {
-    // for now
+    // Check if account is allowed to download Minecraft
     BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
+    
     if (!accessible) {
-        @try {
-            BOOL lockAcquired = [self.progressLock tryLock];
-            if (lockAcquired) {
+        // Cancel download if not accessible
+        @synchronized(self) {
+            @try {
                 [self.progress cancel];
                 [self.textProgress cancel];
-                [self.progressLock unlock];
-            } else {
-                // Try without lock if we can't acquire it
-                [self.progress cancel];
-                [self.textProgress cancel];
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
             }
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
         }
         
+        // Show error dialog if requested
         if (show) {
             [self finishDownloadWithErrorString:@"Minecraft can't be legally installed when logged in with a local account. Please switch to an online account to continue."];
         }
     }
+    
     return accessible;
 }
 
@@ -735,7 +742,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     
     if (attributesError || !fileAttributes) {
         if (self.verboseLogging) {
-            NSLog(@"[MCDL] SHA1 checker: couldn't get file attributes: %@", attributesError ?: @"Unknown error");
+            NSLog(@"[MCDL] SHA1 checker: couldn't get file attributes: %@", attributesError ? attributesError.localizedDescription : @"Unknown error");
         }
         return NO;
     }
@@ -747,12 +754,14 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         return NO;
     }
 
+    // Read file contents for SHA calculation
     NSData *data = [NSData dataWithContentsOfFile:path];
     if (data == nil) {
         NSLog(@"[MCDL] SHA1 checker: file doesn't exist or couldn't be read: %@", altName ? altName : path.lastPathComponent);
         return NO;
     }
 
+    // Calculate SHA1 hash
     unsigned char digest[CC_SHA1_DIGEST_LENGTH];
     CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
     NSMutableString *localSHA = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
@@ -761,6 +770,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     }
 
     BOOL check = [sha isEqualToString:localSHA];
+    
     // Always log detailed information for SHA1 failures to help diagnose issues
     if (!check) {
         NSLog(@"[MCDL] SHA1 failed for %@", altName ? altName : path.lastPathComponent);
@@ -776,9 +786,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
 // Simplified SHA check with default logging behavior
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
-    // Only force download for critical files, not all JSON and JAR files
+    // Special handling for version files to be more selective about forced downloads
     if (altName) {
-        // Force download only for specific version files
+        // Force download for latest version files
         if ([altName hasSuffix:@".json"] && 
             ([altName containsString:@"latest-release"] ||
              [altName containsString:@"latest-snapshot"])) {
@@ -789,10 +799,10 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return NO;
         }
         
-        // For version JSON files that aren't latest-*, check if they exist
-        // but don't force re-download if they do
+        // For specific version files (not latest-*) check if they exist
         if ([altName hasSuffix:@".json"] || 
             ([path containsString:@"/versions/"] && [path hasSuffix:@".jar"])) {
+            
             BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
             if (!fileExists) {
                 if (self.verboseLogging) {
@@ -809,72 +819,61 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
 // Check SHA of the file respecting user preferences
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
+    // Respect user preference for SHA checking
     if (getPrefBool(@"general.check_sha")) {
-        // Force download of version JSON files
-        if (altName && ([altName hasSuffix:@".json"] || 
-                        [path hasSuffix:@".json"] ||
-                        ([path containsString:@"/versions/"] && [path hasSuffix:@".jar"]))) {
-            
-            // Skip SHA check for version files to force re-download
-            if (self.verboseLogging) {
-                NSLog(@"[MCDL] Forcing download of version file: %@", altName ?: path.lastPathComponent);
-            }
-            return NO;
-        }
-        
         return [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:logSuccess];
     } else {
-        // Even when SHA checking is disabled, force version JSON download
-        if (altName && ([altName hasSuffix:@".json"] || 
-                        [path hasSuffix:@".json"] ||
-                        ([path containsString:@"/versions/"] && [path hasSuffix:@".jar"]))) {
-            if (self.verboseLogging) {
-                NSLog(@"[MCDL] Forcing download of version file: %@", altName ?: path.lastPathComponent);
-            }
-            return NO;
-        }
-        
+        // When SHA checking is disabled, still check if file exists
         return [NSFileManager.defaultManager fileExistsAtPath:path];
     }
 }
 
 - (void)downloadVersion:(NSDictionary *)version {
+    // Prepare download state
     [self prepareForDownload];
     
-    // Reset metadata to ensure clean state and properly mark as NOT a modpack
+    // Reset metadata and explicitly mark as NOT a modpack
     if (!self.metadata) {
         self.metadata = [NSMutableDictionary dictionary];
     } else {
         [self.metadata removeAllObjects];
     }
     
-    // Explicitly mark this as NOT a modpack installation
+    // Critical: Mark this as NOT a modpack installation
     self.metadata[@"isModpackInstall"] = @NO;
     
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
     
+    // Chain download operations
     [self downloadVersionMetadata:version success:^{
         [self downloadAssetMetadataWithSuccess:^{
+            // Download libraries and assets in parallel
             NSArray *libTasks = [self downloadClientLibraries];
             NSArray *assetTasks = [self downloadClientAssets];
             
             @synchronized(self) {
-                // Drop the 1 byte we set initially (like in the original code)
+                // Critical: Drop the 1 byte we set initially 
                 self.progress.totalUnitCount--;
                 self.textProgress.totalUnitCount--;
                 
-                // If we have nothing to download, set as completed
+                // If we have nothing to download, mark as complete
                 if (self.progress.totalUnitCount == 0) {
-                    // We have nothing to download, invoke completion observer
+                    // Set progress to 100% complete
                     self.progress.totalUnitCount = 1;
                     self.progress.completedUnitCount = 1;
                     self.textProgress.totalUnitCount = 1;
                     self.textProgress.completedUnitCount = 1;
+                    
+                    // Add completion marker to file list for UI
+                    @synchronized(self.fileList) {
+                        [self.fileList addObject:@"Complete"];
+                    }
+                    
                     return;
                 }
             }
             
-            // Start the actual downloads
+            // Start all queued download tasks
             [libTasks makeObjectsPerformSelector:@selector(resume)];
             [assetTasks makeObjectsPerformSelector:@selector(resume)];
             
@@ -892,9 +891,6 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     } else if ([versionStr isEqualToString:@"latest-snapshot"]) {
         versionStr = getPrefObject(@"internal.latest_version.snapshot");
     }
-
-    // Log the version we're trying to download
-    NSLog(@"[MCDL] Downloading metadata for version: %@", versionStr);
 
     NSString *path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), versionStr];
     
@@ -914,109 +910,73 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     // Find it again to resolve latest-*
     version = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
     
-    // Log if version was found in the remote list
-    if (self.verboseLogging) {
-        NSLog(@"[MCDL] Version in remote list? %@", version ? @"YES" : @"NO");
-    }
-
-    // Create a wrapped success callback
+    // Create wrapped success callback
     __weak typeof(self) weakSelf = self;
     void(^wrappedSuccess)(void) = ^{
-        // Check if the task was cancelled
-        if (weakSelf.progress.cancelled) {
+        // Safely check if task is cancelled
+        BOOL isCancelled = NO;
+        @synchronized(weakSelf) {
+            @try {
+                isCancelled = weakSelf.progress.cancelled;
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Exception checking if cancelled: %@", exception);
+                isCancelled = NO;
+            }
+        }
+        
+        if (isCancelled) {
             return;
         }
         
-        // Create a local copy of the path to avoid race conditions
-        NSString *localPath = [path copy];
-        
-        // Verify the file exists and can be read
-        if (![[NSFileManager defaultManager] isReadableFileAtPath:localPath]) {
-            NSLog(@"[MCDL] Error: Version JSON file not readable: %@", localPath);
-            [weakSelf finishDownloadWithErrorString:@"Version JSON file not readable"];
-            return;
-        }
-        
-        // Parse the JSON safely
+        // Parse the JSON file
         NSError *jsonError = nil;
-        NSData *jsonData = [NSData dataWithContentsOfFile:localPath options:NSDataReadingMappedIfSafe error:&jsonError];
+        NSData *jsonData = [NSData dataWithContentsOfFile:path options:0 error:&jsonError];
         if (!jsonData || jsonError) {
-            NSLog(@"[MCDL] Error reading version JSON file: %@", jsonError ? jsonError.localizedDescription : @"Unknown error");
-            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error reading version JSON: %@", jsonError ? jsonError.localizedDescription : @"Unknown error"]];
+            NSLog(@"[MCDL] Error reading version JSON: %@", jsonError.localizedDescription);
+            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error reading version JSON: %@", jsonError.localizedDescription]];
             return;
         }
         
-        // Use NSJSONReadingMutableContainers to ensure we get a mutable dictionary/array
-        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:NSJSONReadingMutableContainers error:&jsonError];
+        // Parse JSON with mutable containers option
+        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData 
+                                                       options:NSJSONReadingMutableContainers 
+                                                         error:&jsonError];
         if (!jsonObject || jsonError) {
-            NSLog(@"[MCDL] Error parsing version JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format");
-            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing version JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format"]];
-            return;
-        }
-        
-        // Convert to mutable dictionary if it isn't already
-        NSMutableDictionary *parsedJson;
-        if ([jsonObject isKindOfClass:[NSDictionary class]]) {
-            parsedJson = [jsonObject mutableCopy]; // Make sure we have a mutable copy
-        } else {
-            NSLog(@"[MCDL] Error: Version JSON is not a dictionary");
-            [weakSelf finishDownloadWithErrorString:@"Invalid version JSON format (not a dictionary)"];
+            NSLog(@"[MCDL] Error parsing version JSON: %@", jsonError.localizedDescription);
+            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing version JSON: %@", jsonError.localizedDescription]];
             return;
         }
         
         // Set metadata safely
         @synchronized(weakSelf) {
-            weakSelf.metadata = parsedJson;
+            // Store version metadata
+            weakSelf.metadata = jsonObject;
+            
+            // Explicitly mark as NOT a modpack installation
+            weakSelf.metadata[@"isModpackInstall"] = @NO;
         }
         
-        // Process inheritsFrom
-        if (weakSelf.metadata[@"inheritsFrom"]) {
-            NSLog(@"[MCDL] Version inherits from: %@", weakSelf.metadata[@"inheritsFrom"]);
-            NSString *inheritsFromPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", 
-                                         getenv("POJAV_GAME_DIR"), 
-                                         weakSelf.metadata[@"inheritsFrom"]];
-            
-            // Read parent version JSON
-            NSError *parentError = nil;
-            NSData *parentData = [NSData dataWithContentsOfFile:inheritsFromPath options:NSDataReadingMappedIfSafe error:&parentError];
-            if (!parentData || parentError) {
-                NSLog(@"[MCDL] Failed to load parent version JSON: %@", parentError ? parentError.localizedDescription : @"Unknown error");
-                [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to load parent version JSON: %@", parentError ? parentError.localizedDescription : @"File not found"]];
-                return;
-            }
-            
-            // Parse parent JSON - also using mutable containers
-            NSError *parentJsonError = nil;
-            id parentJsonObject = [NSJSONSerialization JSONObjectWithData:parentData options:NSJSONReadingMutableContainers error:&parentJsonError];
-            if (!parentJsonObject || parentJsonError) {
-                NSLog(@"[MCDL] Error parsing parent JSON: %@", parentJsonError ? parentJsonError.localizedDescription : @"Invalid JSON format");
-                [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing parent JSON: %@", parentJsonError ? parentJsonError.localizedDescription : @"Invalid JSON format"]];
-                return;
-            }
-            
-            // Convert to mutable dictionary if it isn't already
-            NSMutableDictionary *parentJson;
-            if ([parentJsonObject isKindOfClass:[NSDictionary class]]) {
-                parentJson = [parentJsonObject mutableCopy]; // Ensure we have a mutable copy
-                [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:parentJson];
-                
-                // Update metadata safely
-                @synchronized(weakSelf) {
-                    weakSelf.metadata = parentJson;
-                }
-            } else {
-                NSLog(@"[MCDL] Error: Parent JSON is not a dictionary");
-                [weakSelf finishDownloadWithErrorString:@"Invalid parent JSON format (not a dictionary)"];
-                return;
-            }
-        }
-        
-        // Apply version tweaks
+        // Handle inheritsFrom for mod versions
         @synchronized(weakSelf) {
+            if (weakSelf.metadata[@"inheritsFrom"]) {
+                NSLog(@"[MCDL] Version inherits from: %@", weakSelf.metadata[@"inheritsFrom"]);
+                NSString *inheritsFromPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", 
+                                            getenv("POJAV_GAME_DIR"), 
+                                            weakSelf.metadata[@"inheritsFrom"]];
+                
+                // Read parent version JSON
+                NSMutableDictionary *inheritsFromDict = parseJSONFromFile(inheritsFromPath);
+                if (inheritsFromDict) {
+                    [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:inheritsFromDict];
+                    weakSelf.metadata = inheritsFromDict;
+                }
+            }
+            
+            // Apply version tweaks
             [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
         }
         
-        // Call success callback
+        // Call original success callback
         if (success) {
             success();
         }
@@ -1024,56 +984,15 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
     if (!version) {
         // This is likely local version, check if json exists and has inheritsFrom
-        NSError *readError = nil;
-        NSData *jsonData = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:&readError];
-        if (!jsonData || readError) {
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to read version JSON: %@", readError ? readError.localizedDescription : @"Unknown error"]];
+        NSMutableDictionary *json = parseJSONFromFile(path);
+        if (json[@"NSErrorObject"]) {
+            [self finishDownloadWithErrorString:[json[@"NSErrorObject"] localizedDescription]];
             return;
-        }
-        
-        // Parse the JSON safely - using mutable containers
-        NSError *jsonError = nil;
-        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:NSJSONReadingMutableContainers error:&jsonError];
-        if (!jsonObject || jsonError) {
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to parse version JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format"]];
-            return;
-        }
-        
-        if (![jsonObject isKindOfClass:[NSDictionary class]]) {
-            [self finishDownloadWithErrorString:@"Invalid version JSON format (not a dictionary)"];
-            return;
-        }
-        
-        NSMutableDictionary *json = [jsonObject mutableCopy]; // Ensure we have a mutable copy
-        
-        if (json[@"inheritsFrom"]) {
-            NSLog(@"[MCDL] Local version inherits from: %@", json[@"inheritsFrom"]);
+        } else if (json[@"inheritsFrom"]) {
             version = (id)[MinecraftResourceUtils findVersion:json[@"inheritsFrom"] inList:remoteVersionList];
             path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), json[@"inheritsFrom"]];
-            
-            // FIX: If inheritsFrom version isn't found
-            if (!version) {
-                NSLog(@"[MCDL] Warning: Could not find inheritsFrom version %@ in remoteVersionList", json[@"inheritsFrom"]);
-                NSString *parentPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), json[@"inheritsFrom"]];
-                NSLog(@"[MCDL] Checking if parent version exists locally at: %@", parentPath);
-                
-                if ([NSFileManager.defaultManager fileExistsAtPath:parentPath]) {
-                    NSLog(@"[MCDL] Parent version exists locally, proceeding with local files");
-                    wrappedSuccess();
-                } else {
-                    NSLog(@"[MCDL] Parent version not found locally, will try to download from Mojang");
-                    // Instead of failing, create a minimal version object to force download
-                    version = @{
-                        @"id": json[@"inheritsFrom"],
-                        @"type": @"release",
-                        @"url": [NSString stringWithFormat:@"https://piston-meta.mojang.com/v1/packages/%@/json", json[@"inheritsFrom"]]
-                    };
-                }
-            } else {
-                NSLog(@"[MCDL] Found parent version in remote list: %@", json[@"inheritsFrom"]);
-            }
         } else {
-            NSLog(@"[MCDL] Using local version without inheritsFrom");
+            // Use local version directly
             wrappedSuccess();
             return;
         }
@@ -1081,16 +1000,16 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
     versionStr = version[@"id"];
     NSString *url = version[@"url"];
-    if (self.verboseLogging) {
-        NSLog(@"[MCDL] Download URL for %@: %@", versionStr, url ?: @"(null)");
-    }
-    
     NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
     NSUInteger size = [version[@"size"] unsignedLongLongValue];
+    
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Downloading version JSON from %@", url);
+    }
 
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:versionStr toPath:path success:wrappedSuccess];
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:path success:wrappedSuccess];
     if (task) {
-        // Task is automatically queued by createDownloadTask
+        [task resume];
     } else {
         // If no task was created, still call success if file exists and the download wasn't cancelled
         if (!self.progress.cancelled && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
@@ -1103,6 +1022,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         }
     }
 }
+
 
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success {
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
@@ -1117,7 +1037,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
     NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
     
-    // Create a wrapped success callback to update phase
+    // Create wrapped success callback
     __weak typeof(self) weakSelf = self;
     void(^wrappedSuccess)(void) = ^{
         // Safely check if task is cancelled
@@ -1126,7 +1046,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             @try {
                 isCancelled = weakSelf.progress.cancelled;
             } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
+                NSLog(@"[MCDL] Exception checking if cancelled: %@", exception);
                 isCancelled = NO;
             }
         }
@@ -1135,43 +1055,34 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         }
         
-        // Create a local copy of the path to avoid race conditions
-        NSString *localPath = [path copy];
-        
-        // Verify the file exists and can be read
-        if (![[NSFileManager defaultManager] isReadableFileAtPath:localPath]) {
-            NSLog(@"[MCDL] Error: Asset index JSON file not readable: %@", localPath);
-            [weakSelf finishDownloadWithErrorString:@"Asset index JSON file not readable"];
-            return;
-        }
-        
-        // Parse the JSON safely with mutable containers
+        // Parse the JSON file
         NSError *jsonError = nil;
-        NSData *jsonData = [NSData dataWithContentsOfFile:localPath options:NSDataReadingMappedIfSafe error:&jsonError];
+        NSData *jsonData = [NSData dataWithContentsOfFile:path options:0 error:&jsonError];
         if (!jsonData || jsonError) {
-            NSLog(@"[MCDL] Error reading asset index JSON file: %@", jsonError ? jsonError.localizedDescription : @"Unknown error");
-            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error reading asset index JSON: %@", jsonError ? jsonError.localizedDescription : @"Unknown error"]];
+            NSLog(@"[MCDL] Error reading asset index JSON: %@", jsonError.localizedDescription);
+            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error reading asset index JSON: %@", jsonError.localizedDescription]];
             return;
         }
         
-        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:NSJSONReadingMutableContainers error:&jsonError];
+        // Parse JSON with mutable containers option
+        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData 
+                                                       options:NSJSONReadingMutableContainers 
+                                                         error:&jsonError];
         if (!jsonObject || jsonError) {
-            NSLog(@"[MCDL] Error parsing asset index JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format");
-            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing asset index JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format"]];
+            NSLog(@"[MCDL] Error parsing asset index JSON: %@", jsonError.localizedDescription);
+            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing asset index JSON: %@", jsonError.localizedDescription]];
             return;
         }
         
-        // Set asset index object safely - ensure it's mutable if needed
+        // Set asset index object safely
         @synchronized(weakSelf) {
-            if ([jsonObject isKindOfClass:[NSDictionary class]]) {
-                weakSelf.metadata[@"assetIndexObj"] = [jsonObject mutableCopy];
-            } else {
-                weakSelf.metadata[@"assetIndexObj"] = jsonObject;
-            }
+            weakSelf.metadata[@"assetIndexObj"] = jsonObject;
         }
         
-        // Call success callback
-        success();
+        // Call original success callback
+        if (success) {
+            success();
+        }
     };
     
     // Ensure directories exist
@@ -1189,9 +1100,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:wrappedSuccess];
     if (task) {
-        // Task is automatically queued by createDownloadTask
+        [task resume];
     } else {
-        // If no task was created, still call success if the file exists and we aren't cancelled
+        // If no task was created, still call success if file exists and the download wasn't cancelled
         if (!self.progress.cancelled && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
             wrappedSuccess();
         } else if (self.progress.cancelled) {
@@ -1206,10 +1117,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 - (NSArray *)downloadClientLibraries {
     NSMutableArray *tasks = [NSMutableArray new];
     
-    NSInteger libraryCount = 0;
-    if (self.metadata[@"libraries"] && [self.metadata[@"libraries"] isKindOfClass:[NSArray class]]) {
-        libraryCount = [(NSArray *)self.metadata[@"libraries"] count];
+    // Skip if no libraries defined
+    if (!self.metadata[@"libraries"] || ![self.metadata[@"libraries"] isKindOfClass:[NSArray class]]) {
+        return tasks;
     }
+    
+    NSInteger libraryCount = [self.metadata[@"libraries"] count];
     
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Processing %ld libraries for download", (long)libraryCount);
@@ -1217,6 +1130,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     
     for (NSDictionary *library in self.metadata[@"libraries"]) {
         NSString *name = library[@"name"];
+        if (!name) continue;
 
         // Skip Forge/NeoForge client JARs entirely - they're already installed by the installer
         if (([name containsString:@"net.minecraftforge:forge:"] || 
@@ -1283,10 +1197,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             }
         }
 
-        NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
-        NSString *sha = artifactDict[@"sha1"];
-        NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
-        NSString *url = artifactDict[@"url"];
+        // Skip library if marked to skip
         if ([library[@"skip"] boolValue]) {
             if (self.verboseLogging) {
                 NSLog(@"[MCDL] Skipped library %@", name);
@@ -1294,6 +1205,13 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             continue;
         }
 
+        // Build the download path
+        NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
+        NSString *sha = artifactDict[@"sha1"];
+        NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
+        NSString *url = artifactDict[@"url"];
+        
+        // Create download task
         NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil];
         if (task) {
             [tasks addObject:task];
@@ -1302,9 +1220,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         }
     }
     
-    // Log summary of library downloads
-    NSLog(@"[MCDL] Completed library processing, queued %lu downloads", (unsigned long)tasks.count);
-    
+    NSLog(@"[MCDL] Created %lu library download tasks", (unsigned long)tasks.count);
     return tasks;
 }
 
@@ -1312,95 +1228,65 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     NSMutableArray *tasks = [NSMutableArray new];
     NSDictionary *assets = self.metadata[@"assetIndexObj"];
     
-    if (!assets) {
-        return @[];
+    if (!assets || !assets[@"objects"] || ![assets[@"objects"] isKindOfClass:[NSDictionary class]]) {
+        return tasks;
     }
     
-    // Create a secondary queue for processing asset entries to avoid blocking
-    dispatch_queue_t assetProcessingQueue = dispatch_queue_create("net.kdt.pojavlauncher.assetProcessingQueue", DISPATCH_QUEUE_CONCURRENT);
-    dispatch_group_t assetGroup = dispatch_group_create();
-    
-    // Process assets in batches for better performance
-    id objectsObj = assets[@"objects"];
-    NSArray *assetNames = nil;
-    
-    // Check if objects is a dictionary
-    if (objectsObj && [objectsObj isKindOfClass:[NSDictionary class]]) {
-        NSDictionary *objectsDict = (NSDictionary *)objectsObj;
-        assetNames = objectsDict.allKeys;
-    } else {
-        // Handle the case where objects is nil or not a dictionary
-        NSLog(@"[MCDL] Warning: assets[@\"objects\"] is nil or not a dictionary");
-        return @[];
-    }
-    
+    NSDictionary *objectsDict = assets[@"objects"];
+    NSArray *assetNames = objectsDict.allKeys;
     NSInteger totalAssets = assetNames.count;
-    NSInteger batchSize = 100; // Process 100 assets at a time
     
-    NSLog(@"[MCDL] Processing %ld asset files in batches of %ld", (long)totalAssets, (long)batchSize);
+    NSLog(@"[MCDL] Processing %ld assets for download", (long)totalAssets);
     
-    for (NSInteger startIndex = 0; startIndex < totalAssets; startIndex += batchSize) {
-        NSInteger endIndex = MIN(startIndex + batchSize, totalAssets);
-        NSRange batchRange = NSMakeRange(startIndex, endIndex - startIndex);
-        NSArray *batchNames = [assetNames subarrayWithRange:batchRange];
-        
-        // Process this batch concurrently
-        dispatch_group_enter(assetGroup);
-        dispatch_async(assetProcessingQueue, ^{
-            NSMutableArray *batchTasks = [NSMutableArray new];
-            
-            for (NSString *name in batchNames) {
-                if (self.progress.cancelled) {
-                    dispatch_group_leave(assetGroup);
-                    return;
-                }
-                
-                NSDictionary *object = assets[@"objects"][name];
-                NSString *hash = object[@"hash"];
-                NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
-                NSUInteger size = [object[@"size"] unsignedLongLongValue];
-
-                NSString *path;
-                if ([assets[@"map_to_resources"] boolValue]) {
-                    path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
-                } else {
-                    path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
-                }
-
-                /* Special case for 1.19+
-                 * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
-                 * However, if an IOException occurs, it won't try to set.
-                 * We skip downloading the icon file to workaround this. */
-                if ([name hasSuffix:@"/minecraft.icns"]) {
-                    [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-                    continue;
-                }
-
-                NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
-                NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil];
-                if (task) {
-                    [batchTasks addObject:task];
-                } else if (self.progress.cancelled) {
-                    dispatch_group_leave(assetGroup);
-                    return;
-                }
-            }
-            
-            // Add all tasks from this batch to the main tasks array
-            @synchronized(tasks) {
-                [tasks addObjectsFromArray:batchTasks];
-            }
-            
-            dispatch_group_leave(assetGroup);
-        });
+    // Set up asset directories
+    NSString *assetsDir = [NSString stringWithFormat:@"%s/assets/objects", getenv("POJAV_GAME_DIR")];
+    NSError *dirError = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:assetsDir 
+                             withIntermediateDirectories:YES 
+                                              attributes:nil 
+                                                   error:&dirError];
+    if (dirError) {
+        NSLog(@"[MCDL] Warning: Error creating assets directory: %@", dirError.localizedDescription);
     }
     
-    // Wait for all batches to be processed
-    dispatch_group_wait(assetGroup, DISPATCH_TIME_FOREVER);
+    // Process each asset
+    for (NSString *name in assetNames) {
+        // Check if download was cancelled
+        if (self.progress.cancelled) {
+            return nil;
+        }
+        
+        NSDictionary *object = assets[@"objects"][name];
+        NSString *hash = object[@"hash"];
+        NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
+        NSUInteger size = [object[@"size"] unsignedLongLongValue];
+
+        NSString *path;
+        if ([assets[@"map_to_resources"] boolValue]) {
+            path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
+        } else {
+            path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
+        }
+
+        /* Special case for 1.19+
+         * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
+         * However, if an IOException occurs, it won't try to set.
+         * We skip downloading the icon file to workaround this. */
+        if ([name hasSuffix:@"/minecraft.icns"]) {
+            [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+            continue;
+        }
+
+        NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil];
+        if (task) {
+            [tasks addObject:task];
+        } else if (self.progress.cancelled) {
+            return nil;
+        }
+    }
     
-    // Log summary of asset downloads
-    NSLog(@"[MCDL] Completed asset processing, queued %lu downloads", (unsigned long)tasks.count);
-    
+    NSLog(@"[MCDL] Created %lu asset download tasks", (unsigned long)tasks.count);
     return tasks;
 }
 
@@ -1411,10 +1297,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     self.successfulDownloads = 0;
     self.totalDownloads = 0;
     
-    // Set flag in metadata that this is a modpack installation
+    // Create metadata dictionary if needed
     if (!self.metadata) {
         self.metadata = [NSMutableDictionary dictionary];
     }
+    
+    // Explicitly mark this as a modpack installation
     self.metadata[@"isModpackInstall"] = @YES;
 
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
@@ -1423,6 +1311,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     
     // Use the original title without converting to lowercase or replacing spaces with underscores
     NSString *name = [modDetail[@"title"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    
     // For the filesystem paths, create a sanitized version of the name (for the zip file only)
     NSString *sanitizedName = [[name lowercaseString] stringByReplacingOccurrencesOfString:@" " withString:@"_"];
     NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", sanitizedName];
@@ -1438,23 +1327,30 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     // Store the game directory in metadata for proper profile creation
     self.metadata[@"gameDir"] = gameDir;
     
-    // Create a clear display name for progress reporting
+    // Create a display name for progress reporting
     NSString *displayName = [NSString stringWithFormat:@"Downloading modpack: %@", name];
     
-    // Create a wrapped success callback that transitions to extraction phase
+    // Create success callback for modpack download
     __weak typeof(self) weakSelf = self;
     void(^modpackSuccess)(void) = ^{
-        // Add placeholder progress for extraction phase - reset overall progress
         @synchronized(weakSelf) {
-            [weakSelf.progressLock lock];
+            // Reset progress for extraction phase
             weakSelf.progress.totalUnitCount = 1;
             weakSelf.progress.completedUnitCount = 0;
             weakSelf.textProgress.totalUnitCount = 1;
             weakSelf.textProgress.completedUnitCount = 0;
-            [weakSelf.progressLock unlock];
+            
+            // Add extraction marker to file list
+            [weakSelf.fileList addObject:[NSString stringWithFormat:@"Extracting %@", name]];
+            
+            // Create a progress object for extraction
+            NSProgress *extractionProgress = [NSProgress progressWithTotalUnitCount:1];
+            [weakSelf.progressList addObject:extractionProgress];
+            [weakSelf.progress addChild:extractionProgress withPendingUnitCount:1];
         }
         
         NSLog(@"[MCDL] Modpack download complete, proceeding to extraction.");
+        
         // Use the API to handle extraction and installation
         [api downloader:weakSelf submitDownloadTasksFromPackage:packagePath toPath:destPath];
     };
@@ -1464,9 +1360,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         NSLog(@"[MCDL] Failed to download modpack: %@. Retrying...", error.localizedDescription);
         
         // Add retry attempt to file list for UI visibility
-        [weakSelf.fileListLock lock];
-        [weakSelf.fileList addObject:[NSString stringWithFormat:@"Retrying download for %@", name]];
-        [weakSelf.fileListLock unlock];
+        @synchronized(weakSelf.fileList) {
+            [weakSelf.fileList addObject:[NSString stringWithFormat:@"Retrying download for %@", name]];
+        }
         
         // Create a retry task
         NSURLSessionDownloadTask *retryTask = [weakSelf createDownloadTask:url 
@@ -1481,12 +1377,14 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         }];
         
         if (retryTask) {
-            // Task is automatically queued by createDownloadTask
+            // Resume task immediately
+            [retryTask resume];
         } else {
             [weakSelf finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
         }
     };
 
+    // Create initial download task
     NSURLSessionDownloadTask *task = [self createDownloadTask:url 
                                                         size:size 
                                                          sha:sha 
@@ -1496,7 +1394,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                                                      failure:modpackFailure];
 
     if (task) {
-        // Task is automatically queued by createDownloadTask
+        [task resume];
     }
 }
 @end
