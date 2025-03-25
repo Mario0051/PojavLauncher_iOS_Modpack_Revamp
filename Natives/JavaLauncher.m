@@ -115,21 +115,17 @@ static int getJavaMajorVersion(NSString *javaHome) {
     return 8; // Default to Java 8 if can't parse
 }
 
-// Function to detect if a class exists in the classpath
-static BOOL doesClassExistInJarFile(NSString *jarPath, NSString *className) {
-    if (![fm fileExistsAtPath:jarPath]) {
-        return NO;
+// Function to check jar file existence - we can't reliably check for specific classes on iOS
+static BOOL doesJarFileExist(NSString *jarPath) {
+    BOOL exists = [fm fileExistsAtPath:jarPath];
+    
+    if (exists) {
+        LAUNCH_LOG(@"Found JAR file: %@", jarPath);
+    } else {
+        LAUNCH_LOG(@"JAR file not found: %@", jarPath);
     }
     
-    // Convert className to path format (replace dots with slashes and add .class)
-    NSString *classPath = [className stringByReplacingOccurrencesOfString:@"." withString:@"/"];
-    classPath = [classPath stringByAppendingString:@".class"];
-    
-    // Use system command to check if the class exists in the JAR
-    NSString *command = [NSString stringWithFormat:@"zipinfo -1 \"%@\" | grep -q \"%@\"", jarPath, classPath];
-    int result = system([command UTF8String]);
-    
-    return (result == 0);
+    return exists;
 }
 
 void init_loadDefaultEnv() {
@@ -315,13 +311,14 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = [NSString stringWithFormat:@"%@/bin/java", javaHome].UTF8String;
     margv[++margc] = "-XstartOnFirstThread";
     
-    // Path to check for PojavClassLoader
+    // Path to check for PojavClassLoader jar
     NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
     NSString *pojavLauncherJarPath = [NSString stringWithFormat:@"%@/pojavlauncher.jar", librariesPath];
     
-    // Only add system class loader if Java version < 21 or if the class exists
-    BOOL hasPojavClassLoader = doesClassExistInJarFile(pojavLauncherJarPath, @"net.kdt.pojavlaunch.PojavClassLoader");
-    if (!launchJar && (javaMajorVersion < 21 || hasPojavClassLoader)) {
+    // Check if we should use the custom class loader
+    // Skip it for Java 21+ to avoid compatibility issues
+    if (!launchJar && javaMajorVersion < 21) {
+        // For Java 8-20, use the custom class loader
         margv[++margc] = "-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader";
     } else if (!launchJar && javaMajorVersion >= 21) {
         LAUNCH_LOG(@"Skipping custom system class loader for Java 21+");
