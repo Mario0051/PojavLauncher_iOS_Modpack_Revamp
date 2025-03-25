@@ -363,8 +363,13 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     // Java agents
     margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath].UTF8String;
     
+    // Only add Cosmetica agent for Java versions < 21
     if (getPrefBool(@"general.cosmetica")) {
-        margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
+        if (javaMajorVersion < 21) {
+            margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
+        } else {
+            LAUNCH_LOG(@"Skipping Cosmetica DNS agent for Java 21+ (not compatible)");
+        }
     }
     
     // Workaround for stack guard allocation crashes
@@ -452,6 +457,25 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     // Add forge/mod JVM arguments if available
     if ([launchTarget isKindOfClass:NSDictionary.class] && launchTarget[@"arguments"][@"jvm_processed"]) {
         for (NSString *arg in launchTarget[@"arguments"][@"jvm_processed"]) {
+            // Fix common formatting issues in args for Java 21+
+            if (javaMajorVersion >= 21) {
+                // Fix malformed module arguments containing equals signs
+                if ([arg containsString:@"java.base.java.util.jar="]) {
+                    NSString *fixedArg = [arg stringByReplacingOccurrencesOfString:@"java.base.java.util.jar=" 
+                                                                        withString:@"java.base/java.util.jar "];
+                    LAUNCH_LOG(@"Fixing malformed argument: %@ -> %@", arg, fixedArg);
+                    margv[++margc] = fixedArg.UTF8String;
+                    continue;
+                }
+                
+                // Skip any other problematic arguments
+                if ([arg containsString:@"cpw.mods.bootstraplauncher"]) {
+                    LAUNCH_LOG(@"Skipping bootstraplauncher argument for Java 21+: %@", arg);
+                    continue;
+                }
+            }
+            
+            // Add the argument
             margv[++margc] = arg.UTF8String;
         }
     }
