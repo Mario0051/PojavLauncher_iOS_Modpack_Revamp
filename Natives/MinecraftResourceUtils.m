@@ -90,20 +90,6 @@
                 continue;
             }
             library[@"name"] = @"net.java.dev.jna:jna:5.13.0";
-            
-            // Ensure nested dictionaries are mutable
-            if (!library[@"downloads"]) {
-                library[@"downloads"] = [NSMutableDictionary new];
-            } else if (![library[@"downloads"] isKindOfClass:[NSMutableDictionary class]]) {
-                library[@"downloads"] = [library[@"downloads"] mutableCopy];
-            }
-            
-            if (!library[@"downloads"][@"artifact"]) {
-                library[@"downloads"][@"artifact"] = [NSMutableDictionary new];
-            } else if (![library[@"downloads"][@"artifact"] isKindOfClass:[NSMutableDictionary class]]) {
-                library[@"downloads"][@"artifact"] = [library[@"downloads"][@"artifact"] mutableCopy];
-            }
-            
             library[@"downloads"][@"artifact"][@"path"] = @"net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
             library[@"downloads"][@"artifact"][@"url"] = @"https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
             library[@"downloads"][@"artifact"][@"sha1"] = @"1200e7ebeedbe0d10062093f32925a912020e747";
@@ -113,20 +99,6 @@
             // library, often include lwjgl in their class transformations, which causes errors with old ASM versions.
             if(version[0].intValue >= 5) continue;
             library[@"name"] = @"org.ow2.asm:asm-all:5.0.4";
-            
-            // Ensure nested dictionaries are mutable
-            if (!library[@"downloads"]) {
-                library[@"downloads"] = [NSMutableDictionary new];
-            } else if (![library[@"downloads"] isKindOfClass:[NSMutableDictionary class]]) {
-                library[@"downloads"] = [library[@"downloads"] mutableCopy];
-            }
-            
-            if (!library[@"downloads"][@"artifact"]) {
-                library[@"downloads"][@"artifact"] = [NSMutableDictionary new];
-            } else if (![library[@"downloads"][@"artifact"] isKindOfClass:[NSMutableDictionary class]]) {
-                library[@"downloads"][@"artifact"] = [library[@"downloads"][@"artifact"] mutableCopy];
-            }
-            
             library[@"downloads"][@"artifact"][@"path"] = @"org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
             library[@"downloads"][@"artifact"][@"sha1"] = @"e6244859997b3d4237a552669279780876228909";
             library[@"downloads"][@"artifact"][@"url"] = @"https://repo1.maven.org/maven2/org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
@@ -140,15 +112,37 @@
         client[@"downloads"][@"artifact"] = [[NSMutableDictionary alloc] init];
         client[@"skip"] = @YES;
     } else {
-        // Make sure we use a mutable copy of the client dictionary
-        client[@"downloads"][@"artifact"] = [json[@"downloads"][@"client"] mutableCopy];
+        client[@"downloads"][@"artifact"] = json[@"downloads"][@"client"];
     }
     client[@"downloads"][@"artifact"][@"path"] = [NSString stringWithFormat:@"../versions/%1$@/%1$@.jar", json[@"id"]];
     client[@"name"] = [NSString stringWithFormat:@"%@.jar", json[@"id"]];
     [json[@"libraries"] addObject:client];
 
-    // Process Forge 1.17+ JVM Arguments
-    [self processJvmArguments:json];
+    // Parse Forge 1.17+ additional JVM Arguments
+    if (json[@"inheritsFrom"] == nil || json[@"arguments"][@"jvm"] == nil) {
+        return;
+    }
+    json[@"arguments"][@"jvm_processed"] = [[NSMutableArray alloc] init];
+    NSDictionary *varArgMap = @{
+        @"${classpath_separator}": @":",
+        @"${library_directory}": [NSString stringWithFormat:@"%s/libraries", getenv("POJAV_GAME_DIR")],
+        @"${version_name}": json[@"id"]
+    };
+    int argsToSkip = 0;
+    for (NSString *arg in json[@"arguments"][@"jvm"]) {
+        if (argsToSkip == 0) {
+            argsToSkip = [self numberOfArgsToSkipForArg:arg];
+        }
+        if (argsToSkip == 0) {
+            NSString *argStr = arg;
+            for (NSString *key in varArgMap.allKeys) {
+                argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
+            }
+            [json[@"arguments"][@"jvm_processed"] addObject:argStr];
+        } else {
+            argsToSkip--;
+        }
+    }
 }
 
 + (void)processJvmArguments:(NSMutableDictionary *)json {
