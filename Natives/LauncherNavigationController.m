@@ -294,91 +294,93 @@ static NSLock *versionListLock;
 }
 
 - (void)launchMinecraft:(UIButton *)sender {
+    // Basic validation
     if (!self.versionTextField.hasText) {
         [self.versionTextField becomeFirstResponder];
-        sender.enabled = YES; // Re-enable button
         return;
     }
-    
+
+    // Check if we have an account
     if (BaseAuthenticator.current == nil) {
         // Present the account selector if none selected
         UIViewController *view = [(UINavigationController *)self.splitViewController.viewControllers[0]
-                                 viewControllers][0];
+        viewControllers][0];
         [view performSelector:@selector(selectAccount:) withObject:sender];
-        sender.enabled = YES; // Re-enable button
         return;
     }
-    
+
+    // Disable UI during download
     [self setInteractionEnabled:NO forDownloading:YES];
-    
+
+    // Get the version ID from the selected profile
     NSString *versionId = PLProfiles.current.profiles[self.versionTextField.text][@"lastVersionId"];
     
-    // Thread-safe access to remoteVersionList
+    // Thread-safely access the version list
     [versionListLock lock];
-    NSDictionary *object = [remoteVersionList filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(id == %@)", versionId]].firstObject;
+    NSDictionary *object = [remoteVersionList filteredArrayUsingPredicate:
+                          [NSPredicate predicateWithFormat:@"(id == %@)", versionId]].firstObject;
     [versionListLock unlock];
     
+    // If not found in remote list, create a custom version object
     if (!object) {
         object = @{
             @"id": versionId,
             @"type": @"custom"
         };
     }
-    
+
     NSLog(@"[MCDL] Starting download for version: %@", versionId);
     
-    // Create task on main thread to ensure proper state tracking
+    // Create the download task
     self.task = [MinecraftResourceDownloadTask new];
     
-    // Create weak reference for blocks to avoid retain cycles
+    // Set up error handler with weak self reference to avoid memory leaks
     __weak LauncherNavigationController *weakSelf = self;
-    
-    // Set up error handler
     self.task.handleError = ^{
         dispatch_async(dispatch_get_main_queue(), ^{
-            NSLog(@"[MCDL] Download error occurred, resetting state");
-            
             [weakSelf setInteractionEnabled:YES forDownloading:YES];
             weakSelf.task = nil;
             weakSelf.progressVC = nil;
-            
-            // Re-enable the button
-            sender.enabled = YES;
         });
     };
     
-    // Start download in background
+    // Start download process in background
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Explicitly mark this as NOT a modpack installation
+        if (!self.task.metadata) {
+            self.task.metadata = [NSMutableDictionary dictionary];
+        }
+        self.task.metadata[@"isModpackInstall"] = @NO;
+        
+        // Start the download process
         [self.task downloadVersion:object];
         
         // Set up progress tracking on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Skip if task was cancelled or cleared while dispatching
-            if (!self.task || !self.task.progress) {
-                sender.enabled = YES; // Re-enable button
-                return;
-            }
+            // Skip if task was cancelled or cleared
+            if (!self.task || !self.task.progress) return;
             
+            // Connect progress bar to task progress
             self.progressViewMain.observedProgress = self.task.progress;
             
-            // Safely add observer
+            // Add observer for progress updates
             @try {
                 [self.task.progress addObserver:self
                                      forKeyPath:@"fractionCompleted"
                                         options:NSKeyValueObservingOptionInitial
                                         context:ProgressObserverContext];
             } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Exception adding observer: %@", exception);
-                sender.enabled = YES; // Re-enable button on error
+                NSLog(@"[MCDL] Exception adding progress observer: %@", exception);
             }
         });
     });
 }
 
 - (void)performInstallOrShowDetails:(UIButton *)sender {
+    // Disable button to prevent multiple taps
     sender.enabled = NO;
     
-    // Add a slight delay to allow UI to update and prevent accidental double-taps
+    // Add a slight delay to allow UI to update
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Check if we have an active task
         if (self.task && self.task.progress && !self.task.progress.cancelled) {
@@ -386,24 +388,29 @@ static NSLock *versionListLock;
             if (!self.progressVC) {
                 self.progressVC = [[DownloadProgressViewController alloc] initWithTask:self.task];
             }
+            
+            // Present progress view in a popover
             UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:self.progressVC];
             nav.modalPresentationStyle = UIModalPresentationPopover;
             nav.popoverPresentationController.sourceView = sender;
+            
             [self presentViewController:nav animated:YES completion:^{
                 // Re-enable button after presentation completes
                 sender.enabled = YES;
             }];
         } else {
-            // If there's no active task or the task is cancelled, clear it and start a new one
+            // If there's no active task or the task is cancelled, start a new download
             self.task = nil;
             self.progressVC = nil;
             
             // Launch Minecraft
             [self launchMinecraft:sender];
+            
             // Button will be re-enabled by completion handler or error handler
         }
     });
 }
+
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
     if (context != ProgressObserverContext) {
@@ -411,122 +418,87 @@ static NSLock *versionListLock;
         return;
     }
     
-    // Only track simple progress percentage
-    NSInteger completedUnitCount = 0;
-    BOOL isTaskComplete = NO;
-    
-    // Safely check progress status
-    @try {
-        if (self.task && self.task.progress) {
-            completedUnitCount = self.task.progress.totalUnitCount * self.task.progress.fractionCompleted;
-            isTaskComplete = (self.task.progress.finished || self.task.progress.fractionCompleted >= 1.0);
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"[MCDL] Exception checking progress status: %@", exception);
+    // Calculate download speed and ETA
+    static CGFloat lastMsTime;
+    static NSUInteger lastSecTime, lastCompletedUnitCount;
+    NSProgress *progress = self.task.textProgress;
+    struct timeval tv;
+    gettimeofday(&tv, NULL); 
+    NSInteger completedUnitCount = self.task.progress.totalUnitCount * self.task.progress.fractionCompleted;
+    progress.completedUnitCount = completedUnitCount;
+    if (lastSecTime < tv.tv_sec) {
+        CGFloat currentTime = tv.tv_sec + tv.tv_usec / 1000000.0;
+        NSInteger throughput = (completedUnitCount - lastCompletedUnitCount) / (currentTime - lastMsTime);
+        progress.throughput = @(throughput);
+        progress.estimatedTimeRemaining = @((progress.totalUnitCount - completedUnitCount) / MAX(1, throughput));
+        lastCompletedUnitCount = completedUnitCount;
+        lastSecTime = tv.tv_sec;
+        lastMsTime = currentTime;
     }
-    
-    // Find the most recently completed file (if any)
-    NSString *lastCompletedFile = nil;
-    if (self.task && self.task.fileList.count > 0) {
-        NSArray *progressListCopy = [NSArray arrayWithArray:self.task.progressList];
-        for (NSInteger i = progressListCopy.count - 1; i >= 0; i--) {
-            NSProgress *fileProgress = progressListCopy[i];
-            if (fileProgress.finished || fileProgress.fractionCompleted >= 1.0) {
-                if (i < self.task.fileList.count) {
-                    NSString *fileName = self.task.fileList[i];
-                    if (fileName) {
-                        lastCompletedFile = [fileName lastPathComponent];
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Always update UI on main thread
+
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Skip if the task has been cleared while dispatching
-        if (!self.task) return;
-        
-        // Calculate sizes and update progress text
-        long long completedBytes = self.task.progress.completedUnitCount;
-        long long totalBytes = self.task.progress.totalUnitCount;
-        
-        // Format sizes with appropriate precision
-        NSString *sizeText;
-        double completedMB = completedBytes / 1024.0 / 1024.0;
-        double totalMB = totalBytes / 1024.0 / 1024.0;
-        
-        if (totalMB < 1.0) {
-            // Use KB for small files
-            double completedKB = completedBytes / 1024.0;
-            double totalKB = totalBytes / 1024.0;
-            sizeText = [NSString stringWithFormat:@"%.0fKB/%.0fKB", completedKB, totalKB];
-        } else if (totalMB < 10.0) {
-            // More precision for smaller files
-            sizeText = [NSString stringWithFormat:@"%.2fMB/%.2fMB", completedMB, totalMB];
-        } else if (totalMB < 100.0) {
-            sizeText = [NSString stringWithFormat:@"%.1fMB/%.1fMB", completedMB, totalMB];
-        } else {
-            sizeText = [NSString stringWithFormat:@"%.0fMB/%.0fMB", completedMB, totalMB];
+        // Update progress text display
+        self.progressText.text = progress.localizedAdditionalDescription;
+
+        // Check if download has finished
+        BOOL isFinished = NO;
+        @try {
+            isFinished = progress.finished || progress.fractionCompleted >= 1.0;
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Exception checking progress status: %@", exception);
+            isFinished = NO;
         }
         
-        // Compute percentage
-        int percentage = (int)(self.task.progress.fractionCompleted * 100);
+        // If not finished, exit early
+        if (!isFinished) return;
         
-        // Update progress text with size and percentage
-        if (lastCompletedFile) {
-            self.progressText.text = [NSString stringWithFormat:@"%@ - %@ (%d%%)", lastCompletedFile, sizeText, percentage];
-        } else {
-            self.progressText.text = [NSString stringWithFormat:@"%@ (%d%%)", sizeText, percentage];
-        }
+        NSLog(@"[MCDL] Download completed");
         
-        // Only proceed with completion handling if task is done
-        if (!isTaskComplete) return;
-        
-        NSLog(@"[MCDL] Download task completed, cleaning up...");
-        
-        // The download is finished, clean up
+        // Dismiss progress view controller if it's open
         if (self.progressVC) {
             [self.progressVC dismissViewControllerAnimated:NO completion:nil];
-            self.progressVC = nil;
         }
-        
-        // Clear progress UI
+
+        // Clear progress observation
         self.progressViewMain.observedProgress = nil;
-        self.progressViewMain.hidden = YES;
-        self.progressText.text = nil;
         
-        // Check if this was a modpack installation
+        // Critical: Check if this was a modpack installation
         BOOL isModpackInstall = NO;
         if (self.task.metadata && self.task.metadata[@"isModpackInstall"]) {
             isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
         }
         
-        // Save metadata before clearing task
+        NSLog(@"[MCDL] isModpackInstall: %d, has metadata: %@", 
+              isModpackInstall, self.task.metadata ? @"YES" : @"NO");
+        
+        // Make a copy of the metadata before clearing the task
         NSDictionary *metadata = nil;
         if (self.task.metadata) {
             metadata = [self.task.metadata copy];
         }
         
-        // Clear the task reference BEFORE launching Minecraft to avoid state confusion
+        // Get a reference to the progress before clearing the task
+        NSProgress *taskProgress = self.task.progress;
+        
+        // Clear task reference
         MinecraftResourceDownloadTask *completedTask = self.task;
         self.task = nil;
+        self.progressVC = nil;
         
-        // Stop observing the progress to avoid memory leaks
+        // Remove observer safely
         @try {
-            [completedTask.progress removeObserver:self forKeyPath:@"fractionCompleted"];
+            [taskProgress removeObserver:self forKeyPath:@"fractionCompleted"];
         } @catch (NSException *exception) {
             NSLog(@"[MCDL] Exception removing progress observer: %@", exception);
         }
         
-        // Only launch the game if it's NOT a modpack installation
+        // Launch the game if it's not a modpack installation and we have metadata
         if (metadata && !isModpackInstall) {
             [self invokeAfterJITEnabled:^{
                 UIKit_launchMinecraftSurfaceVC(self.view.window, metadata);
             }];
         } else {
-            // Always make sure UI is re-enabled
+            // Otherwise just re-enable UI
             [self setInteractionEnabled:YES forDownloading:YES];
             [self reloadProfileList];
         }
@@ -538,12 +510,13 @@ static NSLock *versionListLock;
         return;
     }
     
-    // Perform UI updates immediately on the main thread
+    // Disable UI during download
     [self setInteractionEnabled:NO forDownloading:YES];
     
-    // Create task on the main thread to avoid any race conditions
+    // Create a new download task
     self.task = [MinecraftResourceDownloadTask new];
     
+    // Set up error handler
     __weak LauncherNavigationController *weakSelf = self;
     self.task.handleError = ^{
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -553,29 +526,37 @@ static NSLock *versionListLock;
         });
     };
     
-    // Set up progress tracking BEFORE starting the download
+    // Set up progress tracking
     self.progressViewMain.observedProgress = self.task.progress;
     
+    // Add observer for progress updates
     @try {
         [self.task.progress addObserver:self
                             forKeyPath:@"fractionCompleted"
                                options:NSKeyValueObservingOptionInitial
                                context:ProgressObserverContext];
     } @catch (NSException *exception) {
-        NSLog(@"[MCDL] Exception adding observer: %@", exception);
+        NSLog(@"[MCDL] Exception adding progress observer: %@", exception);
     }
     
-    // Create copies of the data we need for the background task
+    // Get data from notification
     NSDictionary *userInfo = [notification.userInfo copy];
     id notificationObject = notification.object;
     
-    // Start the actual download in a background thread
+    // Start modpack download in background
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Safety check that task hasn't been cleared
         if (!weakSelf.task) {
             return;
         }
         
+        // Explicitly mark this as a modpack installation
+        if (!self.task.metadata) {
+            self.task.metadata = [NSMutableDictionary dictionary];
+        }
+        self.task.metadata[@"isModpackInstall"] = @YES;
+        
+        // Start the download
         [weakSelf.task downloadModpackFromAPI:notificationObject 
                                detail:userInfo[@"detail"] 
                               atIndex:[userInfo[@"index"] unsignedLongValue]];
