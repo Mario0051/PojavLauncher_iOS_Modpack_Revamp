@@ -189,11 +189,10 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         LAUNCH_LOG(@"RENDERER is set to %@", renderer);
         setenv("POJAV_RENDERER", renderer.UTF8String, 1);
         
-        // Game directory setup
-        gameDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
-            getenv("POJAV_HOME"), getPrefObject(@"general.game_directory"),
-            [PLProfiles resolveKeyForCurrentProfile:@"gameDir"]]
-            .stringByStandardizingPath;
+        // Game directory setup - use profile's game directory with proper isolation
+        NSString *profileGameDir = [PLProfiles resolveKeyForCurrentProfile:@"gameDir"];
+        gameDir = [PLProfiles fullPathForProfileWithName:PLProfiles.current.selectedProfileName 
+                                                gameDir:profileGameDir];
     } else {
         defaultJRETag = @"execute_jar";
         gameDir = @(getenv("POJAV_GAME_DIR"));
