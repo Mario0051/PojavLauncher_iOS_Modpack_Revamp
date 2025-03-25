@@ -1218,6 +1218,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
         NSString *url = artifactDict[@"url"];
         
+        // Skip if URL is missing - don't create invalid tasks
+        if (!url || [url length] == 0) {
+            NSLog(@"[MCDL] Warning: Skipping library %@ due to missing URL", name);
+            continue;
+        }
+        
         // Create download task
         NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil];
         if (task) {
