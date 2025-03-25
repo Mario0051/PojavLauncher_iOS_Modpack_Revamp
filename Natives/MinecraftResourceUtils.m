@@ -126,8 +126,18 @@
             BOOL isLWJGL = ([library[@"name"] isKindOfClass:[NSString class]] && 
                            [library[@"name"] hasPrefix:@"org.lwjgl"]);
             
-            // Mark library to be skipped if it meets any of these conditions
+            // Special handling for Forge libraries - don't skip Forge libraries
+            BOOL isForgeLibrary = ([library[@"name"] isKindOfClass:[NSString class]] && 
+                                 ([library[@"name"] containsString:@"minecraftforge"] || 
+                                  [library[@"name"] containsString:@"net.minecraftforge:forge"]));
+            
+            // Mark library to be skipped if it meets skip conditions and is not a Forge library
             library[@"skip"] = @(hasClassifiers || hasNatives || isLWJGL);
+            
+            // Don't skip Forge libraries that we need
+            if (isForgeLibrary && ![library[@"name"] hasSuffix:@":client"] && ![library[@"name"] hasSuffix:@":universal"]) {
+                library[@"skip"] = @NO;
+            }
 
             // Only process libraries with valid names
             if (![library[@"name"] isKindOfClass:[NSString class]]) {
@@ -227,7 +237,7 @@
     // Add client to libraries
     [json[@"libraries"] addObject:client];
 
-    // Process JVM arguments for Forge/mods
+    // Process Forge JVM arguments
     [self processJvmArguments:json];
 }
 
