@@ -366,8 +366,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
 
     // Add forge/mod JVM arguments if available
     if ([launchTarget isKindOfClass:NSDictionary.class] && launchTarget[@"arguments"][@"jvm_processed"]) {
-        NSArray *processedJvmArgs = launchTarget[@"arguments"][@"jvm_processed"];
-        for (NSString *arg in processedJvmArgs) {
+        for (NSString *arg in launchTarget[@"arguments"][@"jvm_processed"]) {
             margv[++margc] = arg.UTF8String;
         }
     }
