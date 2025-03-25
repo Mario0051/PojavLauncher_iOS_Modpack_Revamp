@@ -90,6 +90,20 @@
                 continue;
             }
             library[@"name"] = @"net.java.dev.jna:jna:5.13.0";
+            
+            // Ensure nested dictionaries are mutable
+            if (!library[@"downloads"]) {
+                library[@"downloads"] = [NSMutableDictionary new];
+            } else if (![library[@"downloads"] isKindOfClass:[NSMutableDictionary class]]) {
+                library[@"downloads"] = [library[@"downloads"] mutableCopy];
+            }
+            
+            if (!library[@"downloads"][@"artifact"]) {
+                library[@"downloads"][@"artifact"] = [NSMutableDictionary new];
+            } else if (![library[@"downloads"][@"artifact"] isKindOfClass:[NSMutableDictionary class]]) {
+                library[@"downloads"][@"artifact"] = [library[@"downloads"][@"artifact"] mutableCopy];
+            }
+            
             library[@"downloads"][@"artifact"][@"path"] = @"net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
             library[@"downloads"][@"artifact"][@"url"] = @"https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
             library[@"downloads"][@"artifact"][@"sha1"] = @"1200e7ebeedbe0d10062093f32925a912020e747";
@@ -99,6 +113,20 @@
             // library, often include lwjgl in their class transformations, which causes errors with old ASM versions.
             if(version[0].intValue >= 5) continue;
             library[@"name"] = @"org.ow2.asm:asm-all:5.0.4";
+            
+            // Ensure nested dictionaries are mutable
+            if (!library[@"downloads"]) {
+                library[@"downloads"] = [NSMutableDictionary new];
+            } else if (![library[@"downloads"] isKindOfClass:[NSMutableDictionary class]]) {
+                library[@"downloads"] = [library[@"downloads"] mutableCopy];
+            }
+            
+            if (!library[@"downloads"][@"artifact"]) {
+                library[@"downloads"][@"artifact"] = [NSMutableDictionary new];
+            } else if (![library[@"downloads"][@"artifact"] isKindOfClass:[NSMutableDictionary class]]) {
+                library[@"downloads"][@"artifact"] = [library[@"downloads"][@"artifact"] mutableCopy];
+            }
+            
             library[@"downloads"][@"artifact"][@"path"] = @"org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
             library[@"downloads"][@"artifact"][@"sha1"] = @"e6244859997b3d4237a552669279780876228909";
             library[@"downloads"][@"artifact"][@"url"] = @"https://repo1.maven.org/maven2/org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
@@ -112,7 +140,8 @@
         client[@"downloads"][@"artifact"] = [[NSMutableDictionary alloc] init];
         client[@"skip"] = @YES;
     } else {
-        client[@"downloads"][@"artifact"] = json[@"downloads"][@"client"];
+        // Make sure we use a mutable copy of the client dictionary
+        client[@"downloads"][@"artifact"] = [json[@"downloads"][@"client"] mutableCopy];
     }
     client[@"downloads"][@"artifact"][@"path"] = [NSString stringWithFormat:@"../versions/%1$@/%1$@.jar", json[@"id"]];
     client[@"name"] = [NSString stringWithFormat:@"%@.jar", json[@"id"]];
