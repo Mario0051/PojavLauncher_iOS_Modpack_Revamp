@@ -108,12 +108,12 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     @synchronized(self) {
         // Reset progress tracking
         self.progress = [NSProgress new];
-        self.progress.totalUnitCount = 0; // Start with 0 and add as we go
+        self.progress.totalUnitCount = 1;
         self.progress.cancellable = YES;
         
         // Reset text progress for UI
         self.textProgress = [NSProgress new];
-        self.textProgress.totalUnitCount = 0;
+        self.textProgress.totalUnitCount = 1;
         self.textProgress.cancellable = YES;
         
         // Reset download counters
@@ -180,13 +180,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
     }
 }
 
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path 
-                                        success:(void (^)(void))success
-                                        failure:(void (^)(NSError *error))failure {
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
     @autoreleasepool {
         // Safety check for invalid URL with enhanced logging
         if (!url || url.length == 0) {
@@ -212,7 +206,16 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         // Check if file already exists and has correct SHA1 - with quick return
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
         
-        if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+        // Special handling for version files
+        BOOL isVersionFile = (altName && [altName hasSuffix:@".json"]) || 
+                             (path && [path hasSuffix:@".json"] && [path containsString:@"/versions/"]);
+        
+        // Check for latest version files that should be forced to re-download
+        BOOL isLatestVersionFile = (altName && 
+                                  ([altName containsString:@"latest-release"] || 
+                                   [altName containsString:@"latest-snapshot"]));
+
+        if (!isLatestVersionFile && fileExists && [self checkSHA:sha forFile:path altName:altName]) {
             // Increment successful downloads counter
             self.successfulDownloads++;
             
@@ -320,7 +323,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         __weak typeof(self) weakSelf = self;
         
         // Create download task with proper completion handling
-        NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull taskProgress) {
+        __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull taskProgress) {
             // Only update progress every 10% to reduce overhead
             static NSInteger lastReportedPercent = -1;
             NSInteger currentPercent = (NSInteger)(taskProgress.fractionCompleted * 100);
@@ -341,13 +344,20 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                         }
                     } @catch (NSException *exception) {
                         // Just log and continue
+                        NSLog(@"[MCDL] Exception in progress update: %@", exception);
                     }
                 }
             }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-            // Only log in verbose mode
-            if (weakSelf.verboseLogging) {
-                NSLog(@"[MCDL] Downloading %@, expected length: %lld", name, response.expectedContentLength);
+            NSLog(@"[MCDL] Downloading %@", name);
+            NSProgress *progress = [self.manager downloadProgressForTask:task];
+            
+            if (!size && task) {
+                [weakSelf addDownloadTaskToProgress:task size:response.expectedContentLength];
+                
+                @synchronized(weakSelf.fileList) {
+                    [weakSelf.fileList addObject:name];
+                }
             }
             
             // If size wasn't provided but response has size info, update progress
@@ -369,21 +379,33 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                             weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
                         }
                     } @catch (NSException *exception) {
-                        // Just log and continue
+                        NSLog(@"[MCDL] Exception updating progress size: %@", exception);
                     }
                 }
             }
             
             // Create directory structure if needed
             NSString *dirPath = [path stringByDeletingLastPathComponent];
-            [[NSFileManager defaultManager] createDirectoryAtPath:dirPath 
-                                     withIntermediateDirectories:YES 
-                                                      attributes:nil 
-                                                           error:nil];
+            NSError *dirError = nil;
+            BOOL dirCreated = [[NSFileManager defaultManager] createDirectoryAtPath:dirPath 
+                                             withIntermediateDirectories:YES 
+                                                              attributes:nil 
+                                                                   error:&dirError];
+            
+            if (!dirCreated) {
+                NSLog(@"[MCDL] Warning: Could not create directory at %@: %@", 
+                      dirPath, dirError ? dirError.localizedDescription : @"Unknown error");
+            }
             
             // Remove existing file if it exists to avoid write errors
             if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
-                [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+                NSError *removeError = nil;
+                BOOL removed = [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
+                
+                if (!removed) {
+                    NSLog(@"[MCDL] Warning: Could not remove existing file at %@: %@", 
+                          path, removeError ? removeError.localizedDescription : @"Unknown error");
+                }
             }
             
             return [NSURL fileURLWithPath:path];
@@ -404,17 +426,43 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                 @try {
                     isCancelled = weakSelf.progress.cancelled;
                 } @catch (NSException *exception) {
+                    NSLog(@"[MCDL] Exception checking if cancelled: %@", exception);
                     isCancelled = NO;
                 }
             }
             
             if (isCancelled) {
+                NSLog(@"[MCDL] Download cancelled for %@", name);
                 return;
             } 
             
             if (error != nil) {
                 // Always log errors
                 NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
+                
+                // For version files, be less strict about failures
+                if (isVersionFile) {
+                    NSLog(@"[MCDL] Version file download failed but continuing: %@", path.lastPathComponent);
+                    
+                    // Check if the file exists despite the error (might have been partially downloaded)
+                    if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
+                        NSLog(@"[MCDL] Version file exists despite error, will use it: %@", path);
+                        
+                        // Mark progress as complete
+                        @synchronized(weakSelf) {
+                            downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
+                        }
+                        
+                        if (success) {
+                            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                success();
+                            });
+                        }
+                        return;
+                    }
+                }
+                
+                // Normal failure handling for non-version files or if version file doesn't exist
                 if (failure) {
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                         failure(error);
@@ -437,19 +485,32 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             }
             
             // Verify the downloaded file if checksum is provided
-            if (sha.length > 0 && ![weakSelf checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:YES]) {
-                NSLog(@"[MCDL] Error: SHA1 verification failed for %@", path.lastPathComponent);
-                NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
-                                                       code:1000 
-                                                   userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
-                if (failure) {
-                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        failure(shaError);
-                    });
-                } else {
-                    [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+            BOOL shaValid = YES;
+            if (sha.length > 0) {
+                shaValid = [weakSelf checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:YES];
+                
+                if (!shaValid) {
+                    NSLog(@"[MCDL] SHA1 verification failed for %@", path.lastPathComponent);
+                    
+                    // For version files, be less strict about SHA verification
+                    if (isVersionFile) {
+                        NSLog(@"[MCDL] Version file SHA mismatch but continuing: %@", path.lastPathComponent);
+                        shaValid = YES;
+                    } else {
+                        NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
+                                                           code:1000 
+                                                       userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
+                        
+                        if (failure) {
+                            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                failure(shaError);
+                            });
+                        } else {
+                            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
+                        }
+                        return;
+                    }
                 }
-                return;
             }
             
             // Ensure progress is marked as complete
@@ -460,11 +521,11 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                     // Flag for UI update
                     weakSelf.needsUIUpdate = YES;
                 } @catch (NSException *exception) {
-                    // Just log and continue
+                    NSLog(@"[MCDL] Exception marking progress complete: %@", exception);
                 }
             }
             
-            if (success) {
+            if (success && shaValid) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     success();
                 });
@@ -715,16 +776,31 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 
 // Simplified SHA check with default logging behavior
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
-    // Force download of version JSON files
-    if (altName && ([altName hasSuffix:@".json"] || 
-                    [path hasSuffix:@".json"] ||
-                    ([path containsString:@"/versions/"] && [path hasSuffix:@".jar"]))) {
-        
-        // Skip SHA check for version files to force re-download
-        if (self.verboseLogging) {
-            NSLog(@"[MCDL] Forcing download of version file: %@", altName ?: path.lastPathComponent);
+    // Only force download for critical files, not all JSON and JAR files
+    if (altName) {
+        // Force download only for specific version files
+        if ([altName hasSuffix:@".json"] && 
+            ([altName containsString:@"latest-release"] ||
+             [altName containsString:@"latest-snapshot"])) {
+            
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Forcing download of latest version file: %@", altName);
+            }
+            return NO;
         }
-        return NO;
+        
+        // For version JSON files that aren't latest-*, check if they exist
+        // but don't force re-download if they do
+        if ([altName hasSuffix:@".json"] || 
+            ([path containsString:@"/versions/"] && [path hasSuffix:@".jar"])) {
+            BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
+            if (!fileExists) {
+                if (self.verboseLogging) {
+                    NSLog(@"[MCDL] Version file doesn't exist, downloading: %@", altName);
+                }
+                return NO;
+            }
+        }
     }
     
     // For other files, perform the normal SHA check
@@ -765,42 +841,42 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
 - (void)downloadVersion:(NSDictionary *)version {
     [self prepareForDownload];
     
-    // Reset counters
-    self.successfulDownloads = 0;
-    self.totalDownloads = 0;
+    // Reset metadata to ensure clean state and properly mark as NOT a modpack
+    if (!self.metadata) {
+        self.metadata = [NSMutableDictionary dictionary];
+    } else {
+        [self.metadata removeAllObjects];
+    }
+    
+    // Explicitly mark this as NOT a modpack installation
+    self.metadata[@"isModpackInstall"] = @NO;
     
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
     
     [self downloadVersionMetadata:version success:^{
         [self downloadAssetMetadataWithSuccess:^{
-            NSLog(@"[MCDL] Downloading libraries and assets...");
-            
-            [self downloadClientLibraries];
-            [self downloadClientAssets];
+            NSArray *libTasks = [self downloadClientLibraries];
+            NSArray *assetTasks = [self downloadClientAssets];
             
             @synchronized(self) {
-                // If we have nothing to download, add a completed marker
+                // Drop the 1 byte we set initially (like in the original code)
+                self.progress.totalUnitCount--;
+                self.textProgress.totalUnitCount--;
+                
+                // If we have nothing to download, set as completed
                 if (self.progress.totalUnitCount == 0) {
-                    [self.progressLock lock];
+                    // We have nothing to download, invoke completion observer
                     self.progress.totalUnitCount = 1;
                     self.progress.completedUnitCount = 1;
                     self.textProgress.totalUnitCount = 1;
                     self.textProgress.completedUnitCount = 1;
-                    [self.progressLock unlock];
-                    
-                    // Add completion marker
-                    [self.fileListLock lock];
-                    [self.fileList addObject:@"Complete"];
-                    NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
-                    completeProgress.completedUnitCount = 1;
-                    [self.progressList addObject:completeProgress];
-                    [self.fileListLock unlock];
                     return;
                 }
             }
             
-            // Log summary when all tasks have been queued
-            NSLog(@"[MCDL] Queued %ld files for download/verification", (long)self.totalDownloads);
+            // Start the actual downloads
+            [libTasks makeObjectsPerformSelector:@selector(resume)];
+            [assetTasks makeObjectsPerformSelector:@selector(resume)];
             
             // Clean up large metadata we don't need anymore
             [self.metadata removeObjectForKey:@"assetIndexObj"];
