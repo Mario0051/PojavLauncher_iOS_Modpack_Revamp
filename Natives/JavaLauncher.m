@@ -71,6 +71,67 @@ static BOOL validateJARFile(NSString *jarPath) {
     return YES;
 }
 
+// Function to detect Java major version
+static int getJavaMajorVersion(NSString *javaHome) {
+    NSString *versionFilePath = [javaHome stringByAppendingPathComponent:@"release"];
+    NSError *error = nil;
+    NSString *versionFileContent = [NSString stringWithContentsOfFile:versionFilePath 
+                                                            encoding:NSUTF8StringEncoding 
+                                                               error:&error];
+    if (error || !versionFileContent) {
+        LAUNCH_LOG(@"Warning: Unable to read Java version file, assuming Java 8");
+        return 8; // Default to Java 8 if can't detect
+    }
+    
+    // Extract JAVA_VERSION="x.y.z" or similar format
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"JAVA_VERSION=\"([0-9]+)(?:\\.[0-9]+)*\"" 
+                                                                          options:0 
+                                                                            error:nil];
+    NSTextCheckingResult *match = [regex firstMatchInString:versionFileContent 
+                                                    options:0 
+                                                      range:NSMakeRange(0, versionFileContent.length)];
+    
+    if (match && match.numberOfRanges > 1) {
+        NSRange versionRange = [match rangeAtIndex:1];
+        NSString *versionString = [versionFileContent substringWithRange:versionRange];
+        return versionString.intValue;
+    }
+    
+    // Try alternate format: JAVA_VERSION="1.8.0_xxx"
+    regex = [NSRegularExpression regularExpressionWithPattern:@"JAVA_VERSION=\"1\\.([0-9]+)\\." 
+                                                     options:0 
+                                                       error:nil];
+    match = [regex firstMatchInString:versionFileContent 
+                              options:0 
+                                range:NSMakeRange(0, versionFileContent.length)];
+    
+    if (match && match.numberOfRanges > 1) {
+        NSRange versionRange = [match rangeAtIndex:1];
+        NSString *versionString = [versionFileContent substringWithRange:versionRange];
+        return versionString.intValue;
+    }
+    
+    LAUNCH_LOG(@"Warning: Could not parse Java version, assuming Java 8");
+    return 8; // Default to Java 8 if can't parse
+}
+
+// Function to detect if a class exists in the classpath
+static BOOL doesClassExistInJarFile(NSString *jarPath, NSString *className) {
+    if (![fm fileExistsAtPath:jarPath]) {
+        return NO;
+    }
+    
+    // Convert className to path format (replace dots with slashes and add .class)
+    NSString *classPath = [className stringByReplacingOccurrencesOfString:@"." withString:@"/"];
+    classPath = [classPath stringByAppendingString:@".class"];
+    
+    // Use system command to check if the class exists in the JAR
+    NSString *command = [NSString stringWithFormat:@"zipinfo -1 \"%@\" | grep -q \"%@\"", jarPath, classPath];
+    int result = system([command UTF8String]);
+    
+    return (result == 0);
+}
+
 void init_loadDefaultEnv() {
     LAUNCH_LOG(@"Initializing default environment variables");
 
@@ -169,7 +230,14 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     NSString *gameDir;
     NSString *defaultJRETag;
     
+    // Flag to check if launching a Forge/NeoForge version
+    BOOL isForgeVersion = NO;
+    
     if ([launchTarget isKindOfClass:NSDictionary.class]) {
+        // Check if this is a Forge or NeoForge version
+        NSString *versionId = [launchTarget[@"id"] lowercaseString];
+        isForgeVersion = [versionId containsString:@"forge"] || [versionId containsString:@"neoforge"];
+        
         // Java version selection logic
         int preferredJavaVersion = [PLProfiles resolveKeyForCurrentProfile:@"javaVersion"].intValue;
         if (preferredJavaVersion > 0) {
@@ -211,6 +279,10 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         return 1;
     }
     
+    // Detect actual Java version
+    int javaMajorVersion = getJavaMajorVersion(javaHome);
+    LAUNCH_LOG(@"Detected Java major version: %d", javaMajorVersion);
+    
     // Symlink libawt_xawt.dylib for custom Java runtimes
     if ([javaHome hasPrefix:@(getenv("POJAV_HOME"))]) {
         NSString *dest = [NSString stringWithFormat:@"%@/lib/libawt_xawt.dylib", javaHome];
@@ -243,8 +315,16 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = [NSString stringWithFormat:@"%@/bin/java", javaHome].UTF8String;
     margv[++margc] = "-XstartOnFirstThread";
     
-    if (!launchJar) {
+    // Path to check for PojavClassLoader
+    NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
+    NSString *pojavLauncherJarPath = [NSString stringWithFormat:@"%@/pojavlauncher.jar", librariesPath];
+    
+    // Only add system class loader if Java version < 21 or if the class exists
+    BOOL hasPojavClassLoader = doesClassExistInJarFile(pojavLauncherJarPath, @"net.kdt.pojavlaunch.PojavClassLoader");
+    if (!launchJar && (javaMajorVersion < 21 || hasPojavClassLoader)) {
         margv[++margc] = "-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader";
+    } else if (!launchJar && javaMajorVersion >= 21) {
+        LAUNCH_LOG(@"Skipping custom system class loader for Java 21+");
     }
     
     // Memory settings
@@ -276,7 +356,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     }
     
     // Java agents
-    NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
     margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath].UTF8String;
     
     if (getPrefBool(@"general.cosmetica")) {
@@ -341,8 +420,10 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED";
         margv[++margc] = "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED";
 
-        // TODO: workaround, will be removed once the startup part works without PLaunchApp
-        margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
+        // Only add bootstraplauncher exports if we're launching Forge/NeoForge AND Java version < 21
+        if (isForgeVersion && javaMajorVersion < 21) {
+            margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
+        }
     }
 
     // Add Caciocavallo bootclasspath
