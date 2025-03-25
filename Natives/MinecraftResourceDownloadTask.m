@@ -870,17 +870,18 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         }
         
-        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&jsonError];
+        // Use NSJSONReadingMutableContainers to ensure we get a mutable dictionary/array
+        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:NSJSONReadingMutableContainers error:&jsonError];
         if (!jsonObject || jsonError) {
             NSLog(@"[MCDL] Error parsing version JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format");
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing version JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format"]];
             return;
         }
         
-        // Convert to mutable dictionary
+        // Convert to mutable dictionary if it isn't already
         NSMutableDictionary *parsedJson;
         if ([jsonObject isKindOfClass:[NSDictionary class]]) {
-            parsedJson = [jsonObject mutableCopy];
+            parsedJson = [jsonObject mutableCopy]; // Make sure we have a mutable copy
         } else {
             NSLog(@"[MCDL] Error: Version JSON is not a dictionary");
             [weakSelf finishDownloadWithErrorString:@"Invalid version JSON format (not a dictionary)"];
@@ -908,19 +909,19 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                 return;
             }
             
-            // Parse parent JSON
+            // Parse parent JSON - also using mutable containers
             NSError *parentJsonError = nil;
-            id parentJsonObject = [NSJSONSerialization JSONObjectWithData:parentData options:0 error:&parentJsonError];
+            id parentJsonObject = [NSJSONSerialization JSONObjectWithData:parentData options:NSJSONReadingMutableContainers error:&parentJsonError];
             if (!parentJsonObject || parentJsonError) {
                 NSLog(@"[MCDL] Error parsing parent JSON: %@", parentJsonError ? parentJsonError.localizedDescription : @"Invalid JSON format");
                 [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing parent JSON: %@", parentJsonError ? parentJsonError.localizedDescription : @"Invalid JSON format"]];
                 return;
             }
             
-            // Convert to mutable dictionary
+            // Convert to mutable dictionary if it isn't already
             NSMutableDictionary *parentJson;
             if ([parentJsonObject isKindOfClass:[NSDictionary class]]) {
-                parentJson = [parentJsonObject mutableCopy];
+                parentJson = [parentJsonObject mutableCopy]; // Ensure we have a mutable copy
                 [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:parentJson];
                 
                 // Update metadata safely
@@ -954,9 +955,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         }
         
-        // Parse the JSON safely
+        // Parse the JSON safely - using mutable containers
         NSError *jsonError = nil;
-        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&jsonError];
+        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:NSJSONReadingMutableContainers error:&jsonError];
         if (!jsonObject || jsonError) {
             [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to parse version JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format"]];
             return;
@@ -967,7 +968,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         }
         
-        NSMutableDictionary *json = [jsonObject mutableCopy];
+        NSMutableDictionary *json = [jsonObject mutableCopy]; // Ensure we have a mutable copy
         
         if (json[@"inheritsFrom"]) {
             NSLog(@"[MCDL] Local version inherits from: %@", json[@"inheritsFrom"]);
@@ -1068,7 +1069,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         }
         
-        // Parse the JSON safely
+        // Parse the JSON safely with mutable containers
         NSError *jsonError = nil;
         NSData *jsonData = [NSData dataWithContentsOfFile:localPath options:NSDataReadingMappedIfSafe error:&jsonError];
         if (!jsonData || jsonError) {
@@ -1077,16 +1078,20 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
             return;
         }
         
-        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&jsonError];
+        id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData options:NSJSONReadingMutableContainers error:&jsonError];
         if (!jsonObject || jsonError) {
             NSLog(@"[MCDL] Error parsing asset index JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format");
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing asset index JSON: %@", jsonError ? jsonError.localizedDescription : @"Invalid JSON format"]];
             return;
         }
         
-        // Set asset index object safely
+        // Set asset index object safely - ensure it's mutable if needed
         @synchronized(weakSelf) {
-            weakSelf.metadata[@"assetIndexObj"] = jsonObject;
+            if ([jsonObject isKindOfClass:[NSDictionary class]]) {
+                weakSelf.metadata[@"assetIndexObj"] = [jsonObject mutableCopy];
+            } else {
+                weakSelf.metadata[@"assetIndexObj"] = jsonObject;
+            }
         }
         
         // Call success callback
