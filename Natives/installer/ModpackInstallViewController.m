@@ -694,15 +694,18 @@
         if (isActive != self.isSearchActive) {
             self.isSearchActive = isActive;
             
+            // Reset any pagination flags when toggling search
+            self.isLoadingMoreResults = NO;
+            
             if (isActive) {
                 // When search becomes active, create unified search results
                 [self updateUnifiedSearchResults];
-            } else {
-                // When search is dismissed, reload table to restore category view
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [self.tableView reloadData];
-                });
             }
+            
+            // Always reload the table view to ensure consistency
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.tableView reloadData];
+            });
         }
     } else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
@@ -710,6 +713,56 @@
 }
 
 #pragma mark - Action Methods
+
+- (void)appendToUnifiedSearchResults:(NSArray *)newResults {
+    // Validate input to prevent crashes
+    if (!newResults || ![newResults isKindOfClass:[NSArray class]]) {
+        NSLog(@"[ModpackInstall] Warning: appendToUnifiedSearchResults called with invalid array");
+        return;
+    }
+    
+    [self.dataLock lock];
+    
+    // Create a set of existing IDs to avoid duplicates
+    NSMutableSet *existingIds = [NSMutableSet set];
+    for (NSDictionary *modpack in self.unifiedSearchResults) {
+        if ([modpack isKindOfClass:[NSDictionary class]] && modpack[@"id"]) {
+            [existingIds addObject:modpack[@"id"]];
+        }
+    }
+    
+    // Create copies of filter criteria to avoid race conditions
+    NSString *searchTextCopy = [self.searchText copy];
+    NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
+    
+    // Only add modpacks that match our current filters and aren't duplicates
+    for (id modpackObj in newResults) {
+        if (![modpackObj isKindOfClass:[NSDictionary class]]) continue;
+        
+        NSDictionary *modpack = (NSDictionary *)modpackObj;
+        NSString *modpackId = modpack[@"id"];
+        
+        // Skip if already in results
+        if (modpackId && [existingIds containsObject:modpackId]) continue;
+        
+        // Check if matches current filters
+        BOOL matchesFilters = [self modpack:modpack matchesSearchText:searchTextCopy andTags:activeTagFiltersCopy];
+        
+        if (matchesFilters) {
+            [self.unifiedSearchResults addObject:modpack];
+            if (modpackId) {
+                [existingIds addObject:modpackId];
+            }
+        }
+    }
+    
+    // Sort results by relevance if search text is active
+    if (searchTextCopy.length > 0) {
+        [self sortUnifiedResultsByRelevance:searchTextCopy];
+    }
+    
+    [self.dataLock unlock];
+}
 
 - (void)refreshModpacks {
     // Reset any active filters that might have been applied
@@ -1017,16 +1070,25 @@
             self.hasMoreResults = hasMoreItems;
             
             // Ensure we haven't lost the search state during the background operation
-            // Only proceed with updates if current state matches the one we had when we started
             BOOL currentlySearchActive = self.isSearchActive;
             
             if (newResults) {
-                // If we're not appending, reorganize completely
                 if (!prevList) {
+                    // For a fresh search, reorganize completely
                     [self organizeModpacksByCategory:newResults];
+                    
+                    // In search mode, also update unified search results
+                    if (currentlySearchActive) {
+                        [self updateUnifiedSearchResults];
+                    }
                 } else {
-                    // If appending, just update our existing organization
+                    // For pagination, carefully append to existing results
                     [self updateOrganizedModpacks:newResults];
+                    
+                    // In search mode, append to unified search results without rebuilding
+                    if (currentlySearchActive) {
+                        [self appendToUnifiedSearchResults:newResults];
+                    }
                 }
             } else {
                 // Handle error - but still set up an empty state with categories
@@ -1042,41 +1104,13 @@
                 }
             }
             
-            // Always update unified search results if search is active
-            // This ensures the unified search results are properly populated
-            if (wasSearchActive || currentlySearchActive) {
-                [self updateUnifiedSearchResults];
-            }
-            
             // Always reset loading state and update UI
             self.isLoadingMoreResults = NO;
             [self switchToReadyState];
             
-            // Reload with animations only if this is an append operation
-            if (prevList) {
-                // Calculate the insertion point for new rows
-                NSInteger firstNewRowIndex = prevResults.count;
-                NSInteger numberOfNewRows = self.unifiedSearchResults.count - firstNewRowIndex;
-                
-                if (numberOfNewRows > 0 && currentlySearchActive) {
-                    // Create indexPaths for new rows
-                    NSMutableArray *newIndexPaths = [NSMutableArray arrayWithCapacity:numberOfNewRows];
-                    for (NSInteger i = firstNewRowIndex; i < self.unifiedSearchResults.count; i++) {
-                        [newIndexPaths addObject:[NSIndexPath indexPathForRow:i inSection:0]];
-                    }
-                    
-                    // Insert rows with animation
-                    [self.tableView beginUpdates];
-                    [self.tableView insertRowsAtIndexPaths:newIndexPaths withRowAnimation:UITableViewRowAnimationAutomatic];
-                    [self.tableView endUpdates];
-                } else {
-                    // Fall back to full reload if there's an issue
-                    [self.tableView reloadData];
-                }
-            } else {
-                // Full reload for initial data
-                [self.tableView reloadData];
-            }
+            // CRITICAL FIX: Always do a full reload to ensure consistency
+            // This avoids the race conditions that cause UI bugs with partial updates
+            [self.tableView reloadData];
         });
     });
 }
@@ -1090,17 +1124,32 @@
     // Set loading flag first to prevent multiple concurrent loads
     self.isLoadingMoreResults = YES;
     
+    // Create a unique identifier for this load operation
+    static NSInteger loadOperationCounter = 0;
+    NSInteger currentLoadOperation = ++loadOperationCounter;
+    
+    // Store the operation ID to track completions
+    objc_setAssociatedObject(self, @"currentLoadOperation", @(currentLoadOperation), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
     // Use a weak reference to self to prevent retain cycles
     __weak typeof(self) weakSelf = self;
     
     // Set a timeout to reset loading state if the request takes too long
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (weakSelf.isLoadingMoreResults) {
+        // Only reset if this is still the current operation
+        NSNumber *storedOpId = objc_getAssociatedObject(weakSelf, @"currentLoadOperation");
+        if (storedOpId && [storedOpId integerValue] == currentLoadOperation && weakSelf.isLoadingMoreResults) {
             weakSelf.isLoadingMoreResults = NO;
-            NSLog(@"[ModpackInstall] Warning: Loading more results timed out");
+            NSLog(@"[ModpackInstall] Warning: Loading more results timed out (operation %ld)", (long)currentLoadOperation);
+            
+            // Refresh UI in case of timeout
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf.tableView reloadData];
+            });
         }
     });
     
+    // Start loading more results
     [self loadSearchResultsWithPrevList:YES];
 }
 
@@ -1633,7 +1682,17 @@
     
     // Debounce the search to prevent excessive updates while typing
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(updateUnifiedSearchResults) object:nil];
-    [self performSelector:@selector(updateUnifiedSearchResults) withObject:nil afterDelay:0.5];
+    [self performSelector:@selector(updateSearchAndRefreshUI) withObject:nil afterDelay:0.5];
+}
+
+- (void)updateSearchAndRefreshUI {
+    // First rebuild the unified search results
+    [self updateUnifiedSearchResults];
+    
+    // Then update the UI on the main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.tableView reloadData];
+    });
 }
 
 #pragma mark - UIScrollViewDelegate
