@@ -8,14 +8,6 @@
 static void *CellProgressObserverContext = &CellProgressObserverContext;
 static void *TotalProgressObserverContext = &TotalProgressObserverContext;
 
-// Task types for better UI presentation
-typedef NS_ENUM(NSInteger, DownloadTaskType) {
-    DownloadTaskTypeFile = 0,
-    DownloadTaskTypeExtraction = 1,
-    DownloadTaskTypeSetup = 2,
-    DownloadTaskTypeComplete = 3
-};
-
 @interface DownloadProgressViewController ()
 @property NSInteger fileListCount;
 @property (nonatomic, strong) UILabel *statusLabel;
@@ -25,7 +17,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 @property (nonatomic, strong) NSMutableArray *filteredFileList;
 @property (nonatomic, strong) NSString *lastCompletedFile; // Track the most recently completed file
 @property (nonatomic, strong) NSSet *visibleIndexPaths; // Track visible cells for targeted updates
-@property (nonatomic, assign) BOOL needsFullTableReload; // Flag for tracking when full reload is needed
 @end
 
 @implementation DownloadProgressViewController
@@ -39,11 +30,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         self.lastCompletedFile = nil; // Initialize last completed file to nil
         self.visibleIndexPaths = [NSSet set]; // Initialize with empty set
         self.needsFullTableReload = NO;
-        
-        // Initialize download speed tracking properties
-        self.lastBytesCompleted = 0;
-        self.lastSpeedUpdateTime = nil;
-        self.currentSpeed = 0;
         
         // Register for progress updates from MinecraftResourceDownloadTask
         [[NSNotificationCenter defaultCenter] addObserver:self
@@ -140,7 +126,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         [_overallProgressView.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
         [_overallProgressView.heightAnchor constraintEqualToConstant:4],
         
-        // Percentage Label - make it wider to accommodate download speed display
+        // Percentage Label - make it wider to accommodate display
         [percentLabel.topAnchor constraintEqualToAnchor:_overallProgressView.bottomAnchor constant:4],
         [percentLabel.leadingAnchor constraintEqualToAnchor:headerContainer.leadingAnchor constant:16],
         [percentLabel.trailingAnchor constraintEqualToAnchor:headerContainer.trailingAnchor constant:-16],
@@ -187,11 +173,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         // Update overall progress view with current progress
         self.overallProgressView.observedProgress = self.task.textProgress;
     }
-    
-    // Reset speed tracking values when view appears
-    self.lastBytesCompleted = self.task.progress.completedUnitCount;
-    self.lastSpeedUpdateTime = [NSDate date];
-    self.currentSpeed = 0;
     
     // Setup a refresh timer to periodically update the UI at a controlled rate
     // This helps with smoother updates when individual operations are taking a long time
@@ -320,80 +301,25 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     }];
 }
 
-
 - (void)refreshProgressUI {
-    // Static variables for maintaining speed display between calls
-    static double lastNonZeroSpeed = 0;
-    static BOOL hasStartedDownloading = NO;
-    
     // Update overall progress for the header
     if (self.task.progress && self.task.progress.totalUnitCount > 0) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Calculate download speed
-            NSDate *now = [NSDate date];
-            
-            if (self.lastSpeedUpdateTime) {
-                // Get the time interval since the last update
-                NSTimeInterval interval = [now timeIntervalSinceDate:self.lastSpeedUpdateTime];
-                
-                if (interval >= 0.5) { // Only update speed every 0.5 seconds to avoid fluctuations
-                    int64_t currentBytesCompleted = self.task.progress.completedUnitCount;
-                    int64_t bytesDownloadedSinceLastUpdate = currentBytesCompleted - self.lastBytesCompleted;
-                    
-                    // Only update if we've actually downloaded something
-                    if (bytesDownloadedSinceLastUpdate > 0) {
-                        // Calculate speed in bytes per second
-                        self.currentSpeed = (double)bytesDownloadedSinceLastUpdate / interval;
-                        
-                        // Store current values for next calculation
-                        self.lastBytesCompleted = currentBytesCompleted;
-                        self.lastSpeedUpdateTime = now;
-                    }
-                }
-            } else {
-                // First time updating, initialize tracking values
-                self.lastBytesCompleted = self.task.progress.completedUnitCount;
-                self.lastSpeedUpdateTime = now;
-                self.currentSpeed = 0;
-            }
-            
             // Update overall progress with stable value
             float fraction = self.task.progress.fractionCompleted;
             self.overallProgressView.progress = fraction;
             
-            // Format download speed - always show speed once we've started downloading
-            NSString *speedText = @"";
-            
-            // Keep showing speed even when current value is 0 (for slow periods)
-            if (self.currentSpeed > 0) {
-                // Save the last non-zero speed
-                lastNonZeroSpeed = self.currentSpeed;
-                hasStartedDownloading = YES;
-            }
-            
-            // Format either current speed or last known non-zero speed
-            double speedToDisplay = (self.currentSpeed > 0) ? self.currentSpeed : lastNonZeroSpeed;
-            
-            if (hasStartedDownloading) {
-                if (speedToDisplay < 1024) {
-                    speedText = [NSString stringWithFormat:@" - %.0f B/s", speedToDisplay];
-                } else if (speedToDisplay < 1024 * 1024) {
-                    speedText = [NSString stringWithFormat:@" - %.1f KB/s", speedToDisplay / 1024.0];
-                } else {
-                    speedText = [NSString stringWithFormat:@" - %.2f MB/s", speedToDisplay / (1024.0 * 1024.0)];
-                }
-            }
-            
-            // Update percentage label with speed
+            // Update percentage label - without speed
             UILabel *percentLabel = objc_getAssociatedObject(self.overallProgressView, @"percentLabel");
             int percentage = (int)(fraction * 100);
             
             // Store last percentage to avoid unnecessary updates
             static int lastDisplayedPercentage = -1;
-            // Always update if percentage changed or if we need to show/update speed
-            if (percentage != lastDisplayedPercentage || hasStartedDownloading) {
+            
+            // Update only if percentage changed
+            if (percentage != lastDisplayedPercentage) {
                 lastDisplayedPercentage = percentage;
-                percentLabel.text = [NSString stringWithFormat:@"%d%%%@", percentage, speedText];
+                percentLabel.text = [NSString stringWithFormat:@"%d%%", percentage];
             }
         });
     }
@@ -444,10 +370,6 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Also check if progress is complete
     if (self.task.progress.fractionCompleted >= 1.0 || self.task.progress.finished) {
         isComplete = YES;
-        
-        // If complete, reset the download speed tracking
-        hasStartedDownloading = NO;
-        lastNonZeroSpeed = 0;
     }
     
     // If complete, ensure UI reflects this
@@ -470,13 +392,30 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
 }
 
 - (void)reloadTableViewPreservingOffset {
-    // Save current scroll position
+    // Save current scroll position and content size
     CGPoint contentOffset = self.tableView.contentOffset;
+    CGSize contentSize = self.tableView.contentSize;
     
-    // Reload data
+    // Reload data with animation disabled to prevent flickering
+    [UIView setAnimationsEnabled:NO];
     [self.tableView reloadData];
+    [UIView setAnimationsEnabled:YES];
     
-    // Restore scroll position
+    // After reload, check if content size changed significantly
+    CGFloat heightDifference = self.tableView.contentSize.height - contentSize.height;
+    
+    // If content got taller but we're already scrolled near the bottom,
+    // adjust offset to maintain relative position from bottom
+    if (heightDifference > 0 && 
+        contentOffset.y > (contentSize.height - self.tableView.frame.size.height - 100)) {
+        contentOffset.y += heightDifference;
+    }
+    
+    // Restore scroll position safely (make sure it's within bounds)
+    contentOffset.y = MIN(MAX(contentOffset.y, 0), 
+                          MAX(0, self.tableView.contentSize.height - self.tableView.frame.size.height));
+    
+    // Apply the adjusted content offset
     [self.tableView setContentOffset:contentOffset animated:NO];
 }
 
@@ -486,12 +425,19 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     NSArray *visiblePaths = [self.tableView indexPathsForVisibleRows];
     if (!visiblePaths) return;
     
+    // Create a dictionary to track cells we've already updated this cycle
+    NSMutableDictionary *updatedCells = [NSMutableDictionary dictionary];
+    
     self.visibleIndexPaths = [NSSet setWithArray:visiblePaths];
     
     for (NSIndexPath *indexPath in visiblePaths) {
         if (indexPath.row < self.filteredFileList.count) {
             UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
             if (!cell) continue;
+            
+            // Check if we've already updated this cell in this cycle
+            NSString *cellIdentifier = [NSString stringWithFormat:@"%ld", (long)indexPath.row];
+            if (updatedCells[cellIdentifier]) continue;
             
             NSString *fileName = self.filteredFileList[indexPath.row];
             
@@ -515,6 +461,7 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 
                 if (progress) {
                     [self updateCell:cell withProgress:progress forIndexPath:indexPath];
+                    updatedCells[cellIdentifier] = @YES;
                 }
             }
         }
@@ -606,6 +553,17 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                   [NSString stringWithFormat:@"%d%%", (int)(fractionCompleted * 100)];
     }
     
+    // Get a unique identifier for this cell+file combination to avoid duplicate updates
+    NSString *cellUpdateKey = [NSString stringWithFormat:@"%@_%ld", fileName, (long)indexPath.row];
+    NSNumber *lastUpdateTimeObj = objc_getAssociatedObject(cell, "lastUpdateTime");
+    NSTimeInterval lastUpdateTime = lastUpdateTimeObj ? [lastUpdateTimeObj doubleValue] : 0;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    
+    // Limit update frequency for this cell to reduce flickering (max 5 updates per second)
+    if (now - lastUpdateTime < 0.2) {
+        return;
+    }
+    
     // Update detail text
     cell.detailTextLabel.text = sizeText;
     
@@ -673,6 +631,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             objc_setAssociatedObject(cell, @"lastPercentage", @(0), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     }
+    
+    // Track the last update time to throttle updates
+    objc_setAssociatedObject(cell, "lastUpdateTime", @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 - (void)actionClose {
@@ -734,8 +695,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         // Cap updates to avoid UI thrashing
         static NSTimeInterval lastCellUpdate = 0;
         NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - lastCellUpdate < 0.1) {
-            // Throttle updates to max 10 per second
+        if (now - lastCellUpdate < 0.2) {
+            // Throttle updates to max 5 per second
             return;
         }
         lastCellUpdate = now;
@@ -782,6 +743,8 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
                 // Only update if we found the file in our filtered list and the cell is visible
                 if (filteredIndex != NSNotFound) {
                     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:filteredIndex inSection:0];
+                    
+                    // Check if cell is visible before attempting update
                     if ([self.visibleIndexPaths containsObject:indexPath]) {
                         UITableViewCell *visibleCell = [self.tableView cellForRowAtIndexPath:indexPath];
                         if (visibleCell) {
@@ -794,21 +757,18 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     } else if (context == TotalProgressObserverContext) {
         // Cap update rate and store last values to prevent flickering
         static NSTimeInterval lastHeaderUpdate = 0;
-        static int64_t lastCompletedBytes = 0;
         static int lastPercentage = -1;
         
         NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-        if (now - lastHeaderUpdate < 0.2) {
-            // Throttle updates to max 5 per second for header
+        if (now - lastHeaderUpdate < 0.5) {
+            // Throttle updates to max 2 per second for header
             return;
         }
         
         // Get current values before update to prevent race conditions
-        int64_t currentCompletedBytes = 0;
         int currentPercentage = 0;
         
         @try {
-            currentCompletedBytes = progress.completedUnitCount;
             currentPercentage = (int)(progress.fractionCompleted * 100);
             
             // Ensure percentage is valid
@@ -819,10 +779,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
             return;
         }
         
-        // Only update if there is a meaningful change
-        if (currentCompletedBytes != lastCompletedBytes || currentPercentage != lastPercentage) {
+        // Only update if there is a meaningful change in percentage
+        if (currentPercentage != lastPercentage) {
             lastHeaderUpdate = now;
-            lastCompletedBytes = currentCompletedBytes;
             lastPercentage = currentPercentage;
             
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -922,6 +881,9 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
     // Set cell text to just the filename (not the full path)
     cell.textLabel.text = [fileName lastPathComponent];
     
+    // Associate the cell with its indexPath for quick reference
+    objc_setAssociatedObject(cell, @"indexPath", indexPath, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
     // Remove any previous associations when cell is reused
     NSProgress *oldProgress = objc_getAssociatedObject(cell, @"progress");
     if (oldProgress) {
@@ -979,6 +941,10 @@ typedef NS_ENUM(NSInteger, DownloadTaskType) {
         objc_setAssociatedObject(cell, @"progress", progress, OBJC_ASSOCIATION_ASSIGN);
         objc_setAssociatedObject(progress, @"cell", cell, OBJC_ASSOCIATION_ASSIGN);
     }
+    
+    // Generate unique cell ID for this update
+    NSString *cellUpdateKey = [NSString stringWithFormat:@"%@_%ld", fileName, (long)indexPath.row];
+    objc_setAssociatedObject(cell, @"cellUpdateKey", cellUpdateKey, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     
     // Update the cell with the latest progress information
     if (progress) {
