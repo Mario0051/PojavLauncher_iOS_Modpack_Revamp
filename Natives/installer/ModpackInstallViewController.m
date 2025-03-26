@@ -1751,10 +1751,11 @@
         });
     }
     
-    // Create a dispatch group to manage the async operation
+    // Create a dispatch group to track completion
     dispatch_group_t loadGroup = dispatch_group_create();
     dispatch_group_enter(loadGroup);
     
+    // Perform the search in background
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Create a copy of filters for this search
         NSMutableDictionary *searchFilters;
@@ -1781,6 +1782,7 @@
         // Update pagination status
         BOOL hasMoreItems = !self.modrinth.reachedLastPage;
         
+        // Update UI on main thread, but don't block waiting for it
         dispatch_async(dispatch_get_main_queue(), ^{
             // Update pagination status
             self.hasMoreResults = hasMoreItems;
@@ -1827,12 +1829,28 @@
             // Critical: Always do a full reload for consistency
             [self.tableView reloadData];
             
+            // Leave the dispatch group
             dispatch_group_leave(loadGroup);
         });
     });
     
-    // Set a timeout to prevent hanging if the search takes too long
-    dispatch_group_wait(loadGroup, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+    // Set a timeout for the background operation, but don't block the main thread
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Check if the group is still executing
+        long result = dispatch_group_wait(loadGroup, DISPATCH_TIME_NOW);
+        if (result != 0) {
+            // The operation is still running after timeout - cancel it
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (self.isDataLoading) {
+                    [self switchToReadyState];
+                    showDialog(localize(@"Error", nil), @"Loading timed out. Please try again.");
+                    
+                    // Ensure we leave the dispatch group
+                    dispatch_group_leave(loadGroup);
+                }
+            });
+        }
+    });
 }
 
 - (void)loadMoreResults {
