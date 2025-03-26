@@ -714,69 +714,75 @@
 
 #pragma mark - Action Methods
 
-- (void)appendToUnifiedSearchResults:(NSArray *)newResults {
-    // Validate input to prevent crashes
-    if (!newResults || ![newResults isKindOfClass:[NSArray class]]) {
-        NSLog(@"[ModpackInstall] Warning: appendToUnifiedSearchResults called with invalid array");
-        return;
-    }
+- (void)sortUnifiedResultsByRelevance:(NSString *)searchText inArray:(NSMutableArray *)arrayToSort {
+    // Convert search text to lowercase once for efficiency
+    NSString *lowercaseSearchText = [searchText lowercaseString];
     
-    // Skip processing if there are no new results
-    if (newResults.count == 0) {
-        return;
-    }
-    
-    // Create copies of search criteria for thread safety
-    NSString *searchTextCopy = [self.searchText copy];
-    NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
-    
-    [self.dataLock lock];
-    
-    // Create a set of existing IDs for efficient duplicate checking
-    NSMutableSet *existingIds = [NSMutableSet set];
-    for (NSDictionary *modpack in self.unifiedSearchResults) {
-        if ([modpack isKindOfClass:[NSDictionary class]] && modpack[@"id"]) {
-            [existingIds addObject:modpack[@"id"]];
-        }
-    }
-    
-    // Filter and add new modpacks that match search criteria
-    BOOL needsResort = NO;
-    for (id modpackObj in newResults) {
-        if (![modpackObj isKindOfClass:[NSDictionary class]]) continue;
+    [arrayToSort sortUsingComparator:^NSComparisonResult(NSDictionary *obj1, NSDictionary *obj2) {
+        // Extract titles and perform quick comparison - avoiding unnecessary string operations
+        NSString *title1 = obj1[@"title"] ?: @"";
+        NSString *title2 = obj2[@"title"] ?: @"";
         
-        NSDictionary *modpack = (NSDictionary *)modpackObj;
-        NSString *modpackId = modpack[@"id"];
+        // Use cached lowercase versions for multiple comparisons
+        NSString *lowercaseTitle1 = [title1 lowercaseString];
+        NSString *lowercaseTitle2 = [title2 lowercaseString];
         
-        // Skip duplicates more efficiently
-        if (modpackId && [existingIds containsObject:modpackId]) {
-            continue;
-        }
+        // Quick exact match check
+        BOOL isExactMatch1 = [lowercaseTitle1 isEqualToString:lowercaseSearchText];
+        BOOL isExactMatch2 = [lowercaseTitle2 isEqualToString:lowercaseSearchText];
         
-        // Check against current filters
-        BOOL matchesFilters = [self modpack:modpack matchesSearchText:searchTextCopy andTags:activeTagFiltersCopy];
+        if (isExactMatch1 && !isExactMatch2) return NSOrderedAscending;
+        if (!isExactMatch1 && isExactMatch2) return NSOrderedDescending;
         
-        if (matchesFilters) {
-            [self.unifiedSearchResults addObject:modpack];
-            needsResort = YES;
-            
-            // Track this ID
-            if (modpackId) {
-                [existingIds addObject:modpackId];
+        // Faster prefix check
+        BOOL isPrefixMatch1 = [lowercaseTitle1 hasPrefix:lowercaseSearchText];
+        BOOL isPrefixMatch2 = [lowercaseTitle2 hasPrefix:lowercaseSearchText];
+        
+        if (isPrefixMatch1 && !isPrefixMatch2) return NSOrderedAscending;
+        if (!isPrefixMatch1 && isPrefixMatch2) return NSOrderedDescending;
+        
+        // Contains check
+        BOOL containsMatch1 = [lowercaseTitle1 containsString:lowercaseSearchText];
+        BOOL containsMatch2 = [lowercaseTitle2 containsString:lowercaseSearchText];
+        
+        if (containsMatch1 && !containsMatch2) return NSOrderedAscending;
+        if (!containsMatch1 && containsMatch2) return NSOrderedDescending;
+        
+        // Category check - only if needed
+        BOOL hasInCategories1 = NO;
+        BOOL hasInCategories2 = NO;
+        
+        // Only check categories if needed (avoid unnecessary iteration)
+        if (!containsMatch1 || !containsMatch2) {
+            NSArray *categories1 = obj1[@"categories"];
+            if ([categories1 isKindOfClass:[NSArray class]]) {
+                for (NSString *category in categories1) {
+                    if ([[category lowercaseString] containsString:lowercaseSearchText]) {
+                        hasInCategories1 = YES;
+                        break;
+                    }
+                }
             }
+            
+            NSArray *categories2 = obj2[@"categories"];
+            if ([categories2 isKindOfClass:[NSArray class]]) {
+                for (NSString *category in categories2) {
+                    if ([[category lowercaseString] containsString:lowercaseSearchText]) {
+                        hasInCategories2 = YES;
+                        break;
+                    }
+                }
+            }
+            
+            if (hasInCategories1 && !hasInCategories2) return NSOrderedAscending;
+            if (!hasInCategories1 && hasInCategories2) return NSOrderedDescending;
         }
-    }
-    
-    // Only resort if needed and if we have search text
-    if (needsResort && searchTextCopy.length > 0) {
-        [self sortUnifiedResultsByRelevance:searchTextCopy inArray:self.unifiedSearchResults];
-    }
-    
-    [self.dataLock unlock];
-    
-    // Flag UI for update
-    self.needsUIUpdate = YES;
+        
+        // Alphabetical sort as last resort
+        return [title1 localizedCaseInsensitiveCompare:title2];
+    }];
 }
+
 
 
 - (BOOL)modpack:(NSDictionary *)modpack matchesSearchText:(NSString *)searchText andTags:(NSSet *)tagFilters {
