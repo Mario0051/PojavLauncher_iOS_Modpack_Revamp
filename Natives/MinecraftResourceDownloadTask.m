@@ -16,6 +16,14 @@
 static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
 static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent downloads
 
+typedef struct {
+    NSString *path;
+    NSString *sha;
+    NSString *altName;
+    NSString *url;
+    NSUInteger size;
+} VerificationItem;
+
 @interface MinecraftResourceDownloadTask ()
 @property(nonatomic, readwrite) AFURLSessionManager* manager;
 @property(nonatomic, strong) NSLock *progressLock; // Lock for synchronizing progress updates
@@ -45,6 +53,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         self.fileList = [NSMutableArray new];
         self.progressList = [NSMutableArray new];
         self.pendingDownloads = [NSMutableArray new];
+        self.pendingVerificationList = [NSMutableArray new];
         self.activeDownloads = 0;
         
         // Initialize lock objects for thread safety
@@ -68,6 +77,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         self.successfulDownloads = 0;
         self.totalDownloads = 0;
         self.verboseLogging = getPrefBool(@"general.debug_logging");
+        
+        // Initialize verification flag
+        self.deferSHAVerification = !getPrefBool(@"general.check_sha");
         
         // Setup timer for batched UI updates with lower frequency
         self.needsUIUpdate = NO;
@@ -138,8 +150,16 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         self.activeDownloads = 0;
     }
     
+    // Reset verification list
+    @synchronized(self.pendingVerificationList) {
+        [self.pendingVerificationList removeAllObjects];
+    }
+    
     // Flag that UI update is needed
     self.needsUIUpdate = YES;
+    
+    // Check if we should defer SHA verification
+    self.deferSHAVerification = !getPrefBool(@"general.check_sha");
 }
 
 - (void)processNextDownloadInQueue {
@@ -215,7 +235,7 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
         // Track total downloads
         self.totalDownloads++;
         
-        // Check if file already exists and has correct SHA1 - with quick return
+        // Check if file already exists
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
         
         // Special handling for version files
@@ -227,7 +247,11 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                                   ([altName containsString:@"latest-release"] || 
                                    [altName containsString:@"latest-snapshot"]));
 
-        if (!isLatestVersionFile && fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+        // Determine if we should verify SHA now or defer it
+        BOOL shouldVerifyNow = !self.deferSHAVerification || isVersionFile || isLatestVersionFile;
+        
+        if (shouldVerifyNow && fileExists && sha && sha.length > 0 && 
+            [self checkSHA:sha forFile:path altName:altName]) {
             // Increment successful downloads counter
             self.successfulDownloads++;
             
@@ -247,6 +271,21 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                     success();
                     
                     // Mark as needing UI update
+                    self.needsUIUpdate = YES;
+                });
+            }
+            return nil;
+        } else if (fileExists && self.deferSHAVerification && sha && sha.length > 0) {
+            // File exists, but we're deferring SHA verification
+            // Add to verification list for later checking
+            [self addFileToVerificationList:path sha:sha altName:altName url:url size:size];
+            
+            // Count as successful for UI purposes (will be verified later)
+            self.successfulDownloads++;
+            
+            if (success) {
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    success();
                     self.needsUIUpdate = YES;
                 });
             }
@@ -496,9 +535,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                       (long)weakSelf.successfulDownloads, (long)weakSelf.totalDownloads);
             }
             
-            // Verify the downloaded file if checksum is provided
+            // Verify the downloaded file if checksum is provided and we're not deferring verification
             BOOL shaValid = YES;
-            if (sha.length > 0) {
+            if (sha.length > 0 && !weakSelf.deferSHAVerification) {
                 shaValid = [weakSelf checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:YES];
                 
                 if (!shaValid) {
@@ -523,6 +562,9 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                         return;
                     }
                 }
+            } else if (sha.length > 0 && weakSelf.deferSHAVerification) {
+                // Add to verification list for later checking
+                [weakSelf addFileToVerificationList:path sha:sha altName:altName url:url size:size];
             }
             
             // Ensure progress is marked as complete
@@ -577,6 +619,110 @@ static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent download
                                        altName:(NSString *)altName 
                                         toPath:(NSString *)path {
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
+}
+
+// New method to add a file to the verification list
+- (void)addFileToVerificationList:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size {
+    @synchronized(self.pendingVerificationList) {
+        // Create a dictionary to store verification info
+        NSDictionary *verificationItem = @{
+            @"path": path,
+            @"sha": sha,
+            @"altName": altName ?: [NSNull null],
+            @"url": url,
+            @"size": @(size)
+        };
+        
+        // Add to list
+        [self.pendingVerificationList addObject:verificationItem];
+    }
+}
+
+// New method to verify all pending files
+- (BOOL)verifyPendingFiles {
+    // Return true if no files to verify
+    if (self.pendingVerificationList.count == 0) {
+        return YES;
+    }
+    
+    NSLog(@"[MCDL] Starting verification of %lu files", (unsigned long)self.pendingVerificationList.count);
+    
+    // Make a copy of the verification list to work with
+    NSArray *verificationItems = nil;
+    @synchronized(self.pendingVerificationList) {
+        verificationItems = [NSArray arrayWithArray:self.pendingVerificationList];
+    }
+    
+    // Track failed files
+    NSMutableArray *failedItems = [NSMutableArray array];
+    
+    // Verify each file
+    for (NSDictionary *item in verificationItems) {
+        NSString *path = item[@"path"];
+        NSString *sha = item[@"sha"];
+        NSString *altName = [item[@"altName"] isEqual:[NSNull null]] ? nil : item[@"altName"];
+        
+        // Check if file exists and SHA matches
+        if (![NSFileManager.defaultManager fileExistsAtPath:path] || 
+            ![self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:YES]) {
+            [failedItems addObject:item];
+        }
+    }
+    
+    // If any files failed verification, redownload them
+    if (failedItems.count > 0) {
+        NSLog(@"[MCDL] %lu files failed verification and will be redownloaded", (unsigned long)failedItems.count);
+        
+        // Prepare for download
+        [self prepareForDownload];
+        
+        // Set deferSHAVerification to false to force immediate verification
+        self.deferSHAVerification = NO;
+        
+        // Redownload each failed file
+        for (NSDictionary *item in failedItems) {
+            NSString *path = item[@"path"];
+            NSString *sha = item[@"sha"];
+            NSString *altName = [item[@"altName"] isEqual:[NSNull null]] ? nil : item[@"altName"];
+            NSString *url = item[@"url"];
+            NSUInteger size = [item[@"size"] unsignedIntegerValue];
+            
+            // Create download task for this file
+            [self redownloadFileWithPath:path sha:sha altName:altName url:url size:size];
+        }
+        
+        // Process the download queue
+        dispatch_async(self.downloadQueue, ^{
+            [self processNextDownloadInQueue];
+        });
+        
+        return NO; // Indicate verification failed and redownload is in progress
+    }
+    
+    // All files verified successfully
+    NSLog(@"[MCDL] All %lu files verified successfully", (unsigned long)verificationItems.count);
+    
+    // Clear the verification list
+    @synchronized(self.pendingVerificationList) {
+        [self.pendingVerificationList removeAllObjects];
+    }
+    
+    return YES; // Indicate all files verified successfully
+}
+
+// Method to redownload a specific file
+- (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size {
+    NSLog(@"[MCDL] Redownloading file: %@", altName ?: path.lastPathComponent);
+    
+    // Create a download task for this file
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
+    
+    // Queue the task
+    if (task) {
+        @synchronized(self.pendingDownloads) {
+            [self.pendingDownloads addObject:task];
+        }
+    }
 }
 
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size {
