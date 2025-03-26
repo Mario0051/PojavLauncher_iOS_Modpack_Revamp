@@ -1,462 +1,374 @@
 #include <CommonCrypto/CommonDigest.h>
 
 #import "authenticator/BaseAuthenticator.h"
+#import "installer/modpack/ModpackAPI.h"
+#import "AFNetworking.h"
 #import "LauncherNavigationController.h"
 #import "LauncherPreferences.h"
+#import "MinecraftResourceDownloadTask.h"
 #import "MinecraftResourceUtils.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
 
-@implementation MinecraftResourceUtils
+@interface MinecraftResourceDownloadTask ()
+@property AFURLSessionManager* manager;
+@end
 
-// Handle inheritsFrom
-+ (void)processVersion:(NSMutableDictionary *)json inheritsFrom:(NSMutableDictionary *)inheritsFrom {
-    // Copy basic properties from child to parent version
-    [self insertSafety:inheritsFrom from:json arr:@[
-        @"assetIndex", @"assets", @"id",
-        @"inheritsFrom",
-        @"mainClass", @"minecraftArguments",
-        @"optifineLib", @"releaseTime", @"time", @"type"
-    ]];
-    
-    // Copy arguments
-    inheritsFrom[@"arguments"] = json[@"arguments"];
+@implementation MinecraftResourceDownloadTask
 
-    // Process libraries
-    if (json[@"libraries"] && [json[@"libraries"] isKindOfClass:[NSArray class]]) {
-        for (NSMutableDictionary *lib in json[@"libraries"]) {
-            // Get library name up to last colon
-            NSRange lastColonRange = [lib[@"name"] rangeOfString:@":" options:NSBackwardsSearch];
-            if (lastColonRange.location == NSNotFound) continue;
-            
-            NSString *libName = [lib[@"name"] substringToIndex:lastColonRange.location];
-            int i;
-            
-            // Look for matching libraries in parent version
-            for (i = 0; i < [inheritsFrom[@"libraries"] count]; i++) {
-                NSMutableDictionary *libAdded = inheritsFrom[@"libraries"][i];
-                
-                // Get parent library name up to last colon
-                NSRange parentLastColonRange = [libAdded[@"name"] rangeOfString:@":" options:NSBackwardsSearch];
-                if (parentLastColonRange.location == NSNotFound) continue;
-                
-                NSString *libAddedName = [libAdded[@"name"] substringToIndex:parentLastColonRange.location];
-
-                // If library exists in parent, replace it with child version
-                if ([libAdded[@"name"] hasPrefix:libName]) {
-                    inheritsFrom[@"libraries"][i] = lib;
-                    i = -1; // Signal that we found and replaced the library
-                    break;
-                }
-            }
-
-            // If library wasn't found in parent, add it
-            if (i != -1) {
-                [inheritsFrom[@"libraries"] addObject:lib];
-            }
-        }
-    }
+- (instancetype)init {
+    self = [super init];
+    // TODO: implement background download
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+    configuration.timeoutIntervalForRequest = 86400;
+    //backgroundSessionConfigurationWithIdentifier:@"net.kdt.pojavlauncher.downloadtask"];
+    self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
+    self.fileList = [NSMutableArray new];
+    self.progressList = [NSMutableArray new];
+    return self;
 }
 
-+ (void)insertSafety:(NSMutableDictionary *)targetVer from:(NSDictionary *)fromVer arr:(NSArray *)arr {
-    for (NSString *key in arr) {
-        // Check if source value exists and is valid, or target value doesn't exist
-        if (([fromVer[key] isKindOfClass:[NSString class]] && [fromVer[key] length] > 0) || 
-            targetVer[key] == nil) {
-            targetVer[key] = fromVer[key];
+// Add file to the queue
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)())success {
+    BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
+    // logSuccess?
+    if (fileExists && [self checkSHA:sha forFile:path altName:altName]) {
+        if (success) success();
+        return nil;
+    } else if (![self checkAccessWithDialog:YES]) {
+        return nil;
+    }
+
+    NSString *name = altName ?: path.lastPathComponent;
+    NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:url]];
+    __block NSProgress *progress;
+    __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:nil
+    destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
+        NSLog(@"[MCDL] Downloading %@", name);
+        progress = [self.manager downloadProgressForTask:task];
+        if (!size && task) {
+            [self addDownloadTaskToProgress:task size:response.expectedContentLength];
+            [self.fileList addObject:name];
+        }
+        [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+        return [NSURL fileURLWithPath:path];
+    } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
+        if (self.progress.cancelled) {
+            // Ignore any further errors
+        } else if (error != nil) {
+            [self finishDownloadWithError:error file:name];
+        } else if (![self checkSHA:sha forFile:path altName:altName]) {
+            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
         } else {
-            NSLog(@"[MCDL] insertSafety: how to insert %@?", key);
+            progress.totalUnitCount = progress.completedUnitCount;
+            if (success) success();
         }
+    }];
+
+    if (size && task) {
+        [self addDownloadTaskToProgress:task size:size];
+        [self.fileList addObject:name];
     }
+
+    return task;
 }
 
-+ (NSInteger)numberOfArgsToSkipForArg:(NSString *)arg {
-    // Basic validation
-    if (![arg isKindOfClass:[NSString class]]) {
-        // Skip non-string arg
-        return 1;
-    } 
-    
-    // Skip classpath arguments which have a parameter
-    if ([arg hasPrefix:@"-cp"]) {
-        return 2;
-    } 
-    
-    // Skip other known arguments that have parameters
-    if ([arg hasPrefix:@"-Djava.library.path="]) {
-        return 1;
-    } 
-    
-    if ([arg hasPrefix:@"-XX:HeapDumpPath"]) {
-        return 1;
-    }
-    
-    // Special handling for Java module arguments
-    if ([arg isEqualToString:@"--add-exports"] || 
-        [arg isEqualToString:@"--add-opens"] || 
-        [arg isEqualToString:@"--add-modules"] || 
-        [arg isEqualToString:@"--limit-modules"]) {
-        return 2;
-    }
-    
-    // Default - no args to skip
-    return 0;
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
+    return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil];
 }
 
-+ (void)tweakVersionJson:(NSMutableDictionary *)json {
-    NSLog(@"[MCDL] Tweaking version JSON for: %@", json[@"id"]);
-    
-    // Only process libraries if they exist and are in correct format
-    if (json[@"libraries"] && [json[@"libraries"] isKindOfClass:[NSArray class]]) {
-        // Process each library
-        for (NSMutableDictionary *library in json[@"libraries"]) {
-            // Skip if not a valid dictionary
-            if (![library isKindOfClass:[NSMutableDictionary class]]) {
-                continue;
-            }
-            
-            // Determine if library should be skipped
-            BOOL hasClassifiers = (library[@"downloads"] && 
-                                  library[@"downloads"][@"classifiers"] && 
-                                  [library[@"downloads"][@"classifiers"] isKindOfClass:[NSDictionary class]]);
-                                  
-            BOOL hasNatives = (library[@"natives"] && 
-                              [library[@"natives"] isKindOfClass:[NSDictionary class]]);
-                              
-            BOOL isLWJGL = ([library[@"name"] isKindOfClass:[NSString class]] && 
-                           [library[@"name"] hasPrefix:@"org.lwjgl"]);
-            
-            // Special handling for Forge libraries - don't skip Forge libraries
-            BOOL isForgeLibrary = ([library[@"name"] isKindOfClass:[NSString class]] && 
-                                 ([library[@"name"] containsString:@"minecraftforge"] || 
-                                  [library[@"name"] containsString:@"net.minecraftforge:forge"]));
-            
-            // Mark library to be skipped if it meets skip conditions and is not a Forge library
-            library[@"skip"] = @(hasClassifiers || hasNatives || isLWJGL);
-            
-            // Don't skip Forge libraries that we need
-            if (isForgeLibrary && ![library[@"name"] hasSuffix:@":client"] && ![library[@"name"] hasSuffix:@":universal"]) {
-                library[@"skip"] = @NO;
-            }
+- (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSInteger)size {
+    NSProgress *progress = [self.manager downloadProgressForTask:task];
+    NSUInteger fileSize = size>0 ? size : 1;
+    progress.kind = NSProgressKindFile;
+    if (size > 0) {
+        progress.totalUnitCount = fileSize;
+    }
+    [self.progressList addObject:progress];
+    [self.progress addChild:progress withPendingUnitCount:fileSize];
+    self.progress.totalUnitCount += fileSize;
+    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+}
 
-            // Only process libraries with valid names
-            if (![library[@"name"] isKindOfClass:[NSString class]]) {
-                continue;
-            }
+- (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)())success {
+    // Download base json
+    NSString *versionStr = version[@"id"];
+    if ([versionStr isEqualToString:@"latest-release"]) {
+        versionStr = getPrefObject(@"internal.latest_version.release");
+    } else if ([versionStr isEqualToString:@"latest-snapshot"]) {
+        versionStr = getPrefObject(@"internal.latest_version.snapshot");
+    }
 
-            // Extract version information
-            NSArray *nameParts = [library[@"name"] componentsSeparatedByString:@":"];
-            if (nameParts.count < 3) continue;
-            
-            NSString *versionStr = nameParts[2];
-            NSArray<NSString *> *version = [versionStr componentsSeparatedByString:@"."];
-            
-            // Special handling for JNA libraries
-            if ([library[@"name"] hasPrefix:@"net.java.dev.jna:jna:"]) {
-                // We need at least 3 version components
-                if (version.count < 3) continue;
-                
-                // Check if the required version is newer than our bundled version
-                uint32_t bundledVer = 5 << 16 | 13 << 8 | 0; // 5.13.0
-                uint32_t requiredVer = 0;
-                
-                @try {
-                    requiredVer = (char)version[0].intValue << 16 | (char)version[1].intValue << 8 | (char)version[2].intValue;
-                } @catch (NSException *exception) {
-                    NSLog(@"[MCDL] Error parsing JNA version: %@", exception);
-                    continue;
-                }
-                
-                if (requiredVer > bundledVer) {
-                    NSLog(@"[MCDL] Warning: JNA version required by %@ is %@ > 5.13.0, skipping JNA replacement.", json[@"id"], versionStr);
-                    continue;
-                }
-                
-                // Replace with our bundled version
-                library[@"name"] = @"net.java.dev.jna:jna:5.13.0";
-                
-                // Make sure downloads and artifact dictionaries exist
-                if (!library[@"downloads"]) {
-                    library[@"downloads"] = [NSMutableDictionary dictionary];
-                }
-                
-                if (!library[@"downloads"][@"artifact"]) {
-                    library[@"downloads"][@"artifact"] = [NSMutableDictionary dictionary];
-                }
-                
-                // Update paths and checksums
-                library[@"downloads"][@"artifact"][@"path"] = @"net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
-                library[@"downloads"][@"artifact"][@"url"] = @"https://repo1.maven.org/maven2/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar";
-                library[@"downloads"][@"artifact"][@"sha1"] = @"1200e7ebeedbe0d10062093f32925a912020e747";
-            } 
-            // Special handling for ASM libraries
-            else if ([library[@"name"] hasPrefix:@"org.ow2.asm:asm-all:"]) {
-                // Check if version is already 5 or higher
-                if (version.count < 1 || version[0].intValue >= 5) continue;
-                
-                // Replace with our compatible version
-                library[@"name"] = @"org.ow2.asm:asm-all:5.0.4";
-                
-                // Make sure downloads and artifact dictionaries exist
-                if (!library[@"downloads"]) {
-                    library[@"downloads"] = [NSMutableDictionary dictionary];
-                }
-                
-                if (!library[@"downloads"][@"artifact"]) {
-                    library[@"downloads"][@"artifact"] = [NSMutableDictionary dictionary];
-                }
-                
-                // Update paths and checksums
-                library[@"downloads"][@"artifact"][@"path"] = @"org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
-                library[@"downloads"][@"artifact"][@"sha1"] = @"e6244859997b3d4237a552669279780876228909";
-                library[@"downloads"][@"artifact"][@"url"] = @"https://repo1.maven.org/maven2/org/ow2/asm/asm-all/5.0.4/asm-all-5.0.4.jar";
+    NSString *path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), versionStr];
+    // Find it again to resolve latest-*
+    version = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
+
+    void(^completionBlock)(void) = ^{
+        self.metadata = parseJSONFromFile(path);
+        if (self.metadata[@"NSErrorObject"]) {
+            [self finishDownloadWithErrorString:[self.metadata[@"NSErrorObject"] localizedDescription]];
+            return;
+        }
+        if (self.metadata[@"inheritsFrom"]) {
+            NSMutableDictionary *inheritsFromDict = parseJSONFromFile([NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), self.metadata[@"inheritsFrom"]]);
+            if (inheritsFromDict) {
+                [MinecraftResourceUtils processVersion:self.metadata inheritsFrom:inheritsFromDict];
+                self.metadata = inheritsFromDict;
             }
         }
-    }
-
-    // Add the client as a library
-    NSMutableDictionary *client = [[NSMutableDictionary alloc] init];
-    client[@"downloads"] = [[NSMutableDictionary alloc] init];
-    
-    if (json[@"downloads"][@"client"] == nil) {
-        client[@"downloads"][@"artifact"] = [[NSMutableDictionary alloc] init];
-        client[@"skip"] = @YES;
-    } else {
-        client[@"downloads"][@"artifact"] = json[@"downloads"][@"client"];
-    }
-    
-    // Set client path and name
-    client[@"downloads"][@"artifact"][@"path"] = [NSString stringWithFormat:@"../versions/%1$@/%1$@.jar", json[@"id"]];
-    client[@"name"] = [NSString stringWithFormat:@"%@.jar", json[@"id"]];
-    
-    // Ensure libraries array exists
-    if (!json[@"libraries"]) {
-        json[@"libraries"] = [NSMutableArray array];
-    }
-    
-    // Add client to libraries
-    [json[@"libraries"] addObject:client];
-
-    // Process Forge JVM arguments
-    [self processJvmArguments:json];
-}
-
-+ (void)processJvmArguments:(NSMutableDictionary *)json {
-    // Only process if this is a Forge version with inheritsFrom and JVM arguments
-    if (json[@"inheritsFrom"] == nil || 
-        json[@"arguments"] == nil || 
-        json[@"arguments"][@"jvm"] == nil || 
-        ![json[@"arguments"][@"jvm"] isKindOfClass:[NSArray class]]) {
-        return;
-    }
-    
-    NSLog(@"[MCDL] Processing JVM arguments for %@", json[@"id"]);
-    
-    // Create array for processed JVM arguments
-    NSMutableArray *processedJvmArgs = [NSMutableArray array];
-    json[@"arguments"][@"jvm_processed"] = processedJvmArgs;
-    
-    // Variable replacement map for placeholders
-    NSDictionary *varArgMap = @{
-        @"${classpath_separator}": @":",
-        @"${library_directory}": [NSString stringWithFormat:@"%s/libraries", getenv("POJAV_GAME_DIR")],
-        @"${version_name}": json[@"id"]
+        [MinecraftResourceUtils tweakVersionJson:self.metadata];
+        success();
     };
-    
-    // Process arguments one by one
-    int argsToSkip = 0;
-    for (id arg in json[@"arguments"][@"jvm"]) {
-        // Skip arguments if needed
-        if (argsToSkip > 0) {
-            argsToSkip--;
-            continue;
-        }
-        
-        // Skip non-string arguments
-        if (![arg isKindOfClass:[NSString class]]) {
-            continue;
-        }
-        
-        // Check if we need to skip additional arguments
-        argsToSkip = [self numberOfArgsToSkipForArg:arg];
-        
-        // If we don't need to skip, process and add the argument
-        if (argsToSkip == 0) {
-            NSString *argStr = arg;
-            for (NSString *key in varArgMap.allKeys) {
-                argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
-            }
-            [processedJvmArgs addObject:argStr];
+
+    if (!version) {
+        // This is likely local version, check if json exists and has inheritsFrom
+        NSMutableDictionary *json = parseJSONFromFile(path);
+        if (json[@"NSErrorObject"]) {
+            [self finishDownloadWithErrorString:[json[@"NSErrorObject"] localizedDescription]];
+            return;
+        } else if (json[@"inheritsFrom"]) {
+            version = (id)[MinecraftResourceUtils findVersion:json[@"inheritsFrom"] inList:remoteVersionList];
+            path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), json[@"inheritsFrom"]];
+        } else {
+            completionBlock();
+            return;
         }
     }
-    
-    NSLog(@"[MCDL] Processed %lu JVM arguments", (unsigned long)processedJvmArgs.count);
+
+    versionStr = version[@"id"];
+    NSString *url = version[@"url"];
+    NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
+    NSUInteger size = [version[@"size"] unsignedLongLongValue];
+
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:path success:completionBlock];
+    [task resume];
 }
 
-+ (void)processJvmArgumentArray:(NSArray *)jvmArgs 
-                     withVarMap:(NSDictionary *)varArgMap 
-                     intoResult:(NSMutableArray *)processedJvmArgs {
-    // Skip if arguments array is nil or empty
-    if (!jvmArgs || jvmArgs.count == 0) {
+#pragma mark - Minecraft installation
+
+- (void)downloadAssetMetadataWithSuccess:(void (^)())success {
+    NSDictionary *assetIndex = self.metadata[@"assetIndex"];
+    if (!assetIndex) {
+        success();
         return;
     }
-    
-    // These keys will be deduplicated by checking the entire argument string
-    NSMutableSet *moduleTypeArgs = [NSMutableSet setWithArray:@[
-        @"--add-modules", 
-        @"--add-opens",
-        @"--add-exports",
-        @"--add-reads",
-        @"--patch-module",
-        @"--limit-modules"
-    ]];
-    
-    // Track already added arguments to avoid duplicates
-    NSMutableSet *addedArgs = [NSMutableSet set];
-    
-    // Process arguments one by one
-    NSUInteger i = 0;
-    while (i < jvmArgs.count) {
-        id currentArg = jvmArgs[i];
-        
-        // Skip non-string arguments
-        if (![currentArg isKindOfClass:[NSString class]]) {
-            i++;
+    NSString *name = [NSString stringWithFormat:@"assets/indexes/%@.json", assetIndex[@"id"]];
+    NSString *path = [@(getenv("POJAV_GAME_DIR")) stringByAppendingPathComponent:name];
+    NSString *url = assetIndex[@"url"];
+    NSString *sha = url.stringByDeletingLastPathComponent.lastPathComponent;
+    NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:^{
+        self.metadata[@"assetIndexObj"] = parseJSONFromFile(path);
+        success();
+    }];
+    [task resume];
+}
+
+- (NSArray *)downloadClientLibraries {
+    NSMutableArray *tasks = [NSMutableArray new];
+    for (NSDictionary *library in self.metadata[@"libraries"]) {
+        NSString *name = library[@"name"];
+
+        NSMutableDictionary *artifact = library[@"downloads"][@"artifact"];
+        if (artifact == nil && [name containsString:@":"]) {
+            NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
+            artifact = [[NSMutableDictionary alloc] init];
+            NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
+            NSArray *libParts = [name componentsSeparatedByString:@":"];
+            artifact[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], libParts[1], libParts[2]];
+            artifact[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifact[@"path"]];
+            artifact[@"sha1"] = library[@"checksums"][0];
+        }
+
+        NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifact[@"path"]];
+        NSString *sha = artifact[@"sha1"];
+        NSUInteger size = [artifact[@"size"] unsignedLongLongValue];
+        NSString *url = artifact[@"url"];
+        if ([library[@"skip"] boolValue]) {
+            NSLog(@"[MDCL] Skipped library %@", name);
             continue;
         }
-        
-        NSString *argStr = currentArg;
-        
-        // Apply variable replacements
-        for (NSString *key in varArgMap.allKeys) {
-            argStr = [argStr stringByReplacingOccurrencesOfString:key 
-                                                       withString:varArgMap[key]];
+
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil];
+        if (task) {
+            [tasks addObject:task];
+        } else if (self.progress.cancelled) {
+            return nil;
         }
-        
-        // Handle module-type arguments that need their own parameter
-        if ([moduleTypeArgs containsObject:argStr] && i + 1 < jvmArgs.count) {
-            // Get the next argument which is the parameter
-            id nextArg = jvmArgs[i + 1];
-            
-            // Skip if nextArg is not a string
-            if (![nextArg isKindOfClass:[NSString class]]) {
-                i += 2;
-                continue;
-            }
-            
-            // Apply variable replacements to parameter
-            NSString *paramStr = nextArg;
-            for (NSString *key in varArgMap.allKeys) {
-                paramStr = [paramStr stringByReplacingOccurrencesOfString:key 
-                                                               withString:varArgMap[key]];
-            }
-            
-            // Combine the flag and parameter
-            NSString *combinedArg = [NSString stringWithFormat:@"%@ %@", argStr, paramStr];
-            
-            // Only add if not already added
-            if (![addedArgs containsObject:combinedArg]) {
-                [processedJvmArgs addObject:combinedArg];
-                [addedArgs addObject:combinedArg];
-            }
-            
-            // Skip both arguments
-            i += 2;
+    }
+    return tasks;
+}
+
+- (NSArray *)downloadClientAssets {
+    NSMutableArray *tasks = [NSMutableArray new];
+    NSDictionary *assets = self.metadata[@"assetIndexObj"];
+    if (!assets) {
+        return @[];
+    }
+    for (NSString *name in assets[@"objects"]) {
+        NSDictionary *object = assets[@"objects"][name];
+        NSString *hash = object[@"hash"];
+        NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
+        NSUInteger size = [object[@"size"] unsignedLongLongValue];
+
+        NSString *path;
+        if ([assets[@"map_to_resources"] boolValue]) {
+            path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
+        } else {
+            path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
         }
-        // Handle single arguments
-        else {
-            // Only add if not already added
-            if (![addedArgs containsObject:argStr]) {
-                [processedJvmArgs addObject:argStr];
-                [addedArgs addObject:argStr];
-            }
-            
-            // Move to next argument
-            i++;
+
+        /* Special case for 1.19+
+         * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
+         * However, if an IOException occurs, it won't try to set.
+         * We skip downloading the icon file to workaround this. */
+        if ([name hasSuffix:@"/minecraft.icns"]) {
+            [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+            continue;
         }
+
+        NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil];
+        if (task) {
+            [tasks addObject:task];
+        } else if (self.progress.cancelled) {
+            return nil;
+        }
+    }
+    return tasks;
+}
+
+- (void)downloadVersion:(NSDictionary *)version {
+    [self prepareForDownload];
+    [self downloadVersionMetadata:version success:^{
+        [self downloadAssetMetadataWithSuccess:^{
+            NSArray *libTasks = [self downloadClientLibraries];
+            NSArray *assetTasks = [self downloadClientAssets];
+            // Drop the 1 byte we set initially
+            self.progress.totalUnitCount--;
+            self.textProgress.totalUnitCount--;
+            if (self.progress.totalUnitCount == 0) {
+                // We have nothing to download, invoke completion observer
+                self.progress.totalUnitCount = 1;
+                self.progress.completedUnitCount = 1;
+                self.textProgress.totalUnitCount = 1;
+                self.textProgress.completedUnitCount = 1;
+                return;
+            }
+            [libTasks makeObjectsPerformSelector:@selector(resume)];
+            [assetTasks makeObjectsPerformSelector:@selector(resume)];
+            [self.metadata removeObjectForKey:@"assetIndexObj"];
+        }];
+    }];
+}
+
+#pragma mark - Modpack installation
+
+- (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    [self prepareForDownload];
+
+    NSString *url = modDetail[@"versionUrls"][selectedVersion];
+    NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
+    NSString *sha = modDetail[@"versionHashes"][selectedVersion];
+    NSString *name = [[modDetail[@"title"] lowercaseString] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    name = [name stringByReplacingOccurrencesOfString:@" " withString:@"_"];
+    NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", name];
+
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:packagePath success:^{
+        NSString *path = [NSString stringWithFormat:@"%s/custom_gamedir/%@", getenv("POJAV_GAME_DIR"), name];
+        [api downloader:self submitDownloadTasksFromPackage:packagePath toPath:path];
+    }];
+    [task resume];
+}
+
+#pragma mark - Utilities
+
+- (void)prepareForDownload {
+    // Create a fake progress which is used to update completedUnitCount properly
+    // (completedUnitCount does not update unless subprogress completes)
+    self.textProgress = [NSProgress new];
+    self.textProgress.kind = NSProgressKindFile;
+    self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
+    self.textProgress.totalUnitCount = -1;
+
+    self.progress = [NSProgress new];
+    // Push 1 byte so it won't accidentally finish after downloading assets index
+    self.progress.totalUnitCount = 1;
+    [self.fileList removeAllObjects];
+    [self.progressList removeAllObjects];
+}
+
+- (void)finishDownloadWithErrorString:(NSString *)error {
+    [self.progress cancel];
+    [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
+    showDialog(localize(@"Error", nil), error);
+    self.handleError();
+}
+
+- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
+    NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
+    NSLog(@"[MCDL] Error: %@ %@", errorStr, NSThread.callStackSymbols);
+    [self finishDownloadWithErrorString:errorStr];
+}
+
+// Check if the account has permission to download
+- (BOOL)checkAccessWithDialog:(BOOL)show {
+    // for now
+    BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
+    if (!accessible) {
+        [self.progress cancel];
+        if (show) {
+            [self finishDownloadWithErrorString:@"Minecraft can't be legally installed when logged in with a local account. Please switch to an online account to continue."];
+        }
+    }
+    return accessible;
+}
+
+// Check SHA of the file
+- (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
+    if (sha.length == 0) {
+        // When sha = skip, only check for file existence
+        BOOL existence = [NSFileManager.defaultManager fileExistsAtPath:path];
+        if (existence) {
+            NSLog(@"[MCDL] Warning: couldn't find SHA for %@, have to assume it's good.", path);
+        }
+        return existence;
+    }
+
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data == nil) {
+        NSLog(@"[MCDL] SHA1 checker: file doesn't exist: %@", altName ? altName : path.lastPathComponent);
+        return NO;
+    }
+
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
+    NSMutableString *localSHA = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
+    for(int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
+        [localSHA appendFormat:@"%02x", digest[i]];
+    }
+
+    BOOL check = [sha isEqualToString:localSHA];
+    if (!check || (getPrefBool(@"general.debug_logging") && logSuccess)) {
+        NSLog(@"[MCDL] SHA1 %@ for %@%@",
+          (check ? @"passed" : @"failed"), 
+          (altName ? altName : path.lastPathComponent),
+          (check ? @"" : [NSString stringWithFormat:@" (expected: %@, got: %@)", sha, localSHA]));
+    }
+    return check;
+}
+
+- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
+    if (getPrefBool(@"general.check_sha")) {
+        return [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:logSuccess];
+    } else {
+        return [NSFileManager.defaultManager fileExistsAtPath:path];
     }
 }
 
-+ (NSObject *)findVersion:(NSString *)version inList:(NSArray *)list {
-    // Check parameters
-    if (!version || !list || ![list isKindOfClass:[NSArray class]]) {
-        return nil;
-    }
-    
-    // Use a predicate to find the version by ID
-    return [list filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(id == %@)", version]].firstObject;
-}
-
-+ (NSObject *)findNearestVersion:(NSObject *)version expectedType:(int)type {
-    // Only support finding releases and snapshots for now
-    if (type != TYPE_RELEASE && type != TYPE_SNAPSHOT) {
-        return nil;
-    }
-
-    // Handle string version (inheritsFrom cases)
-    if ([version isKindOfClass:[NSString class]]) {
-        // Find in inheritsFrom
-        NSString *versionPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", 
-                                getenv("POJAV_GAME_DIR"), version];
-        
-        NSDictionary *versionDict = parseJSONFromFile(versionPath);
-        if (!versionDict) {
-            NSLog(@"[MCDL] Error: Could not load version JSON from %@", versionPath);
-            return nil;
-        }
-        
-        // Check for inheritsFrom property
-        if (versionDict[@"inheritsFrom"] == nil) {
-            return nil; 
-        }
-        
-        // Find the parent version
-        NSObject *inheritsFrom = [self findVersion:versionDict[@"inheritsFrom"] inList:remoteVersionList];
-        
-        if (type == TYPE_RELEASE) {
-            return inheritsFrom;
-        } else if (type == TYPE_SNAPSHOT) {
-            return [self findNearestVersion:inheritsFrom expectedType:type];
-        }
-    }
-
-    // Handle version dictionary
-    NSString *versionType = [version valueForKey:@"type"];
-    int index = [remoteVersionList indexOfObject:(NSDictionary *)version];
-    
-    // Convert release to snapshot
-    if ([versionType isEqualToString:@"release"] && type == TYPE_SNAPSHOT) {
-        // Returns the (possible) latest snapshot for the version
-        if (index + 1 >= remoteVersionList.count) {
-            return nil;
-        }
-        
-        NSDictionary *result = remoteVersionList[index + 1];
-        
-        // Sometimes, a release is followed with another release (1.16->1.16.1), go lower in this case
-        if ([result[@"type"] isEqualToString:@"release"]) {
-            return [self findNearestVersion:result expectedType:type];
-        }
-        return result;
-    } 
-    // Convert snapshot to release
-    else if ([versionType isEqualToString:@"snapshot"] && type == TYPE_RELEASE) {
-        while (remoteVersionList.count > abs(index)) {
-            // In case the snapshot has yet attached to a release, perform a reverse find
-            NSDictionary *result = remoteVersionList[abs(index)];
-            
-            // Returns the corresponding release for the snapshot, or latest release if none found
-            if ([result[@"type"] isEqualToString:@"release"]) {
-                return result;
-            }
-            
-            // Continue to decrement, later abs() it
-            index--;
-        }
-    }
-
-    // Fallback - no suitable version found
-    return nil;
+- (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
+    return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
 }
 
 @end
