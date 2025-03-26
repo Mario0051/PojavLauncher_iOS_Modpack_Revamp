@@ -1004,6 +1004,7 @@
             [self updateSearchResults];
         });
     });
+}
 
 - (void)setupSegmentedControl {
     // Create modern segmented control with improved styling
