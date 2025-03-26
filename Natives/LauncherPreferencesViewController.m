@@ -58,9 +58,27 @@
             @{@"icon": @"cube"},
             @{@"key": @"check_sha",
               @"hasDetail": @YES,
-              @"icon": @"lock.shield",
+              @"icon": @"checkmark.shield",
               @"type": self.typeSwitch,
               @"enableCondition": whenNotInGame
+            },
+            @{@"key": @"skip_sha_for_assets",
+              @"hasDetail": @YES,
+              @"icon": @"checkmark.shield.fill",
+              @"type": self.typeSwitch,
+              @"enableCondition": ^BOOL() {
+                  return getPrefBool(@"general.check_sha");  // Only enabled if check_sha is true
+              }
+            },
+            @{@"key": @"skip_sha",
+              @"hasDetail": @YES,
+              @"icon": @"shield.lefthalf.fill",
+              @"type": self.typeSwitch,
+              @"enableCondition": whenNotInGame,
+              @"warnCondition": ^BOOL() {
+                  return YES;  // Always show warning when enabling this
+              },
+              @"warnKey": @"skip_sha_warn"
             },
             @{@"key": @"cosmetica",
               @"hasDetail": @YES,
