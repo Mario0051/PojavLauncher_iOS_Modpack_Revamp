@@ -1547,9 +1547,9 @@
             }
         }
         
-        // Re-sort if we added any new items
-        if (currentSearchText.length > 0) {
-            [self sortUnifiedResultsByRelevance:currentSearchText];
+        // Re-sort if we added any items and have search text
+        if (currentSearchText.length > 0 && self.unifiedSearchResults.count > 0) {
+            [self sortUnifiedResultsByRelevance:currentSearchText inArray:self.unifiedSearchResults];
         }
     }
     
