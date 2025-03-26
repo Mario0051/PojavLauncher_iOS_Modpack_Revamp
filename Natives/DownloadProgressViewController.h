@@ -1,13 +1,17 @@
 #import <UIKit/UIKit.h>
 #import "MinecraftResourceDownloadTask.h"
 
+// Define task types for better UI presentation
+typedef NS_ENUM(NSInteger, DownloadTaskType) {
+    DownloadTaskTypeFile = 0,
+    DownloadTaskTypeExtraction = 1,
+    DownloadTaskTypeSetup = 2,
+    DownloadTaskTypeComplete = 3
+};
+
 @interface DownloadProgressViewController : UITableViewController
 @property MinecraftResourceDownloadTask* task;
-
-// Properties for download speed tracking
-@property (nonatomic, assign) int64_t lastBytesCompleted;
-@property (nonatomic, strong) NSDate *lastSpeedUpdateTime;
-@property (nonatomic, assign) double currentSpeed; // in bytes per second
+@property (nonatomic, assign) BOOL needsFullTableReload; // Flag for tracking when full reload is needed
 
 - (instancetype)initWithTask:(MinecraftResourceDownloadTask *)task;
 
