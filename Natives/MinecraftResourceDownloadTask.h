@@ -12,6 +12,8 @@
 @property(nonatomic, assign) NSInteger successfulDownloads;
 @property(nonatomic, assign) NSInteger totalDownloads;
 @property(nonatomic, assign) BOOL verboseLogging;
+@property(nonatomic, strong) NSMutableArray *pendingVerificationList;
+@property(nonatomic, assign) BOOL deferSHAVerification;
 
 // Basic download task method without success callback
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
@@ -50,6 +52,11 @@
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess;
 - (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess;
 - (BOOL)checkAccessWithDialog:(BOOL)show;
+
+// New methods for deferred SHA verification
+- (void)addFileToVerificationList:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName;
+- (BOOL)verifyPendingFiles;
+- (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 
 // Main download methods
 - (void)downloadVersion:(NSDictionary *)version;
