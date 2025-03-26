@@ -1999,34 +1999,29 @@
         // Update navigation title to indicate active filters
         // First check if rightBarButtonItems has enough elements
         if (self.navigationItem.rightBarButtonItems.count > 1) {
+            UIBarButtonItem *closeButton = self.navigationItem.rightBarButtonItems[0];
+            
+            // Create the appropriate tag filter button based on filter state
+            UIBarButtonItem *tagFilterButton;
             if (self.activeTagFilters.count > 0) {
-                // Use more visually appealing indicator
-                UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
-                                                   initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
-                                                   style:UIBarButtonItemStylePlain 
-                                                   target:self 
-                                                   action:@selector(showTagFilterMenu:)];
+                // Use more visually appealing indicator with tint color
+                tagFilterButton = [[UIBarButtonItem alloc] 
+                                 initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
+                                 style:UIBarButtonItemStylePlain 
+                                 target:self 
+                                 action:@selector(showTagFilterMenu:)];
                 tagFilterButton.tintColor = [UIColor systemBlueColor];
-                
-                // Add badge count if possible
-                if (@available(iOS 14.0, *)) {
-                    NSString *badgeValue = [NSString stringWithFormat:@"%lu", (unsigned long)self.activeTagFilters.count];
-                    UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
-                    appearance.badgeTokenStyle = [UITokenStyleConfiguration configurationWithFont:[UIFont systemFontOfSize:14 weight:UIFontWeightBold] textColor:[UIColor whiteColor] cornerRadius:10.0 backgroundColor:[UIColor systemBlueColor]];
-                    
-                    tagFilterButton.tag = badgeValue.integerValue;
-                }
-                
-                self.navigationItem.rightBarButtonItems[1] = tagFilterButton;
             } else {
                 // Reset to normal appearance
-                UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
-                                                   initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
-                                                   style:UIBarButtonItemStylePlain 
-                                                   target:self 
-                                                   action:@selector(showTagFilterMenu:)];
-                self.navigationItem.rightBarButtonItems[1] = tagFilterButton;
+                tagFilterButton = [[UIBarButtonItem alloc] 
+                                 initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
+                                 style:UIBarButtonItemStylePlain 
+                                 target:self 
+                                 action:@selector(showTagFilterMenu:)];
             }
+            
+            // Set right bar button items with new array
+            self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
         }
         
         // Update collection view to reflect current filter state
