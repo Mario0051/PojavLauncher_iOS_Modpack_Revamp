@@ -367,44 +367,103 @@ extern void showDialog(NSString *title, NSString *message);
 }
 
 - (id)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params headers:(NSDictionary *)headers {
-    __block id result;
-    dispatch_group_t group = dispatch_group_create();
-    dispatch_group_enter(group);
-    NSString *url = [self.baseURL stringByAppendingPathComponent:endpoint];
-    AFHTTPSessionManager *manager = [AFHTTPSessionManager manager];
+    // Create a cancel semaphore to handle timeouts
+    dispatch_semaphore_t cancelSemaphore = dispatch_semaphore_create(0);
     
-    // Set request timeout for more reliability
-    manager.requestSerializer.timeoutInterval = 30; // 30 seconds timeout
+    // Initialize data holder
+    __block NSData *responseData = nil;
+    __block NSError *responseError = nil;
     
-    // Add User-Agent to request headers if not provided
-    NSMutableDictionary *finalHeaders = [NSMutableDictionary dictionaryWithDictionary:headers ?: @{}];
-    if (!finalHeaders[@"User-Agent"]) {
-        finalHeaders[@"User-Agent"] = self.userAgent;
+    // Create URL with parameters
+    NSMutableString *urlString = [NSMutableString stringWithString:endpoint];
+    
+    // Add query parameters if provided
+    if (params && params.count > 0) {
+        [urlString appendString:@"?"];
+        NSMutableArray *queryParams = [NSMutableArray array];
+        
+        for (NSString *key in params) {
+            NSString *value = [params[key] description];
+            NSString *escapedValue = [value stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLQueryAllowedCharacterSet]];
+            [queryParams addObject:[NSString stringWithFormat:@"%@=%@", key, escapedValue]];
+        }
+        
+        [urlString appendString:[queryParams componentsJoinedByString:@"&"]];
     }
     
-    [manager GET:url parameters:params headers:finalHeaders progress:nil
-    success:^(NSURLSessionTask *task, id obj) {
-        result = obj;
-        dispatch_group_leave(group);
-    } failure:^(NSURLSessionTask *operation, NSError *error) {
-        self.lastError = error;
-        NSLog(@"[ModrinthAPI] API request failed: %@", error.localizedDescription);
-        dispatch_group_leave(group);
+    // Create URL request
+    NSURL *url = [NSURL URLWithString:urlString];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    
+    // Set HTTP method
+    [request setHTTPMethod:@"GET"];
+    
+    // Set headers
+    if (headers) {
+        for (NSString *key in headers) {
+            [request setValue:headers[key] forHTTPHeaderField:key];
+        }
+    }
+    
+    // Add default User-Agent if not provided
+    if (![request valueForHTTPHeaderField:@"User-Agent"]) {
+        [request setValue:@"PojavLauncher iOS" forHTTPHeaderField:@"User-Agent"];
+    }
+    
+    // Set reasonable timeout
+    [request setTimeoutInterval:20.0];
+    
+    // Create URLSession task
+    NSURLSessionTask *task = [self.session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            responseError = error;
+        } else if (data) {
+            responseData = data;
+        }
+        
+        // Signal completion
+        dispatch_semaphore_signal(cancelSemaphore);
     }];
     
-    // Use a timeout to prevent potential deadlocks
-    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(45 * NSEC_PER_SEC));
-    long timedOut = dispatch_group_wait(group, timeout);
+    // Start the task
+    [task resume];
     
-    if (timedOut != 0) {
-        NSLog(@"[ModrinthAPI] Request timed out for endpoint: %@", endpoint);
-        self.lastError = [NSError errorWithDomain:@"net.kdt.pojavlauncher" 
+    // Use the semaphore for the current thread only (this is already running in a background thread)
+    // Set a timeout to prevent hanging indefinitely
+    long result = dispatch_semaphore_wait(cancelSemaphore, dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC));
+    
+    // Handle timeout
+    if (result != 0) {
+        [task cancel];
+        self.lastError = [NSError errorWithDomain:@"ModrinthAPI" 
                                              code:NSURLErrorTimedOut 
                                          userInfo:@{NSLocalizedDescriptionKey: @"Request timed out"}];
         return nil;
     }
     
-    return result;
+    // Handle error
+    if (responseError) {
+        self.lastError = responseError;
+        return nil;
+    }
+    
+    // If no data was received
+    if (!responseData) {
+        return nil;
+    }
+    
+    // Try to parse the response as JSON
+    NSError *jsonError = nil;
+    id jsonObject = [NSJSONSerialization JSONObjectWithData:responseData options:0 error:&jsonError];
+    
+    if (jsonError) {
+        // If JSON parsing fails, return the raw data
+        self.lastError = jsonError;
+        return responseData;
+    }
+    
+    // Return the parsed JSON object
+    return jsonObject;
 }
 
 // Compatibility method for old code - forwards to method with headers
