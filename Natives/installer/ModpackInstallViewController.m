@@ -1019,6 +1019,72 @@
     });
 }
 
+- (void)appendToUnifiedSearchResults:(NSArray *)newResults {
+    // Validate input to prevent crashes
+    if (!newResults || ![newResults isKindOfClass:[NSArray class]]) {
+        NSLog(@"[ModpackInstall] Warning: appendToUnifiedSearchResults called with invalid array");
+        return;
+    }
+    
+    // Skip processing if there are no new results
+    if (newResults.count == 0) {
+        return;
+    }
+    
+    // Create copies of search criteria for thread safety
+    NSString *searchTextCopy = [self.searchText copy];
+    NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
+    
+    [self.dataLock lock];
+    
+    // Create a set of existing IDs for efficient duplicate checking
+    NSMutableSet *existingIds = [NSMutableSet set];
+    for (NSDictionary *modpack in self.unifiedSearchResults) {
+        if ([modpack isKindOfClass:[NSDictionary class]] && modpack[@"id"]) {
+            [existingIds addObject:modpack[@"id"]];
+        }
+    }
+    
+    // Filter and add new modpacks that match search criteria
+    BOOL needsResort = NO;
+    for (id modpackObj in newResults) {
+        if (![modpackObj isKindOfClass:[NSDictionary class]]) continue;
+        
+        NSDictionary *modpack = (NSDictionary *)modpackObj;
+        NSString *modpackId = modpack[@"id"];
+        
+        // Skip duplicates more efficiently
+        if (modpackId && [existingIds containsObject:modpackId]) {
+            continue;
+        }
+        
+        // Check against current filters
+        BOOL matchesFilters = [self modpack:modpack matchesSearchText:searchTextCopy andTags:activeTagFiltersCopy];
+        
+        if (matchesFilters) {
+            [self.unifiedSearchResults addObject:modpack];
+            needsResort = YES;
+            
+            // Track this ID
+            if (modpackId) {
+                [existingIds addObject:modpackId];
+            }
+        }
+    }
+    
+    // Only resort if needed and if we have search text
+    if (needsResort && searchTextCopy.length > 0) {
+        [self sortUnifiedResultsByRelevance:searchTextCopy inArray:self.unifiedSearchResults];
+    }
+    
+    [self.dataLock unlock];
+    
+    // Request a table reload on the main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.tableView reloadData];
+    });
+}
+
 #pragma mark - Data Loading
 
 - (void)updateSearchResults {
