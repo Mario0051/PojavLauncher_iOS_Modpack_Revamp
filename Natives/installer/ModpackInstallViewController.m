@@ -983,20 +983,27 @@
     self.filteredModpacks = [NSMutableArray new];
     self.isDataLoading = NO;
     self.dataLock = [[NSLock alloc] init];
-    
+
     // Initialize modrinth API
     self.modrinth = [ModrinthAPI new];
-    
+
     // Setup default filters
     self.filters = @{
         @"isModpack": @(YES),
         @"name": @"",
         @"sortMethod": @"relevance" // Default sort method
     }.mutableCopy;
+
+     // Load initial data asynchronously with a delay to allow UI to appear first
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Show initial loading state
+        [self switchToLoadingState];
     
-    // Load initial data
-    [self updateSearchResults];
-}
+        // Delay network request until view is fully displayed
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            [self updateSearchResults];
+        });
+    });
 
 - (void)setupSegmentedControl {
     // Create modern segmented control with improved styling
@@ -1726,13 +1733,20 @@
         self.searchText = @"";
     }
     
-    // Clear existing results before loading new ones
-    [self.dataLock lock];
-    [self.unifiedSearchResults removeAllObjects];
-    [self.dataLock unlock];
-    
-    // Load fresh results
-    [self loadSearchResultsWithPrevList:NO];
+    // Clear existing results before loading new ones - safe thread handling
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.dataLock lock];
+        [self.unifiedSearchResults removeAllObjects];
+        [self.dataLock unlock];
+        
+        // Stop refresh control if active
+        if (self.modernRefreshControl.isRefreshing) {
+            [self.modernRefreshControl endRefreshing];
+        }
+        
+        // Load fresh results asynchronously
+        [self loadSearchResultsWithPrevList:NO];
+    });
 }
 
 - (void)loadSearchResultsWithPrevList:(BOOL)prevList {
@@ -1751,11 +1765,10 @@
         });
     }
     
-    // Create a dispatch group to track completion
-    dispatch_group_t loadGroup = dispatch_group_create();
-    dispatch_group_enter(loadGroup);
+    // Create a weak reference to self to avoid retain cycles
+    __weak typeof(self) weakSelf = self;
     
-    // Perform the search in background
+    // Perform the search in background without blocking the main thread
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Create a copy of filters for this search
         NSMutableDictionary *searchFilters;
@@ -1770,84 +1783,77 @@
         // Get previous results if appending
         NSMutableArray *prevResults = nil;
         if (prevList) {
-            [self.dataLock lock];
-            prevResults = [NSMutableArray arrayWithArray:self.unifiedSearchResults];
-            [self.dataLock unlock];
+            [weakSelf.dataLock lock];
+            prevResults = [NSMutableArray arrayWithArray:weakSelf.unifiedSearchResults];
+            [weakSelf.dataLock unlock];
         }
         
         // Perform the search
-        NSMutableArray *newResults = [self.modrinth searchModWithFilters:searchFilters 
-                                             previousPageResult:prevResults];
+        NSMutableArray *newResults = [weakSelf.modrinth searchModWithFilters:searchFilters 
+                                                       previousPageResult:prevResults];
         
         // Update pagination status
-        BOOL hasMoreItems = !self.modrinth.reachedLastPage;
+        BOOL hasMoreItems = !weakSelf.modrinth.reachedLastPage;
         
-        // Update UI on main thread, but don't block waiting for it
+        // Update UI on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
+            // Check if view controller is still alive
+            if (!weakSelf) return;
+            
             // Update pagination status
-            self.hasMoreResults = hasMoreItems;
-            self.isLoadingMoreResults = NO;
+            weakSelf.hasMoreResults = hasMoreItems;
+            weakSelf.isLoadingMoreResults = NO;
             
             if (newResults) {
                 if (!prevList) {
                     // For a fresh search, organize by category and update search results
-                    [self organizeModpacksByCategory:newResults];
+                    [weakSelf organizeModpacksByCategory:newResults];
                     
                     // In search mode, also update unified results
-                    if (self.isSearchActive) {
-                        [self updateUnifiedSearchResults];
+                    if (weakSelf.isSearchActive) {
+                        [weakSelf updateUnifiedSearchResults];
                     }
                 } else {
                     // For pagination, append to existing results
-                    [self updateOrganizedModpacks:newResults];
+                    [weakSelf updateOrganizedModpacks:newResults];
                     
                     // In search mode, append to unified results
-                    if (self.isSearchActive) {
-                        [self appendToUnifiedSearchResults:newResults];
+                    if (weakSelf.isSearchActive) {
+                        [weakSelf appendToUnifiedSearchResults:newResults];
                     }
                 }
             } else {
                 // Handle error
-                if (self.modrinth.lastError) {
-                    showDialog(localize(@"Error", nil), self.modrinth.lastError.localizedDescription);
+                if (weakSelf.modrinth.lastError) {
+                    showDialog(localize(@"Error", nil), weakSelf.modrinth.lastError.localizedDescription);
                 } else {
                     showDialog(localize(@"Error", nil), @"Could not load modpacks. Please check your network connection.");
                 }
                 
                 // Set up empty categories if needed
-                if (self.categories.count == 0) {
-                    [self organizeModpacksByCategory:@[]];
+                if (weakSelf.categories.count == 0) {
+                    [weakSelf organizeModpacksByCategory:@[]];
                 }
             }
             
             // Update UI state
-            [self switchToReadyState];
+            [weakSelf switchToReadyState];
             
             // Update empty state visibility
-            [self updateEmptyStateVisibility];
+            [weakSelf updateEmptyStateVisibility];
             
             // Critical: Always do a full reload for consistency
-            [self.tableView reloadData];
-            
-            // Leave the dispatch group
-            dispatch_group_leave(loadGroup);
+            [weakSelf.tableView reloadData];
         });
     });
     
-    // Set a timeout for the background operation, but don't block the main thread
+    // Set a timeout for the operation, but don't block the main thread
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Check if the group is still executing
-        long result = dispatch_group_wait(loadGroup, DISPATCH_TIME_NOW);
-        if (result != 0) {
-            // The operation is still running after timeout - cancel it
+        // If we're still loading, show a timeout error
+        if (weakSelf && weakSelf.isDataLoading) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (self.isDataLoading) {
-                    [self switchToReadyState];
-                    showDialog(localize(@"Error", nil), @"Loading timed out. Please try again.");
-                    
-                    // Ensure we leave the dispatch group
-                    dispatch_group_leave(loadGroup);
-                }
+                [weakSelf switchToReadyState];
+                showDialog(localize(@"Error", nil), @"Loading timed out. Please try again.");
             });
         }
     });
