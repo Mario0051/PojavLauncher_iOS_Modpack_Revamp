@@ -13,14 +13,16 @@
 
 #pragma mark - Custom Cell Definition
 
-// Custom cell for modpack display
+// Modern custom cell for modpack display
 @interface ModpackVersionCell : UITableViewCell
+@property (nonatomic, strong) UIView *containerView;
 @property (nonatomic, strong) UIImageView *modpackIconView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
 @property (nonatomic, strong) UIScrollView *tagsScrollView;
 @property (nonatomic, strong) NSMutableArray<UIView *> *tagViews;
 @property (nonatomic, assign) BOOL shouldTriggerClick;
+@property (nonatomic, strong) UIVisualEffectView *backgroundBlurView;
 @end
 
 @implementation ModpackVersionCell
@@ -99,87 +101,116 @@
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
     if (self) {
-        // Container view with proper insets
-        UIView *containerView = [[UIView alloc] init];
-        containerView.translatesAutoresizingMaskIntoConstraints = NO;
-        [self.contentView addSubview:containerView];
+        // Prepare the cell with modern styling
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
         
-        // Modpack icon - circular with auto sizing
+        // Add a shadow to give the cell a "card" appearance
+        self.layer.shadowColor = [UIColor blackColor].CGColor;
+        self.layer.shadowOffset = CGSizeMake(0, 1);
+        self.layer.shadowOpacity = 0.1;
+        self.layer.shadowRadius = 4;
+        
+        // Container view with proper insets and rounded corners
+        self.containerView = [[UIView alloc] init];
+        self.containerView.translatesAutoresizingMaskIntoConstraints = NO;
+        self.containerView.backgroundColor = [UIColor secondarySystemBackgroundColor];
+        self.containerView.layer.cornerRadius = 12;
+        self.containerView.layer.masksToBounds = YES;
+        self.containerView.clipsToBounds = YES;
+        [self.contentView addSubview:self.containerView];
+        
+        // Modpack icon - circular with auto sizing and shadow
         self.modpackIconView = [[UIImageView alloc] init];
         self.modpackIconView.translatesAutoresizingMaskIntoConstraints = NO;
         self.modpackIconView.contentMode = UIViewContentModeScaleAspectFill;
         self.modpackIconView.clipsToBounds = YES;
-        self.modpackIconView.layer.cornerRadius = 20; // Will be a circle with size constraints
+        self.modpackIconView.layer.cornerRadius = 24; // Larger, more prominent icon
         self.modpackIconView.backgroundColor = [UIColor systemGray6Color];
-        [containerView addSubview:self.modpackIconView];
+        self.modpackIconView.layer.borderWidth = 2.0;
+        self.modpackIconView.layer.borderColor = [UIColor systemBackgroundColor].CGColor;
+        [self.containerView addSubview:self.modpackIconView];
         
-        // Title label (main title) - bolder font
+        // Title label (main title) - bolder font with dynamic text sizing
         self.titleLabel = [[UILabel alloc] init];
-        self.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
+        self.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
         self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        self.titleLabel.adjustsFontForContentSizeCategory = YES; // Support dynamic type
         self.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-        [containerView addSubview:self.titleLabel];
+        [self.containerView addSubview:self.titleLabel];
         
-        // Subtitle label - smaller, secondary text
+        // Subtitle label - smaller, secondary text with dynamic sizing
         self.subtitleLabel = [[UILabel alloc] init];
         self.subtitleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightRegular];
         self.subtitleLabel.textColor = [UIColor secondaryLabelColor];
         self.subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        self.subtitleLabel.adjustsFontForContentSizeCategory = YES; // Support dynamic type
         self.subtitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
         self.subtitleLabel.numberOfLines = 2;
-        [containerView addSubview:self.subtitleLabel];
+        [self.containerView addSubview:self.subtitleLabel];
         
-        // Tags scroll view - for multiple category tags
+        // Tags scroll view - for multiple category tags with better visual styling
         self.tagsScrollView = [[UIScrollView alloc] init];
         self.tagsScrollView.translatesAutoresizingMaskIntoConstraints = NO;
         self.tagsScrollView.showsHorizontalScrollIndicator = NO;
         self.tagsScrollView.showsVerticalScrollIndicator = NO;
         self.tagsScrollView.clipsToBounds = YES;
-        [containerView addSubview:self.tagsScrollView];
+        [self.containerView addSubview:self.tagsScrollView];
         
         // Initialize tag views array
         self.tagViews = [NSMutableArray array];
         
-        // Add disclosure indicator
-        self.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        // Add disclosure indicator with more modern styling
+        UIImageView *chevronView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+        chevronView.tintColor = [UIColor systemGrayColor];
+        chevronView.translatesAutoresizingMaskIntoConstraints = NO;
+        chevronView.contentMode = UIViewContentModeScaleAspectFit;
+        [self.containerView addSubview:chevronView];
         
         // Container view constraints - full content view with padding
         [NSLayoutConstraint activateConstraints:@[
-            [containerView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:8],
-            [containerView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-8],
-            [containerView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
-            [containerView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16]
+            [self.containerView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:8],
+            [self.containerView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-8],
+            [self.containerView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+            [self.containerView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16]
         ]];
         
         // Icon constraints - fixed size and positioned at start
         [NSLayoutConstraint activateConstraints:@[
-            [self.modpackIconView.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor],
-            [self.modpackIconView.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
-            [self.modpackIconView.widthAnchor constraintEqualToConstant:40],
-            [self.modpackIconView.heightAnchor constraintEqualToConstant:40]
+            [self.modpackIconView.leadingAnchor constraintEqualToAnchor:self.containerView.leadingAnchor constant:12],
+            [self.modpackIconView.centerYAnchor constraintEqualToAnchor:self.containerView.centerYAnchor],
+            [self.modpackIconView.widthAnchor constraintEqualToConstant:48], // Larger icon
+            [self.modpackIconView.heightAnchor constraintEqualToConstant:48] // Larger icon
         ]];
         
-        // Title label constraints - positioned after icon
+        // Chevron constraints
         [NSLayoutConstraint activateConstraints:@[
-            [self.titleLabel.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:2],
-            [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.modpackIconView.trailingAnchor constant:12],
-            [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:containerView.trailingAnchor constant:-8]
+            [chevronView.trailingAnchor constraintEqualToAnchor:self.containerView.trailingAnchor constant:-16],
+            [chevronView.centerYAnchor constraintEqualToAnchor:self.containerView.centerYAnchor],
+            [chevronView.widthAnchor constraintEqualToConstant:20],
+            [chevronView.heightAnchor constraintEqualToConstant:20]
         ]];
         
-        // Subtitle label constraints - below title
+        // Title label constraints - positioned after icon with more spacing
         [NSLayoutConstraint activateConstraints:@[
-            [self.subtitleLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:2],
+            [self.titleLabel.topAnchor constraintEqualToAnchor:self.containerView.topAnchor constant:12],
+            [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.modpackIconView.trailingAnchor constant:16],
+            [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:chevronView.leadingAnchor constant:-8]
+        ]];
+        
+        // Subtitle label constraints - below title with proper spacing
+        [NSLayoutConstraint activateConstraints:@[
+            [self.subtitleLabel.topAnchor constraintEqualToAnchor:self.titleLabel.bottomAnchor constant:4],
             [self.subtitleLabel.leadingAnchor constraintEqualToAnchor:self.titleLabel.leadingAnchor],
-            [self.subtitleLabel.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor]
+            [self.subtitleLabel.trailingAnchor constraintEqualToAnchor:self.titleLabel.trailingAnchor]
         ]];
         
-        // Tags scroll view constraints
+        // Tags scroll view constraints with better positioning
         [NSLayoutConstraint activateConstraints:@[
-            [self.tagsScrollView.topAnchor constraintEqualToAnchor:self.subtitleLabel.bottomAnchor constant:4],
+            [self.tagsScrollView.topAnchor constraintEqualToAnchor:self.subtitleLabel.bottomAnchor constant:8],
             [self.tagsScrollView.leadingAnchor constraintEqualToAnchor:self.titleLabel.leadingAnchor],
-            [self.tagsScrollView.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor],
-            [self.tagsScrollView.heightAnchor constraintEqualToConstant:24],
-            [self.tagsScrollView.bottomAnchor constraintLessThanOrEqualToAnchor:containerView.bottomAnchor constant:-2]
+            [self.tagsScrollView.trailingAnchor constraintEqualToAnchor:chevronView.leadingAnchor constant:-8],
+            [self.tagsScrollView.heightAnchor constraintEqualToConstant:26], // Slightly taller for better readability
+            [self.tagsScrollView.bottomAnchor constraintLessThanOrEqualToAnchor:self.containerView.bottomAnchor constant:-12]
         ]];
     }
     return self;
@@ -217,7 +248,7 @@
     }
     
     // Reset accessory view if needed
-    self.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    self.accessoryType = UITableViewCellAccessoryNone;
     self.accessoryView = nil;
     
     // Clear any associated objects
@@ -312,7 +343,7 @@
     return formattedTag;
 }
 
-// Improved tag handling with better caching
+// Improved tag handling with better caching and visual design
 - (void)setTags:(NSArray<NSString *> *)tags {
     // Clear existing tags first
     for (UIView *tagView in self.tagViews) {
@@ -326,7 +357,7 @@
     
     // Create a horizontal stack to hold tags
     CGFloat xOffset = 0;
-    CGFloat tagHeight = 22;
+    CGFloat tagHeight = 24; // Slightly taller for better readability
     CGFloat tagSpacing = 8;
     
     // First, sort tags alphabetically and eliminate duplicates
@@ -354,18 +385,25 @@
         // Format tag text with proper capitalization
         NSString *formattedTag = [self formatTagName:tag];
         
-        // Create tag container view
+        // Create tag container view with improved styling
         UIView *tagView = [[UIView alloc] init];
         tagView.backgroundColor = [self colorForTag:tag];
         tagView.layer.cornerRadius = tagHeight / 2;
         tagView.layer.masksToBounds = YES;
+        
+        // Add subtle shadow for depth
+        tagView.layer.shadowColor = [UIColor blackColor].CGColor;
+        tagView.layer.shadowOffset = CGSizeMake(0, 1);
+        tagView.layer.shadowOpacity = 0.1;
+        tagView.layer.shadowRadius = 1;
+        
         [self.tagsScrollView addSubview:tagView];
         [self.tagViews addObject:tagView];
         
-        // Create tag label
+        // Create tag label with improved typography
         UILabel *tagLabel = [[UILabel alloc] init];
         tagLabel.text = formattedTag;
-        tagLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        tagLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
         tagLabel.textColor = [UIColor whiteColor];
         tagLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [tagView addSubview:tagLabel];
@@ -385,7 +423,7 @@
             [tagSizeCache setObject:[NSValue valueWithCGSize:textSize] forKey:cacheKey];
         }
         
-        CGFloat tagWidth = textSize.width + 16; // Padding
+        CGFloat tagWidth = textSize.width + 20; // More padding for better readability
         tagView.frame = CGRectMake(xOffset, 0, tagWidth, tagHeight);
         
         // Position label centered in tag
@@ -398,19 +436,29 @@
         xOffset += tagWidth + tagSpacing;
     }
     
-    // If we limited the tags, add a +X more indicator
+    // If we limited the tags, add a +X more indicator with improved styling
     if (sortedTags.count > maxTags) {
         NSString *moreText = [NSString stringWithFormat:@"+%lu more", (unsigned long)(sortedTags.count - maxTags)];
         
         UIView *moreView = [[UIView alloc] init];
         moreView.backgroundColor = [UIColor systemGrayColor];
         moreView.layer.cornerRadius = tagHeight / 2;
+        
+        // Add subtle gradient for better visual appeal
+        CAGradientLayer *gradient = [CAGradientLayer layer];
+        gradient.frame = CGRectMake(0, 0, 100, tagHeight); // Width will be adjusted later
+        gradient.colors = @[(id)[UIColor systemGrayColor].CGColor, (id)[[UIColor systemGrayColor] colorWithAlphaComponent:0.8].CGColor];
+        gradient.startPoint = CGPointMake(0.0, 0.5);
+        gradient.endPoint = CGPointMake(1.0, 0.5);
+        gradient.cornerRadius = tagHeight / 2;
+        [moreView.layer insertSublayer:gradient atIndex:0];
+        
         [self.tagsScrollView addSubview:moreView];
         [self.tagViews addObject:moreView];
         
         UILabel *moreLabel = [[UILabel alloc] init];
         moreLabel.text = moreText;
-        moreLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        moreLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
         moreLabel.textColor = [UIColor whiteColor];
         moreLabel.translatesAutoresizingMaskIntoConstraints = NO;
         [moreView addSubview:moreLabel];
@@ -430,8 +478,11 @@
             [tagSizeCache setObject:[NSValue valueWithCGSize:moreTextSize] forKey:moreCacheKey];
         }
         
-        CGFloat moreWidth = moreTextSize.width + 16;
+        CGFloat moreWidth = moreTextSize.width + 20; // More padding for readability
         moreView.frame = CGRectMake(xOffset, 0, moreWidth, tagHeight);
+        
+        // Update gradient frame to match the actual width
+        gradient.frame = CGRectMake(0, 0, moreWidth, tagHeight);
         
         [NSLayoutConstraint activateConstraints:@[
             [moreLabel.centerXAnchor constraintEqualToAnchor:moreView.centerXAnchor],
@@ -445,16 +496,57 @@
     self.tagsScrollView.contentSize = CGSizeMake(xOffset, tagHeight);
 }
 
+// Override to improve cell highlighting
+- (void)setHighlighted:(BOOL)highlighted animated:(BOOL)animated {
+    [super setHighlighted:highlighted animated:animated];
+    
+    if (animated) {
+        [UIView animateWithDuration:0.2 animations:^{
+            self.containerView.backgroundColor = highlighted ? 
+                [UIColor tertiarySystemBackgroundColor] : [UIColor secondarySystemBackgroundColor];
+            self.containerView.transform = highlighted ? 
+                CGAffineTransformMakeScale(0.98, 0.98) : CGAffineTransformIdentity;
+        }];
+    } else {
+        self.containerView.backgroundColor = highlighted ? 
+            [UIColor tertiarySystemBackgroundColor] : [UIColor secondarySystemBackgroundColor];
+        self.containerView.transform = highlighted ? 
+            CGAffineTransformMakeScale(0.98, 0.98) : CGAffineTransformIdentity;
+    }
+}
+
+// Override to improve cell selection
+- (void)setSelected:(BOOL)selected animated:(BOOL)animated {
+    [super setSelected:selected animated:animated];
+    
+    if (animated) {
+        [UIView animateWithDuration:0.2 animations:^{
+            self.containerView.backgroundColor = selected ? 
+                [UIColor tertiarySystemBackgroundColor] : [UIColor secondarySystemBackgroundColor];
+            self.containerView.transform = selected ? 
+                CGAffineTransformMakeScale(0.98, 0.98) : CGAffineTransformIdentity;
+        }];
+    } else {
+        self.containerView.backgroundColor = selected ? 
+            [UIColor tertiarySystemBackgroundColor] : [UIColor secondarySystemBackgroundColor];
+        self.containerView.transform = selected ? 
+            CGAffineTransformMakeScale(0.98, 0.98) : CGAffineTransformIdentity;
+    }
+}
+
 @end
 
 #pragma mark - Section Header View Definition
 
-// Custom header view for modpack categories
+// Improved header view for modpack categories
 @interface ModpackCategoryHeaderView : UITableViewHeaderFooterView
+@property (nonatomic, strong) UIView *containerView;
 @property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UIImageView *iconImageView;
 @property (nonatomic, strong) UIImageView *chevronImageView;
 @property (nonatomic, strong) UIButton *expandCollapseButton;
 @property (nonatomic, assign) BOOL isExpanded;
+@property (nonatomic, strong) UIVisualEffectView *blurEffect;
 @end
 
 @implementation ModpackCategoryHeaderView
@@ -462,61 +554,97 @@
 - (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithReuseIdentifier:reuseIdentifier];
     if (self) {
-        // Create a container view with background
-        UIView *containerView = [[UIView alloc] init];
-        containerView.backgroundColor = [UIColor systemGroupedBackgroundColor];
-        containerView.translatesAutoresizingMaskIntoConstraints = NO;
-        [self.contentView addSubview:containerView];
+        // Apply a blur effect for a modern look
+        UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleRegular];
+        self.blurEffect = [[UIVisualEffectView alloc] initWithEffect:blur];
+        self.blurEffect.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.contentView addSubview:self.blurEffect];
         
-        // Title label - large, bold font
+        // Create a container view with improved styling
+        self.containerView = [[UIView alloc] init];
+        self.containerView.translatesAutoresizingMaskIntoConstraints = NO;
+        self.containerView.backgroundColor = [UIColor clearColor];
+        [self.contentView addSubview:self.containerView];
+        
+        // Add an icon for visual categorization
+        self.iconImageView = [[UIImageView alloc] init];
+        self.iconImageView.translatesAutoresizingMaskIntoConstraints = NO;
+        self.iconImageView.contentMode = UIViewContentModeScaleAspectFit;
+        self.iconImageView.tintColor = [UIColor labelColor];
+        [self.containerView addSubview:self.iconImageView];
+        
+        // Title label - larger, bolder font with dynamic type support
         self.titleLabel = [[UILabel alloc] init];
-        self.titleLabel.font = [UIFont boldSystemFontOfSize:18];
+        self.titleLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightBold];
+        self.titleLabel.adjustsFontForContentSizeCategory = YES;
         self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        [containerView addSubview:self.titleLabel];
+        [self.containerView addSubview:self.titleLabel];
         
-        // Chevron indicator - rotates on expand/collapse
-        self.chevronImageView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+        // Chevron indicator - animated rotation on expand/collapse
+        self.chevronImageView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.down"]];
         self.chevronImageView.tintColor = [UIColor systemGrayColor];
         self.chevronImageView.translatesAutoresizingMaskIntoConstraints = NO;
         self.chevronImageView.contentMode = UIViewContentModeScaleAspectFit;
-        [containerView addSubview:self.chevronImageView];
+        [self.containerView addSubview:self.chevronImageView];
         
         // Button covering the entire header - for expansion/collapse
         self.expandCollapseButton = [UIButton buttonWithType:UIButtonTypeSystem];
         self.expandCollapseButton.translatesAutoresizingMaskIntoConstraints = NO;
         self.expandCollapseButton.backgroundColor = [UIColor clearColor];
-        [containerView addSubview:self.expandCollapseButton];
+        [self.containerView addSubview:self.expandCollapseButton];
         
-        // Constraints for container view (full size)
+        // Blur effect constraints (cover the entire view)
         [NSLayoutConstraint activateConstraints:@[
-            [containerView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
-            [containerView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
-            [containerView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
-            [containerView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor]
+            [self.blurEffect.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [self.blurEffect.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+            [self.blurEffect.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [self.blurEffect.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor]
         ]];
         
-        // Constraints for title label
+        // Container view constraints (full size with padding)
         [NSLayoutConstraint activateConstraints:@[
-            [self.titleLabel.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor constant:16],
-            [self.titleLabel.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
+            [self.containerView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor],
+            [self.containerView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor],
+            [self.containerView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor],
+            [self.containerView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor]
+        ]];
+        
+        // Icon constraints
+        [NSLayoutConstraint activateConstraints:@[
+            [self.iconImageView.leadingAnchor constraintEqualToAnchor:self.containerView.leadingAnchor constant:16],
+            [self.iconImageView.centerYAnchor constraintEqualToAnchor:self.containerView.centerYAnchor],
+            [self.iconImageView.widthAnchor constraintEqualToConstant:24],
+            [self.iconImageView.heightAnchor constraintEqualToConstant:24]
+        ]];
+        
+        // Title label constraints - positioned after icon
+        [NSLayoutConstraint activateConstraints:@[
+            [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.iconImageView.trailingAnchor constant:12],
+            [self.titleLabel.centerYAnchor constraintEqualToAnchor:self.containerView.centerYAnchor],
             [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.chevronImageView.leadingAnchor constant:-16]
         ]];
         
-        // Constraints for chevron
+        // Chevron constraints - at trailing edge
         [NSLayoutConstraint activateConstraints:@[
-            [self.chevronImageView.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor constant:-16],
-            [self.chevronImageView.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
-            [self.chevronImageView.widthAnchor constraintEqualToConstant:20],
-            [self.chevronImageView.heightAnchor constraintEqualToConstant:20]
+            [self.chevronImageView.trailingAnchor constraintEqualToAnchor:self.containerView.trailingAnchor constant:-16],
+            [self.chevronImageView.centerYAnchor constraintEqualToAnchor:self.containerView.centerYAnchor],
+            [self.chevronImageView.widthAnchor constraintEqualToConstant:22],
+            [self.chevronImageView.heightAnchor constraintEqualToConstant:22]
         ]];
         
-        // Constraints for button (covers the whole area)
+        // Button constraints (covers the whole area)
         [NSLayoutConstraint activateConstraints:@[
-            [self.expandCollapseButton.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor],
-            [self.expandCollapseButton.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor],
-            [self.expandCollapseButton.topAnchor constraintEqualToAnchor:containerView.topAnchor],
-            [self.expandCollapseButton.bottomAnchor constraintEqualToAnchor:containerView.bottomAnchor]
+            [self.expandCollapseButton.leadingAnchor constraintEqualToAnchor:self.containerView.leadingAnchor],
+            [self.expandCollapseButton.trailingAnchor constraintEqualToAnchor:self.containerView.trailingAnchor],
+            [self.expandCollapseButton.topAnchor constraintEqualToAnchor:self.containerView.topAnchor],
+            [self.expandCollapseButton.bottomAnchor constraintEqualToAnchor:self.containerView.bottomAnchor]
         ]];
+        
+        // Apply haptic feedback to button for better interaction feel
+        if (@available(iOS 14.0, *)) {
+            UIPointerInteraction *pointerInteraction = [[UIPointerInteraction alloc] initWithDelegate:nil];
+            [self.expandCollapseButton addInteraction:pointerInteraction];
+        }
     }
     return self;
 }
@@ -524,18 +652,192 @@
 - (void)setIsExpanded:(BOOL)isExpanded {
     _isExpanded = isExpanded;
     
-    // Animate chevron rotation
+    // Set the appropriate icon based on the category
+    if ([self.titleLabel.text containsString:@"Magic"]) {
+        self.iconImageView.image = [UIImage systemImageNamed:@"sparkles"];
+    } else if ([self.titleLabel.text containsString:@"Tech"]) {
+        self.iconImageView.image = [UIImage systemImageNamed:@"gear"];
+    } else if ([self.titleLabel.text containsString:@"Adventure"]) {
+        self.iconImageView.image = [UIImage systemImageNamed:@"map"];
+    } else if ([self.titleLabel.text containsString:@"Featured"]) {
+        self.iconImageView.image = [UIImage systemImageNamed:@"star.fill"];
+        self.iconImageView.tintColor = [UIColor systemYellowColor];
+    } else {
+        self.iconImageView.image = [UIImage systemImageNamed:@"cube.box"];
+    }
+    
+    // Animate chevron rotation with spring animation for more natural feel
+    [UIView animateWithDuration:0.5 
+                          delay:0 
+         usingSpringWithDamping:0.7 
+          initialSpringVelocity:0.5 
+                        options:UIViewAnimationOptionAllowUserInteraction 
+                     animations:^{
+                         self.chevronImageView.transform = isExpanded ? 
+                            CGAffineTransformMakeRotation(M_PI) : CGAffineTransformIdentity;
+                     } completion:nil];
+    
+    // Animate container for additional feedback
     [UIView animateWithDuration:0.3 animations:^{
-        self.chevronImageView.transform = isExpanded ? 
-            CGAffineTransformMakeRotation(M_PI_2) : CGAffineTransformIdentity;
+        self.containerView.backgroundColor = isExpanded ? 
+            [[UIColor systemBlueColor] colorWithAlphaComponent:0.1] : [UIColor clearColor];
     }];
+}
+
+@end
+
+// Loading shimmer cell for better loading states
+@interface ShimmerCell : UITableViewCell
+@property (nonatomic, strong) CAGradientLayer *gradientLayer;
+@property (nonatomic, strong) NSArray<UIView *> *shimmerViews;
+@property (nonatomic, strong) NSTimer *animationTimer;
+@end
+
+@implementation ShimmerCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+        self.backgroundColor = [UIColor clearColor];
+        
+        // Container for shimmer effect
+        UIView *containerView = [[UIView alloc] init];
+        containerView.translatesAutoresizingMaskIntoConstraints = NO;
+        containerView.backgroundColor = [UIColor secondarySystemBackgroundColor];
+        containerView.layer.cornerRadius = 12;
+        [self.contentView addSubview:containerView];
+        
+        [NSLayoutConstraint activateConstraints:@[
+            [containerView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:8],
+            [containerView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-8],
+            [containerView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16],
+            [containerView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16]
+        ]];
+        
+        // Create shimmer views (placeholder for content)
+        NSMutableArray *shimmerViews = [NSMutableArray array];
+        
+        // Icon placeholder
+        UIView *iconView = [[UIView alloc] init];
+        iconView.translatesAutoresizingMaskIntoConstraints = NO;
+        iconView.backgroundColor = [UIColor systemGray5Color];
+        iconView.layer.cornerRadius = 24;
+        [containerView addSubview:iconView];
+        [shimmerViews addObject:iconView];
+        
+        // Title placeholder
+        UIView *titleView = [[UIView alloc] init];
+        titleView.translatesAutoresizingMaskIntoConstraints = NO;
+        titleView.backgroundColor = [UIColor systemGray5Color];
+        titleView.layer.cornerRadius = 4;
+        [containerView addSubview:titleView];
+        [shimmerViews addObject:titleView];
+        
+        // Subtitle placeholder
+        UIView *subtitleView = [[UIView alloc] init];
+        subtitleView.translatesAutoresizingMaskIntoConstraints = NO;
+        subtitleView.backgroundColor = [UIColor systemGray5Color];
+        subtitleView.layer.cornerRadius = 4;
+        [containerView addSubview:subtitleView];
+        [shimmerViews addObject:subtitleView];
+        
+        // Tags placeholder
+        UIView *tagsView = [[UIView alloc] init];
+        tagsView.translatesAutoresizingMaskIntoConstraints = NO;
+        tagsView.backgroundColor = [UIColor systemGray5Color];
+        tagsView.layer.cornerRadius = 4;
+        [containerView addSubview:tagsView];
+        [shimmerViews addObject:tagsView];
+        
+        // Layout constraints
+        [NSLayoutConstraint activateConstraints:@[
+            // Icon
+            [iconView.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor constant:12],
+            [iconView.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
+            [iconView.widthAnchor constraintEqualToConstant:48],
+            [iconView.heightAnchor constraintEqualToConstant:48],
+            
+            // Title
+            [titleView.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:16],
+            [titleView.topAnchor constraintEqualToAnchor:containerView.topAnchor constant:16],
+            [titleView.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor constant:-50],
+            [titleView.heightAnchor constraintEqualToConstant:18],
+            
+            // Subtitle
+            [subtitleView.leadingAnchor constraintEqualToAnchor:titleView.leadingAnchor],
+            [subtitleView.topAnchor constraintEqualToAnchor:titleView.bottomAnchor constant:10],
+            [subtitleView.widthAnchor constraintEqualToAnchor:titleView.widthAnchor multiplier:0.75],
+            [subtitleView.heightAnchor constraintEqualToConstant:14],
+            
+            // Tags
+            [tagsView.leadingAnchor constraintEqualToAnchor:titleView.leadingAnchor],
+            [tagsView.topAnchor constraintEqualToAnchor:subtitleView.bottomAnchor constant:10],
+            [tagsView.widthAnchor constraintEqualToAnchor:titleView.widthAnchor multiplier:0.5],
+            [tagsView.heightAnchor constraintEqualToConstant:24],
+        ]];
+        
+        self.shimmerViews = shimmerViews;
+        
+        // Set up gradient for shimmer effect
+        self.gradientLayer = [CAGradientLayer layer];
+        self.gradientLayer.colors = @[
+            (id)[[UIColor clearColor] CGColor],
+            (id)[[UIColor whiteColor] colorWithAlphaComponent:0.2].CGColor,
+            (id)[[UIColor clearColor] CGColor]
+        ];
+        self.gradientLayer.locations = @[@0.35, @0.5, @0.65];
+        self.gradientLayer.startPoint = CGPointMake(0, 0.5);
+        self.gradientLayer.endPoint = CGPointMake(1, 0.5);
+        containerView.layer.mask = nil;
+        [containerView.layer addSublayer:self.gradientLayer];
+        
+        // Start shimmer animation
+        self.animationTimer = [NSTimer scheduledTimerWithTimeInterval:0.01 target:self selector:@selector(updateShimmerAnimation) userInfo:nil repeats:YES];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    
+    // Update gradient frame
+    self.gradientLayer.frame = CGRectMake(-self.bounds.size.width, 0, self.bounds.size.width * 3, self.bounds.size.height);
+}
+
+- (void)updateShimmerAnimation {
+    // Create shimmer animation by moving the gradient
+    CABasicAnimation *animation = [CABasicAnimation animationWithKeyPath:@"position.x"];
+    animation.fromValue = @(-self.bounds.size.width);
+    animation.toValue = @(self.bounds.size.width * 2);
+    animation.duration = 1.5;
+    animation.repeatCount = HUGE_VALF;
+    [self.gradientLayer addAnimation:animation forKey:@"shimmerAnimation"];
+    
+    // Stop the timer as the animation is now running on its own
+    [self.animationTimer invalidate];
+    self.animationTimer = nil;
+}
+
+- (void)prepareForReuse {
+    [super prepareForReuse];
+    
+    // Re-start animation
+    if (!self.animationTimer.isValid) {
+        self.animationTimer = [NSTimer scheduledTimerWithTimeInterval:0.01 target:self selector:@selector(updateShimmerAnimation) userInfo:nil repeats:YES];
+    }
+}
+
+- (void)dealloc {
+    [self.animationTimer invalidate];
+    self.animationTimer = nil;
 }
 
 @end
 
 #pragma mark - View Controller Implementation
 
-@interface ModpackInstallViewController()<UIContextMenuInteractionDelegate, UIPopoverPresentationControllerDelegate>
+@interface ModpackInstallViewController()<UIContextMenuInteractionDelegate, UIPopoverPresentationControllerDelegate, UICollectionViewDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout>
 @property(nonatomic, strong) UISearchController *searchController;
 @property(nonatomic, strong) NSString *searchText;
 @property(nonatomic, strong) UIMenu *currentMenu;
@@ -563,6 +865,16 @@
 // Infinite scroll support
 @property(nonatomic, assign) BOOL isLoadingMoreResults;
 @property(nonatomic, assign) BOOL hasMoreResults;
+
+// UI elements for more modern experience
+@property(nonatomic, strong) UISegmentedControl *segmentedControl;
+@property(nonatomic, strong) UIRefreshControl *modernRefreshControl;
+@property(nonatomic, strong) UICollectionView *tagCollectionView;
+@property(nonatomic, strong) NSArray<NSString *> *popularTags;
+@property(nonatomic, strong) UIView *emptyStateView;
+@property(nonatomic, strong) UILabel *emptyStateLabel;
+@property(nonatomic, strong) UIImageView *emptyStateImageView;
+@property(nonatomic, strong) UIButton *emptyStateButton;
 @end
 
 @implementation ModpackInstallViewController
@@ -570,11 +882,11 @@
 #pragma mark - Initialization Methods
 
 - (instancetype)init {
-    return [self initWithStyle:UITableViewStylePlain];
+    return [self initWithStyle:UITableViewStyleGrouped];
 }
 
 - (instancetype)initWithStyle:(UITableViewStyle)style {
-    self = [super initWithStyle:UITableViewStylePlain];
+    self = [super initWithStyle:UITableViewStyleGrouped];
     return self;
 }
 
@@ -583,10 +895,16 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     
+    // Set modern appearance
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    
     // Configure table view appearance
     if (@available(iOS 15.0, *)) {
         self.tableView.sectionHeaderTopPadding = 0;
     }
+    
+    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+    self.tableView.backgroundColor = [UIColor systemBackgroundColor];
     
     // Configure proper insets for navigation and search
     self.tableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAutomatic;
@@ -598,9 +916,10 @@
     // Register custom cell and header view
     [self.tableView registerClass:[ModpackVersionCell class] forCellReuseIdentifier:@"ModpackVersionCell"];
     [self.tableView registerClass:[ModpackCategoryHeaderView class] forHeaderFooterViewReuseIdentifier:@"ModpackCategoryHeader"];
+    [self.tableView registerClass:[ShimmerCell class] forCellReuseIdentifier:@"ShimmerCell"];
     
     // Title for the view controller
-    self.title = localize(@"launcher.menu.modpacks", nil);
+    self.title = localize(@"Modpacks", nil);
     
     // Initialize tag filter set
     self.activeTagFilters = [NSMutableSet new];
@@ -610,23 +929,26 @@
     self.isSearchActive = NO;
     self.hasMoreResults = YES;
     
-    // Setup category filter - segmented control
-    UISegmentedControl *segment = [[UISegmentedControl alloc] initWithItems:@[
-        localize(@"All", nil),
-        localize(@"Updated", nil)
-    ]];
-    segment.selectedSegmentIndex = 0;
-    [segment addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
-    self.navigationItem.titleView = segment;
+    // Setup popular tags for quick filtering
+    self.popularTags = @[
+        @"Magic", @"Tech", @"Adventure", @"Quests", @"Fabric", 
+        @"Forge", @"Multiplayer", @"Lightweight", @"Kitchen Sink", @"Skyblock"
+    ];
     
-    // Setup search controller
-    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
-    self.searchController.searchResultsUpdater = self;
-    self.searchController.obscuresBackgroundDuringPresentation = NO;
-    self.searchController.searchBar.placeholder = localize(@"Search modpacks", nil);
-    self.navigationItem.searchController = self.searchController;
-    self.navigationItem.hidesSearchBarWhenScrolling = NO;
-    self.definesPresentationContext = YES;
+    // Setup tag collection view for horizontal scrolling tags
+    [self setupTagCollectionView];
+    
+    // Setup category filter - segmented control with modern styling
+    [self setupSegmentedControl];
+    
+    // Setup search controller with improved styling
+    [self setupSearchController];
+    
+    // Setup refresh control with modern appearance
+    [self setupRefreshControl];
+    
+    // Setup empty state view
+    [self setupEmptyStateView];
     
     // Add proper KVO monitoring of search active state
     [self.searchController addObserver:self
@@ -634,20 +956,15 @@
                                options:NSKeyValueObservingOptionNew
                                context:NULL];
     
-    // Setup refresh control
-    self.refreshControl = [[UIRefreshControl alloc] init];
-    [self.refreshControl addTarget:self action:@selector(refreshModpacks) forControlEvents:UIControlEventValueChanged];
-    [self.tableView addSubview:self.refreshControl];
-    
     // Load WorkflowProgressView for download progress
     dlopen("/System/Library/PrivateFrameworks/WorkflowUIServices.framework/WorkflowUIServices", RTLD_GLOBAL);
     self.progressView = [[NSClassFromString(@"WFWorkflowProgressView") alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
     self.progressView.resolvedTintColor = self.view.tintColor;
     [self.progressView addTarget:self action:@selector(actionCancelDownload) forControlEvents:UIControlEventTouchUpInside];
     
-    // Add tag filter button to navigation
+    // Add tag filter button to navigation with modern SF Symbol
     UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
-                                        initWithImage:[UIImage systemImageNamed:@"tag"]
+                                        initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
                                         style:UIBarButtonItemStylePlain 
                                         target:self 
                                         action:@selector(showTagFilterMenu:)];
@@ -681,6 +998,165 @@
     [self updateSearchResults];
 }
 
+- (void)setupSegmentedControl {
+    // Create modern segmented control with improved styling
+    self.segmentedControl = [[UISegmentedControl alloc] initWithItems:@[
+        localize(@"Popular", nil),
+        localize(@"New", nil),
+        localize(@"Updated", nil)
+    ]];
+    
+    // Apply modern styling
+    self.segmentedControl.selectedSegmentIndex = 0;
+    
+    // Add shadow for depth
+    self.segmentedControl.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.segmentedControl.layer.shadowOffset = CGSizeMake(0, 1);
+    self.segmentedControl.layer.shadowOpacity = 0.1;
+    self.segmentedControl.layer.shadowRadius = 2;
+    
+    [self.segmentedControl addTarget:self action:@selector(segmentChanged:) forControlEvents:UIControlEventValueChanged];
+    
+    // Set as navigation title view for better positioning
+    self.navigationItem.titleView = self.segmentedControl;
+}
+
+- (void)setupSearchController {
+    // Create search controller with modern styling
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.searchResultsUpdater = self;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    
+    // More descriptive placeholder
+    self.searchController.searchBar.placeholder = localize(@"Search for modpacks...", nil);
+    
+    // Add scope buttons for better filtering
+    self.searchController.searchBar.scopeButtonTitles = @[
+        localize(@"All", nil),
+        localize(@"Magic", nil),
+        localize(@"Tech", nil)
+    ];
+    
+    // Customize search bar appearance
+    self.searchController.searchBar.tintColor = [UIColor systemBlueColor];
+    
+    // Set search controller in navigation
+    self.navigationItem.searchController = self.searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
+}
+
+- (void)setupRefreshControl {
+    // Create modern refresh control with improved styling
+    self.modernRefreshControl = [[UIRefreshControl alloc] init];
+    
+    // Add custom label for more informative feedback
+    UILabel *refreshLabel = [[UILabel alloc] init];
+    refreshLabel.textAlignment = NSTextAlignmentCenter;
+    refreshLabel.textColor = [UIColor secondaryLabelColor];
+    refreshLabel.font = [UIFont systemFontOfSize:12];
+    refreshLabel.text = localize(@"Pull to refresh modpacks", nil);
+    [self.modernRefreshControl addSubview:refreshLabel];
+    
+    // Center label
+    refreshLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [refreshLabel.centerXAnchor constraintEqualToAnchor:self.modernRefreshControl.centerXAnchor],
+        [refreshLabel.bottomAnchor constraintEqualToAnchor:self.modernRefreshControl.bottomAnchor constant:-10]
+    ]];
+    
+    // Add action to refresh control
+    [self.modernRefreshControl addTarget:self action:@selector(refreshModpacks) forControlEvents:UIControlEventValueChanged];
+    [self.tableView addSubview:self.modernRefreshControl];
+}
+
+- (void)setupTagCollectionView {
+    // Create a collection view layout
+    UICollectionViewFlowLayout *layout = [[UICollectionViewFlowLayout alloc] init];
+    layout.scrollDirection = UICollectionViewScrollDirectionHorizontal;
+    layout.minimumInteritemSpacing = 8;
+    layout.minimumLineSpacing = 8;
+    layout.sectionInset = UIEdgeInsetsMake(8, 16, 8, 16);
+    
+    // Create the collection view
+    self.tagCollectionView = [[UICollectionView alloc] initWithFrame:CGRectZero collectionViewLayout:layout];
+    self.tagCollectionView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.tagCollectionView.backgroundColor = [UIColor clearColor];
+    self.tagCollectionView.showsHorizontalScrollIndicator = NO;
+    self.tagCollectionView.delegate = self;
+    self.tagCollectionView.dataSource = self;
+    
+    // Register cell for collection view
+    [self.tagCollectionView registerClass:[UICollectionViewCell class] forCellWithReuseIdentifier:@"TagCell"];
+    
+    // Create header view to contain the collection view
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 60)];
+    [headerView addSubview:self.tagCollectionView];
+    
+    // Add constraints
+    [NSLayoutConstraint activateConstraints:@[
+        [self.tagCollectionView.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor],
+        [self.tagCollectionView.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor],
+        [self.tagCollectionView.topAnchor constraintEqualToAnchor:headerView.topAnchor],
+        [self.tagCollectionView.bottomAnchor constraintEqualToAnchor:headerView.bottomAnchor]
+    ]];
+    
+    // Set as table header view
+    self.tableView.tableHeaderView = headerView;
+}
+
+- (void)setupEmptyStateView {
+    // Create empty state view
+    self.emptyStateView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.emptyStateView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.emptyStateView.hidden = YES;
+    [self.view addSubview:self.emptyStateView];
+    
+    // Add image view for visual appeal
+    self.emptyStateImageView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"cube.box"]];
+    self.emptyStateImageView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.emptyStateImageView.contentMode = UIViewContentModeScaleAspectFit;
+    self.emptyStateImageView.tintColor = [UIColor secondaryLabelColor];
+    [self.emptyStateView addSubview:self.emptyStateImageView];
+    
+    // Add label for descriptive text
+    self.emptyStateLabel = [[UILabel alloc] init];
+    self.emptyStateLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.emptyStateLabel.textAlignment = NSTextAlignmentCenter;
+    self.emptyStateLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    self.emptyStateLabel.textColor = [UIColor secondaryLabelColor];
+    self.emptyStateLabel.numberOfLines = 0;
+    self.emptyStateLabel.text = localize(@"No modpacks found. Try adjusting your search criteria.", nil);
+    [self.emptyStateView addSubview:self.emptyStateLabel];
+    
+    // Add button for retry action
+    self.emptyStateButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.emptyStateButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.emptyStateButton setTitle:localize(@"Try Again", nil) forState:UIControlStateNormal];
+    [self.emptyStateButton addTarget:self action:@selector(refreshModpacks) forControlEvents:UIControlEventTouchUpInside];
+    [self.emptyStateView addSubview:self.emptyStateButton];
+    
+    // Constraints for empty state view
+    [NSLayoutConstraint activateConstraints:@[
+        [self.emptyStateView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.emptyStateView.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [self.emptyStateView.widthAnchor constraintEqualToAnchor:self.view.widthAnchor multiplier:0.8],
+        
+        [self.emptyStateImageView.topAnchor constraintEqualToAnchor:self.emptyStateView.topAnchor],
+        [self.emptyStateImageView.centerXAnchor constraintEqualToAnchor:self.emptyStateView.centerXAnchor],
+        [self.emptyStateImageView.widthAnchor constraintEqualToConstant:80],
+        [self.emptyStateImageView.heightAnchor constraintEqualToConstant:80],
+        
+        [self.emptyStateLabel.topAnchor constraintEqualToAnchor:self.emptyStateImageView.bottomAnchor constant:16],
+        [self.emptyStateLabel.leadingAnchor constraintEqualToAnchor:self.emptyStateView.leadingAnchor],
+        [self.emptyStateLabel.trailingAnchor constraintEqualToAnchor:self.emptyStateView.trailingAnchor],
+        
+        [self.emptyStateButton.topAnchor constraintEqualToAnchor:self.emptyStateLabel.bottomAnchor constant:24],
+        [self.emptyStateButton.centerXAnchor constraintEqualToAnchor:self.emptyStateView.centerXAnchor],
+        [self.emptyStateButton.bottomAnchor constraintEqualToAnchor:self.emptyStateView.bottomAnchor]
+    ]];
+}
+
 - (void)dealloc {
     // Remove KVO observer
     [self.searchController removeObserver:self forKeyPath:@"active"];
@@ -698,8 +1174,14 @@
             self.isLoadingMoreResults = NO;
             
             if (isActive) {
+                // Hide tag collection view in search mode
+                self.tableView.tableHeaderView.hidden = YES;
+                
                 // When search becomes active, create unified search results
                 [self updateUnifiedSearchResults];
+            } else {
+                // Show tag collection view in normal mode
+                self.tableView.tableHeaderView.hidden = NO;
             }
             
             // Always reload the table view to ensure consistency
@@ -710,6 +1192,115 @@
     } else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
     }
+}
+
+#pragma mark - Collection View Delegate & Data Source
+
+- (NSInteger)collectionView:(UICollectionView *)collectionView numberOfItemsInSection:(NSInteger)section {
+    return self.popularTags.count;
+}
+
+- (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView cellForItemAtIndexPath:(NSIndexPath *)indexPath {
+    UICollectionViewCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:@"TagCell" forIndexPath:indexPath];
+    
+    // Remove any existing tag labels
+    for (UIView *subview in cell.contentView.subviews) {
+        [subview removeFromSuperview];
+    }
+    
+    // Create tag label
+    UILabel *tagLabel = [[UILabel alloc] init];
+    tagLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    tagLabel.text = self.popularTags[indexPath.item];
+    tagLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    
+    // Check if this tag is active
+    BOOL isActive = [self.activeTagFilters containsObject:[self.popularTags[indexPath.item] lowercaseString]];
+    
+    // Container view with rounded corners
+    UIView *containerView = [[UIView alloc] init];
+    containerView.translatesAutoresizingMaskIntoConstraints = NO;
+    containerView.layer.cornerRadius = 16;
+    containerView.clipsToBounds = YES;
+    
+    // Set colors based on selection state
+    if (isActive) {
+        containerView.backgroundColor = [UIColor systemBlueColor];
+        tagLabel.textColor = [UIColor whiteColor];
+        
+        // Add checkmark for active tags
+        UIImageView *checkmark = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"checkmark.circle.fill"]];
+        checkmark.translatesAutoresizingMaskIntoConstraints = NO;
+        checkmark.tintColor = [UIColor whiteColor];
+        [containerView addSubview:checkmark];
+        
+        [NSLayoutConstraint activateConstraints:@[
+            [checkmark.trailingAnchor constraintEqualToAnchor:containerView.trailingAnchor constant:-8],
+            [checkmark.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
+            [checkmark.widthAnchor constraintEqualToConstant:16],
+            [checkmark.heightAnchor constraintEqualToConstant:16]
+        ]];
+    } else {
+        containerView.backgroundColor = [UIColor tertiarySystemBackgroundColor];
+        tagLabel.textColor = [UIColor labelColor];
+    }
+    
+    // Add container to cell
+    [cell.contentView addSubview:containerView];
+    [containerView addSubview:tagLabel];
+    
+    // Constraints for container
+    [NSLayoutConstraint activateConstraints:@[
+        [containerView.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor],
+        [containerView.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor],
+        [containerView.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
+        [containerView.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor]
+    ]];
+    
+    // Constraints for label
+    [NSLayoutConstraint activateConstraints:@[
+        [tagLabel.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor constant:12],
+        [tagLabel.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
+        [tagLabel.trailingAnchor constraintLessThanOrEqualToAnchor:containerView.trailingAnchor constant:isActive ? -28 : -12]
+    ]];
+    
+    return cell;
+}
+
+- (CGSize)collectionView:(UICollectionView *)collectionView layout:(UICollectionViewLayout *)collectionViewLayout sizeForItemAtIndexPath:(NSIndexPath *)indexPath {
+    // Calculate size based on text width
+    NSString *tagText = self.popularTags[indexPath.item];
+    UIFont *font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    
+    CGSize textSize = [tagText boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, 32)
+                                           options:NSStringDrawingUsesLineFragmentOrigin
+                                        attributes:@{NSFontAttributeName: font}
+                                           context:nil].size;
+    
+    // Add padding and check if tag is active
+    BOOL isActive = [self.activeTagFilters containsObject:[self.popularTags[indexPath.item] lowercaseString]];
+    CGFloat width = textSize.width + (isActive ? 56 : 24); // Extra space for checkmark if active
+    
+    return CGSizeMake(width, 32);
+}
+
+- (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
+    // Toggle tag selection
+    NSString *selectedTag = [self.popularTags[indexPath.item] lowercaseString];
+    
+    if ([self.activeTagFilters containsObject:selectedTag]) {
+        [self.activeTagFilters removeObject:selectedTag];
+    } else {
+        [self.activeTagFilters addObject:selectedTag];
+    }
+    
+    // Update UI
+    [collectionView reloadItemsAtIndexPaths:@[indexPath]];
+    [self updateFilterIndicators];
+    
+    // Update search results
+    [self updateUnifiedSearchResults];
+    [self.tableView reloadData];
 }
 
 #pragma mark - Action Methods
@@ -781,7 +1372,16 @@
     return NO;
 }
 
+- (void)refreshModpacks {
+    [self updateSearchResults];
+}
+
 - (void)actionCancelDownload {
+    // Add haptic feedback for better user experience
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [generator prepare];
+    [generator impactOccurred];
+    
     // Reset the current download cell's appearance
     if (self.currentDownloadIndexPath) {
         UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:self.currentDownloadIndexPath];
@@ -793,14 +1393,81 @@
     }
     
     [self.afManager invalidateSessionCancelingTasks:YES resetSession:NO];
-    showDialog(@"Download Cancelled", @"The download has been cancelled.");
+    
+    // Show a toast-style notification instead of a full dialog
+    [self showToast:localize(@"Download cancelled", nil)];
+}
+
+- (void)showToast:(NSString *)message {
+    // Create toast container
+    UIView *toastContainer = [[UIView alloc] init];
+    toastContainer.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.7];
+    toastContainer.layer.cornerRadius = 10;
+    toastContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    toastContainer.clipsToBounds = YES;
+    [self.view addSubview:toastContainer];
+    
+    // Create toast label
+    UILabel *toastLabel = [[UILabel alloc] init];
+    toastLabel.text = message;
+    toastLabel.textColor = [UIColor whiteColor];
+    toastLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightMedium];
+    toastLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    toastLabel.textAlignment = NSTextAlignmentCenter;
+    [toastContainer addSubview:toastLabel];
+    
+    // Constraints for toast container
+    [NSLayoutConstraint activateConstraints:@[
+        [toastContainer.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [toastContainer.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-20],
+        [toastContainer.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor multiplier:0.8],
+        [toastContainer.widthAnchor constraintGreaterThanOrEqualToConstant:100]
+    ]];
+    
+    // Constraints for toast label
+    [NSLayoutConstraint activateConstraints:@[
+        [toastLabel.topAnchor constraintEqualToAnchor:toastContainer.topAnchor constant:8],
+        [toastLabel.bottomAnchor constraintEqualToAnchor:toastContainer.bottomAnchor constant:-8],
+        [toastLabel.leadingAnchor constraintEqualToAnchor:toastContainer.leadingAnchor constant:16],
+        [toastLabel.trailingAnchor constraintEqualToAnchor:toastContainer.trailingAnchor constant:-16]
+    ]];
+    
+    // Animate toast in
+    toastContainer.alpha = 0.0;
+    [UIView animateWithDuration:0.3 animations:^{
+        toastContainer.alpha = 1.0;
+    }];
+    
+    // Animate toast out after delay
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [UIView animateWithDuration:0.3 animations:^{
+            toastContainer.alpha = 0.0;
+        } completion:^(BOOL finished) {
+            [toastContainer removeFromSuperview];
+        }];
+    });
 }
 
 - (void)actionClose {
-    [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+    // Add haptic feedback for better user experience
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [generator prepare];
+    [generator impactOccurred];
+    
+    // Add animation for smoother transition
+    [UIView animateWithDuration:0.2 animations:^{
+        self.view.alpha = 0.0;
+    } completion:^(BOOL finished) {
+        [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+    }];
 }
 
 - (void)segmentChanged:(UISegmentedControl *)segment {
+    // Add haptic feedback for better user experience
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [generator prepare];
+    [generator impactOccurred];
+    
     // Reset search if active
     if (self.searchController.isActive) {
         [self.searchController dismissViewControllerAnimated:YES completion:nil];
@@ -818,10 +1485,13 @@
     // Update filter based on segment
     NSString *sortMethod;
     switch (segment.selectedSegmentIndex) {
-        case 1: // Updated (was index 2 before)
+        case 1: // New
+            sortMethod = @"newest";
+            break;
+        case 2: // Updated
             sortMethod = @"updated";
             break;
-        default: // All (default)
+        default: // Popular (default)
             sortMethod = @"relevance";
             break;
     }
@@ -832,11 +1502,19 @@
     // Reset pagination state
     self.hasMoreResults = YES;
     
+    // Show loading state
+    [self switchToLoadingState];
+    
     // Reload data with new filter
     [self updateSearchResults];
 }
 
 - (void)showTagFilterMenu:(UIBarButtonItem *)sender {
+    // Create a modern filter menu with a visual blur background
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:localize(@"Filter by Tags", nil)
+                                                                    message:localize(@"Select tags to filter modpacks", nil)
+                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    
     // Create a set of all available tags
     NSMutableSet *allTagsSet = [NSMutableSet new];
     
@@ -885,11 +1563,6 @@
         return [formattedTag1 localizedCaseInsensitiveCompare:formattedTag2];
     }];
     
-    // Create alert controller for tag selection
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:localize(@"Filter by Tags", nil)
-                                                                            message:localize(@"Select tags to filter modpacks", nil)
-                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
-    
     // Add actions for each tag
     for (NSString *tag in allTags) {
         // Create a copy of activeTagFilters to avoid any mutation during enumeration
@@ -909,6 +1582,9 @@
                     [self.activeTagFilters addObject:tag];
                 }
                 
+                // Update collection view to show selected tags
+                [self.tagCollectionView reloadData];
+                
                 // Apply filters without dismissing the menu
                 [self updateUnifiedSearchResults];
                 [self updateFilterIndicators];
@@ -925,11 +1601,23 @@
     UIAlertAction *clearAction = [UIAlertAction actionWithTitle:localize(@"Clear All Filters", nil)
                                                          style:UIAlertActionStyleDestructive
                                                        handler:^(UIAlertAction * _Nonnull action) {
+        // Add haptic feedback
+        UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+        [generator prepare];
+        [generator impactOccurred];
+        
         // Clear all filters - use main thread for UI updates
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.activeTagFilters removeAllObjects];
+            
+            // Update collection view
+            [self.tagCollectionView reloadData];
+            
             [self updateUnifiedSearchResults];
             [self updateFilterIndicators];
+            
+            // Reload table with animation
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, self.tableView.numberOfSections)] withRowAnimation:UITableViewRowAnimationFade];
         });
     }];
     [alertController addAction:clearAction];
@@ -944,7 +1632,17 @@
     dispatch_async(dispatch_get_main_queue(), ^{
         // Configure popover presentation for iPad
         alertController.popoverPresentationController.barButtonItem = sender;
-        [self presentViewController:alertController animated:YES completion:nil];
+        
+        // Animate presentation
+        alertController.view.transform = CGAffineTransformMakeScale(1.1, 1.1);
+        alertController.view.alpha = 0;
+        
+        [self presentViewController:alertController animated:YES completion:^{
+            [UIView animateWithDuration:0.3 animations:^{
+                alertController.view.transform = CGAffineTransformIdentity;
+                alertController.view.alpha = 1;
+            }];
+        }];
     });
 }
 
@@ -1011,6 +1709,9 @@
     // Request a table reload on the main thread
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.tableView reloadData];
+        
+        // Update empty state visibility
+        [self updateEmptyStateVisibility];
     });
 }
 
@@ -1120,6 +1821,9 @@
             // Update UI state
             [self switchToReadyState];
             
+            // Update empty state visibility
+            [self updateEmptyStateVisibility];
+            
             // Critical: Always do a full reload for consistency
             [self.tableView reloadData];
             
@@ -1169,6 +1873,43 @@
     [self loadSearchResultsWithPrevList:YES];
 }
 
+- (void)updateEmptyStateVisibility {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Check if we need to show empty state
+        BOOL shouldShowEmptyState = NO;
+        
+        if (self.isSearchActive) {
+            // In search mode, check unified results
+            shouldShowEmptyState = (self.unifiedSearchResults.count == 0 && !self.isDataLoading && !self.hasMoreResults);
+        } else {
+            // In regular mode, check all categories
+            BOOL hasAnyModpacks = NO;
+            for (NSArray *categoryModpacks in self.organizedModpacks) {
+                if ([categoryModpacks isKindOfClass:[NSArray class]] && categoryModpacks.count > 0) {
+                    hasAnyModpacks = YES;
+                    break;
+                }
+            }
+            shouldShowEmptyState = (!hasAnyModpacks && !self.isDataLoading && !self.hasMoreResults);
+        }
+        
+        // Update empty state visibility
+        self.emptyStateView.hidden = !shouldShowEmptyState;
+        
+        // Update empty state message based on active filters
+        if (shouldShowEmptyState && self.activeTagFilters.count > 0) {
+            self.emptyStateLabel.text = localize(@"No modpacks match your current filters. Try clearing some filters.", nil);
+            self.emptyStateImageView.image = [UIImage systemImageNamed:@"tag.slash"];
+        } else if (shouldShowEmptyState && self.searchController.isActive && self.searchText.length > 0) {
+            self.emptyStateLabel.text = localize(@"No modpacks match your search. Try different keywords.", nil);
+            self.emptyStateImageView.image = [UIImage systemImageNamed:@"magnifyingglass"];
+        } else if (shouldShowEmptyState) {
+            self.emptyStateLabel.text = localize(@"No modpacks found. Try refreshing or check your network connection.", nil);
+            self.emptyStateImageView.image = [UIImage systemImageNamed:@"cube.box"];
+        }
+    });
+}
+
 #pragma mark - UI State Management
 
 - (void)switchToLoadingState {
@@ -1176,13 +1917,36 @@
         // Avoid double-setting loading state
         if (self.isDataLoading) return;
         
+        // Create modern activity indicator
         UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-        self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithCustomView:indicator]];
+        indicator.color = [UIColor systemBlueColor];
+        
+        // Create container view with improved visual appeal
+        UIView *containerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 40, 40)];
+        containerView.backgroundColor = [UIColor secondarySystemBackgroundColor];
+        containerView.layer.cornerRadius = 20;
+        containerView.layer.shadowColor = [UIColor blackColor].CGColor;
+        containerView.layer.shadowOffset = CGSizeMake(0, 2);
+        containerView.layer.shadowOpacity = 0.1;
+        containerView.layer.shadowRadius = 4;
+        
+        // Add indicator to container
+        indicator.center = CGPointMake(containerView.bounds.size.width / 2, containerView.bounds.size.height / 2);
+        [containerView addSubview:indicator];
         [indicator startAnimating];
+        
+        // Set as right bar button item
+        self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithCustomView:containerView]];
+        
+        // Prevent dismissal during loading
         self.navigationController.modalInPresentation = YES;
         self.tableView.allowsSelection = NO;
         
+        // Update loading state flag
         self.isDataLoading = YES;
+        
+        // Hide empty state view during loading
+        self.emptyStateView.hidden = YES;
     });
 }
 
@@ -1191,29 +1955,41 @@
         // Avoid double-setting ready state
         if (!self.isDataLoading) return;
         
-        UIActivityIndicatorView *indicator = (id)self.navigationItem.rightBarButtonItems[0].customView;
-        [indicator stopAnimating];
+        // Stop any activity indicators
+        UIView *containerView = self.navigationItem.rightBarButtonItems[0].customView;
+        for (UIView *subview in containerView.subviews) {
+            if ([subview isKindOfClass:[UIActivityIndicatorView class]]) {
+                [(UIActivityIndicatorView *)subview stopAnimating];
+            }
+        }
         
+        // Restore normal navigation items with modern styling
         UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] 
                                        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
                                        target:self 
                                        action:@selector(actionClose)];
                                        
         UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
-                                            initWithImage:[UIImage systemImageNamed:@"tag"]
+                                            initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
                                             style:UIBarButtonItemStylePlain 
                                             target:self 
                                             action:@selector(showTagFilterMenu:)];
-                                            
+        
+        // Update tag button appearance based on filter state
         if (self.activeTagFilters.count > 0) {
             tagFilterButton.tintColor = [UIColor systemBlueColor];
         }
         
         self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
+        
+        // Allow dismissal and interaction again
         self.navigationController.modalInPresentation = NO;
         self.tableView.allowsSelection = YES;
-        [self.refreshControl endRefreshing];
         
+        // Stop refresh control if active
+        [self.modernRefreshControl endRefreshing];
+        
+        // Update loading state flag
         self.isDataLoading = NO;
     });
 }
@@ -1224,13 +2000,37 @@
         // First check if rightBarButtonItems has enough elements
         if (self.navigationItem.rightBarButtonItems.count > 1) {
             if (self.activeTagFilters.count > 0) {
-                self.navigationItem.rightBarButtonItems[1].tintColor = [UIColor systemBlueColor];
+                // Use more visually appealing indicator
+                UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
+                                                   initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
+                                                   style:UIBarButtonItemStylePlain 
+                                                   target:self 
+                                                   action:@selector(showTagFilterMenu:)];
+                tagFilterButton.tintColor = [UIColor systemBlueColor];
+                
+                // Add badge count if possible
+                if (@available(iOS 14.0, *)) {
+                    NSString *badgeValue = [NSString stringWithFormat:@"%lu", (unsigned long)self.activeTagFilters.count];
+                    UINavigationBarAppearance *appearance = [[UINavigationBarAppearance alloc] init];
+                    appearance.badgeTokenStyle = [UITokenStyleConfiguration configurationWithFont:[UIFont systemFontOfSize:14 weight:UIFontWeightBold] textColor:[UIColor whiteColor] cornerRadius:10.0 backgroundColor:[UIColor systemBlueColor]];
+                    
+                    tagFilterButton.tag = badgeValue.integerValue;
+                }
+                
+                self.navigationItem.rightBarButtonItems[1] = tagFilterButton;
             } else {
-                self.navigationItem.rightBarButtonItems[1].tintColor = nil; // Default tint
+                // Reset to normal appearance
+                UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
+                                                   initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
+                                                   style:UIBarButtonItemStylePlain 
+                                                   target:self 
+                                                   action:@selector(showTagFilterMenu:)];
+                self.navigationItem.rightBarButtonItems[1] = tagFilterButton;
             }
         }
-        // If there aren't enough items, we'll handle it silently
-        // This can happen during UI state transitions
+        
+        // Update collection view to reflect current filter state
+        [self.tagCollectionView reloadData];
     });
 }
 
@@ -1650,9 +2450,15 @@
     }
     
     [self.dataLock unlock];
+    
+    // Update empty state visibility
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateEmptyStateVisibility];
+        [self.tableView reloadData];
+    });
 }
 
-// New method to sort results by relevance to search term
+// Method to sort results by relevance to search term
 - (void)sortUnifiedResultsByRelevance:(NSString *)searchText inArray:(NSMutableArray *)arrayToSort {
     // Convert search text to lowercase once for efficiency
     NSString *lowercaseSearchText = [searchText lowercaseString];
@@ -1717,6 +2523,14 @@
             if (!hasInCategories1 && hasInCategories2) return NSOrderedDescending;
         }
         
+        // Popularity based on download count if available
+        NSNumber *downloads1 = obj1[@"downloads"];
+        NSNumber *downloads2 = obj2[@"downloads"];
+        
+        if (downloads1 && downloads2) {
+            return [downloads2 compare:downloads1]; // Higher downloads first
+        }
+        
         // Alphabetical sort as last resort
         return [title1 localizedCaseInsensitiveCompare:title2];
     }];
@@ -1753,6 +2567,7 @@
         // Only reload the data on the main thread
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.tableView reloadData];
+            [self updateEmptyStateVisibility];
         });
     }
 }
@@ -1817,7 +2632,7 @@
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     if (self.isDataLoading) {
-        return 1; // Show a single loading row
+        return 3; // Show multiple shimmer cells for better UX
     }
     
     // When in search mode, show unified search results
@@ -1829,7 +2644,7 @@
         
         // If we have no results but might get more, show a loading indicator
         if (count == 0 && hasMore) {
-            return 1;
+            return 3; // Show 3 shimmer cells
         }
         
         // If we have results and might get more, add 1 for the loading indicator
@@ -1939,6 +2754,11 @@
 }
 
 - (void)toggleSection:(UIButton *)sender {
+    // Add haptic feedback
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [generator prepare];
+    [generator impactOccurred];
+    
     if (self.isDataLoading) {
         return;
     }
@@ -1953,7 +2773,7 @@
         
         [self.dataLock unlock];
         
-        // Update section on the main thread
+        // Update section on the main thread with animation
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:section] withRowAnimation:UITableViewRowAnimationFade];
         });
@@ -1963,26 +2783,17 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    return 100.0; // Increased height to accommodate tags
+    return 110.0; // Increased height for better visuals
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    ModpackVersionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ModpackVersionCell" forIndexPath:indexPath];
-    
-    // If data is loading, return a placeholder cell
+    // Show shimmer cells when loading
     if (self.isDataLoading) {
-        cell.titleLabel.text = localize(@"Loading modpacks...", nil);
-        cell.subtitleLabel.text = @"";
-        [cell setTags:@[]];
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        
-        // Add activity indicator as accessory view
-        UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-        [activityIndicator startAnimating];
-        cell.accessoryView = activityIndicator;
-        
+        ShimmerCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ShimmerCell" forIndexPath:indexPath];
         return cell;
     }
+    
+    ModpackVersionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ModpackVersionCell" forIndexPath:indexPath];
     
     // SEARCH MODE: Show unified search results
     if (self.isSearchActive) {
@@ -2003,28 +2814,23 @@
     
     // If we're showing the loading indicator row
     if (hasMore && indexPath.row == resultsCount) {
-        cell.titleLabel.text = localize(@"Loading more results...", nil);
-        cell.subtitleLabel.text = @"";
-        [cell setTags:@[]];
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        
-        // Add activity indicator as accessory view
-        UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-        [activityIndicator startAnimating];
-        cell.accessoryView = activityIndicator;
-        
         [self.dataLock unlock];
+        
+        // Use shimmer cell for loading state
+        ShimmerCell *shimmerCell = [self.tableView dequeueReusableCellWithIdentifier:@"ShimmerCell" forIndexPath:indexPath];
         
         // Trigger loading more results if not already loading
         if (!self.isLoadingMoreResults) {
             [self loadMoreResults];
         }
         
-        return cell;
+        return shimmerCell;
     }
     
     // If we have no results
     if (resultsCount == 0) {
+        [self.dataLock unlock];
+        
         cell.titleLabel.text = localize(@"No modpacks found", nil);
         cell.subtitleLabel.text = localize(@"Try changing your search criteria", nil);
         [cell setTags:@[]];
@@ -2032,7 +2838,6 @@
         cell.modpackIconView.image = [UIImage systemImageNamed:@"cube.box"];
         cell.modpackIconView.tintColor = [UIColor systemGray3Color];
         
-        [self.dataLock unlock];
         return cell;
     }
     
@@ -2109,7 +2914,7 @@
     
     // Set modpack icon with improved image loading
     cell.modpackIconView.image = nil; // Reset image first to avoid stale images
-    UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"];
+    UIImage *fallbackImage = [UIImage imageNamed:@"DefaultProfile"] ?: [UIImage systemImageNamed:@"cube.fill"];
     
     if (imageUrl.length > 0) {
         // Convert WebP URLs to supported formats
@@ -2164,16 +2969,17 @@
         // If no URL, use fallback immediately
         cell.modpackIconView.image = fallbackImage;
     }
-    
-    // Always show disclosure indicator, regardless of whether details are loaded
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    cell.accessoryView = nil;
 }
 
 #pragma mark - UITableViewDelegate
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    
+    // Add haptic feedback for better user experience
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [generator prepare];
+    [generator impactOccurred];
     
     // Skip if data is still loading
     if (self.isDataLoading) {
@@ -2241,9 +3047,18 @@
         return; // Cell might have been scrolled offscreen
     }
     
+    // Create a modern loading indicator with animation
+    UIView *loadingContainer = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 30, 30)];
+    loadingContainer.backgroundColor = [UIColor secondarySystemBackgroundColor];
+    loadingContainer.layer.cornerRadius = 15;
+    
     UIActivityIndicatorView *activityIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    activityIndicator.color = [UIColor systemBlueColor];
+    activityIndicator.center = CGPointMake(15, 15);
+    [loadingContainer addSubview:activityIndicator];
     [activityIndicator startAnimating];
-    cell.accessoryView = activityIndicator;
+    
+    cell.accessoryView = loadingContainer;
     cell.accessoryType = UITableViewCellAccessoryNone;
     
     // Create a weak reference to self to avoid retain cycles
@@ -2428,69 +3243,121 @@
     // Create a weak reference to self to prevent retain cycles
     __weak typeof(self) weakSelf = self;
     
-    [versionNames enumerateObjectsUsingBlock:
-    ^(NSString *name, NSUInteger i, BOOL *stop) {
-        // Skip invalid indices
-        if (i >= mcVersionNames.count) return;
+    // Add a title menu item
+    UIAction *titleAction = [UIAction actionWithTitle:modpack[@"title"] 
+                                                image:[UIImage systemImageNamed:@"info.circle"]
+                                           identifier:nil
+                                              handler:^(UIAction *action) {
+                                                  // No action - this is just a title
+                                              }];
+    titleAction.attributes = UIMenuElementAttributesDisabled;
+    [menuItems addObject:titleAction];
+    
+    // Check if we have any versions
+    if (versionNames.count == 0) {
+        UIAction *noVersionsAction = [UIAction actionWithTitle:localize(@"No versions available", nil)
+                                                         image:nil
+                                                    identifier:nil
+                                                       handler:^(UIAction *action) {}];
+        noVersionsAction.attributes = UIMenuElementAttributesDisabled;
+        [menuItems addObject:noVersionsAction];
+    } else {
+        // Add a separator
+        UIAction *separator = [UIAction actionWithTitle:localize(@"Select version to install:", nil)
+                                                  image:nil
+                                             identifier:nil
+                                                handler:^(UIAction *action) {}];
+        separator.attributes = UIMenuElementAttributesDisabled;
+        [menuItems addObject:separator];
         
-        // Skip non-string values
-        if (![name isKindOfClass:[NSString class]] || 
-            ![mcVersionNames[i] isKindOfClass:[NSString class]]) return;
-        
-        NSString *nameWithVersion = name;
-        NSString *mcVersion = mcVersionNames[i];
-        if (![name hasSuffix:mcVersion]) {
-            nameWithVersion = [NSString stringWithFormat:@"%@ - %@", name, mcVersion];
-        }
-        
-        [menuItems addObject:[UIAction
-            actionWithTitle:nameWithVersion
-            image:nil identifier:nil
-            handler:^(UIAction *action) {
-                [weakSelf actionClose];
-                
-                // Create a mutable copy of modpack to include original categories
-                NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
-                
-                // If we have original categories stored, make sure they're included
-                if (modpack[@"original_categories"]) {
-                    NSMutableArray *allCategories = [NSMutableArray array];
+        // Add version actions
+        [versionNames enumerateObjectsUsingBlock:
+        ^(NSString *name, NSUInteger i, BOOL *stop) {
+            // Skip invalid indices
+            if (i >= mcVersionNames.count) return;
+            
+            // Skip non-string values
+            if (![name isKindOfClass:[NSString class]] || 
+                ![mcVersionNames[i] isKindOfClass:[NSString class]]) return;
+            
+            NSString *nameWithVersion = name;
+            NSString *mcVersion = mcVersionNames[i];
+            if (![name hasSuffix:mcVersion]) {
+                nameWithVersion = [NSString stringWithFormat:@"%@ - %@", name, mcVersion];
+            }
+            
+            // Determine the appropriate icon based on Minecraft version
+            UIImage *versionIcon = nil;
+            if ([mcVersion hasPrefix:@"1.20"]) {
+                versionIcon = [UIImage systemImageNamed:@"star.fill"];
+            } else if ([mcVersion hasPrefix:@"1.19"]) {
+                versionIcon = [UIImage systemImageNamed:@"star"];
+            } else if ([mcVersion hasPrefix:@"1.18"]) {
+                versionIcon = [UIImage systemImageNamed:@"mountain.2.fill"];
+            } else if ([mcVersion hasPrefix:@"1.17"]) {
+                versionIcon = [UIImage systemImageNamed:@"mountain.2"];
+            } else if ([mcVersion hasPrefix:@"1.16"]) {
+                versionIcon = [UIImage systemImageNamed:@"flame.fill"];
+            } else {
+                versionIcon = [UIImage systemImageNamed:@"cube.box.fill"];
+            }
+            
+            [menuItems addObject:[UIAction
+                actionWithTitle:nameWithVersion
+                image:versionIcon
+                identifier:nil
+                handler:^(UIAction *action) {
+                    [weakSelf actionClose];
                     
-                    // Add original categories
-                    if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
-                        [allCategories addObjectsFromArray:modpack[@"original_categories"]];
-                    }
+                    // Create a mutable copy of modpack to include original categories
+                    NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
                     
-                    // Add new categories if different from originals
-                    if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
-                        for (id category in modpack[@"categories"]) {
-                            if (![allCategories containsObject:category]) {
-                                [allCategories addObject:category];
+                    // If we have original categories stored, make sure they're included
+                    if (modpack[@"original_categories"]) {
+                        NSMutableArray *allCategories = [NSMutableArray array];
+                        
+                        // Add original categories
+                        if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
+                            [allCategories addObjectsFromArray:modpack[@"original_categories"]];
+                        }
+                        
+                        // Add new categories if different from originals
+                        if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
+                            for (id category in modpack[@"categories"]) {
+                                if (![allCategories containsObject:category]) {
+                                    [allCategories addObject:category];
+                                }
                             }
                         }
+                        
+                        // Use the combined categories
+                        modpackWithCategories[@"categories"] = allCategories;
                     }
                     
-                    // Use the combined categories
-                    modpackWithCategories[@"categories"] = allCategories;
-                }
-                
-                // Safely create the icon path
-                NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
-                UIImage *iconImage = cell.modpackIconView.image ?: [UIImage imageNamed:@"DefaultProfile"];
-                [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
-                
-                // Safely install the modpack with preserved categories
-                [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:i];
-            }]];
-    }];
+                    // Safely create the icon path
+                    NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
+                    UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
+                    [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
+                    
+                    // Add haptic feedback for selection
+                    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+                    [generator prepare];
+                    [generator impactOccurred];
+                    
+                    // Safely install the modpack with preserved categories
+                    [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:i];
+                }]];
+        }];
+    }
     
     // If no valid menu items, show error
-    if (menuItems.count == 0) {
+    if (menuItems.count <= 2) { // Title + separator only
         showDialog(localize(@"Error", nil), @"No valid versions available for this modpack.");
         return;
     }
     
-    self.currentMenu = [UIMenu menuWithTitle:modpack[@"title"] ?: @"Select Version" children:menuItems];
+    // Create modern menu with sections
+    self.currentMenu = [UIMenu menuWithTitle:@"" children:menuItems];
     UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:self];
     
     // Only set interactions if cell is visible
