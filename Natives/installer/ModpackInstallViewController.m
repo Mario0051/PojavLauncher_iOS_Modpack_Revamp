@@ -3484,17 +3484,121 @@
     
     // Create modern menu with sections
     self.currentMenu = [UIMenu menuWithTitle:@"" children:menuItems];
-    UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:self];
     
-    // Only set interactions if cell is visible
-    if ([cell superview]) {
-        cell.interactions = @[interaction];
-        [interaction _presentMenuAtLocation:CGPointZero];
+    // Check if we're running on iOS 14 or later
+    if (@available(iOS 14.0, *)) {
+        // Use the standard UIMenu presentation API for iOS 14+
+        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:modpack[@"title"]
+                                                                              message:localize(@"Select version to install:", nil)
+                                                                       preferredStyle:UIAlertControllerStyleActionSheet];
+        
+        // Add actions for each version
+        for (UIAction *action in menuItems) {
+            // Skip title and separator actions
+            if (action.attributes == UIMenuElementAttributesDisabled) {
+                continue;
+            }
+            
+            UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
+                                                                style:UIAlertActionStyleDefault
+                                                              handler:^(UIAlertAction * _Nonnull alertAction) {
+                                                                  action.handler(action);
+                                                              }];
+            [alertController addAction:alertAction];
+        }
+        
+        // Add cancel option
+        UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                                            style:UIAlertActionStyleCancel
+                                                          handler:nil];
+        [alertController addAction:cancelAction];
+        
+        // Configure popover for iPad
+        alertController.popoverPresentationController.sourceView = cell;
+        alertController.popoverPresentationController.sourceRect = cell.bounds;
+        
+        // Present the alert
+        [self presentViewController:alertController animated:YES completion:nil];
     } else {
-        // If cell isn't visible, present menu from a fixed point
-        UIView *containerView = self.view;
-        containerView.interactions = @[interaction];
-        [interaction _presentMenuAtLocation:CGPointMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2)];
+        // Fallback for earlier iOS versions using context menu
+        UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:self];
+        
+        // Only set interactions if cell is visible
+        if ([cell superview]) {
+            cell.interactions = @[interaction];
+            if ([interaction respondsToSelector:@selector(_presentMenuAtLocation:)]) {
+                // Try to use the private API if available
+                [interaction performSelector:@selector(_presentMenuAtLocation:) withObject:[NSValue valueWithCGPoint:CGPointZero]];
+            } else {
+                // Fallback to using standard alert controller
+                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:modpack[@"title"]
+                                                                                      message:localize(@"Select version to install:", nil)
+                                                                               preferredStyle:UIAlertControllerStyleActionSheet];
+                
+                // Add actions for each version
+                for (UIAction *action in menuItems) {
+                    // Skip title and separator actions
+                    if (action.attributes == UIMenuElementAttributesDisabled) {
+                        continue;
+                    }
+                    
+                    UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
+                                                                        style:UIAlertActionStyleDefault
+                                                                      handler:^(UIAlertAction * _Nonnull alertAction) {
+                                                                          action.handler(action);
+                                                                      }];
+                    [alertController addAction:alertAction];
+                }
+                
+                // Add cancel option
+                UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                                                    style:UIAlertActionStyleCancel
+                                                                  handler:nil];
+                [alertController addAction:cancelAction];
+                
+                // Configure popover for iPad
+                alertController.popoverPresentationController.sourceView = cell;
+                alertController.popoverPresentationController.sourceRect = cell.bounds;
+                
+                // Present the alert
+                [self presentViewController:alertController animated:YES completion:nil];
+            }
+        } else {
+            // If cell isn't visible, present menu from a fixed point using alert controller
+            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:modpack[@"title"]
+                                                                                  message:localize(@"Select version to install:", nil)
+                                                                           preferredStyle:UIAlertControllerStyleActionSheet];
+            
+            // Add actions for each version
+            for (UIAction *action in menuItems) {
+                // Skip title and separator actions
+                if (action.attributes == UIMenuElementAttributesDisabled) {
+                    continue;
+                }
+                
+                UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
+                                                                    style:UIAlertActionStyleDefault
+                                                                  handler:^(UIAlertAction * _Nonnull alertAction) {
+                                                                      action.handler(action);
+                                                                  }];
+                [alertController addAction:alertAction];
+            }
+            
+            // Add cancel option
+            UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                                                style:UIAlertActionStyleCancel
+                                                              handler:nil];
+            [alertController addAction:cancelAction];
+            
+            // Configure popover for iPad
+            UIView *sourceView = self.view;
+            CGRect sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
+            alertController.popoverPresentationController.sourceView = sourceView;
+            alertController.popoverPresentationController.sourceRect = sourceRect;
+            
+            // Present the alert
+            [self presentViewController:alertController animated:YES completion:nil];
+        }
     }
 }
 
