@@ -276,17 +276,11 @@
             @"quests": [UIColor systemYellowColor],            // Yellow: rewards, achievements
             @"technology": [UIColor colorWithRed:0.5 green:0.5 blue:0.5 alpha:1.0], // Gray: industrial, mechanical
             
-            // Additional categories for better coverage
-            @"building": [UIColor colorWithRed:0.76 green:0.60 blue:0.42 alpha:1.0], // Brown: construction
-            @"exploration": [UIColor systemGreenColor],        // Same as adventure
-            @"survival": [UIColor systemOrangeColor],          // Survival-oriented
-            @"rpg": [UIColor systemPinkColor],                 // Pink: role-playing, fantasy
-            @"skyblock": [UIColor colorWithRed:0.53 green:0.81 blue:0.92 alpha:1.0], // Light blue: sky theme
-            @"mini game": [UIColor systemYellowColor],         // Mini-games like quests
-            @"modded": [UIColor systemPurpleColor],            // General modded category
+            // Mod loader categories
             @"fabric": [UIColor colorWithRed:0.31 green:0.31 blue:0.31 alpha:1.0],  // Dark gray: Fabric loader
             @"forge": [UIColor colorWithRed:0.60 green:0.40 blue:0.20 alpha:1.0],   // Bronze: Forge loader
-            @"vanilla+": [UIColor colorWithRed:0.82 green:0.71 blue:0.55 alpha:1.0] // Vanilla enhanced
+            @"neoforge": [UIColor colorWithRed:0.40 green:0.50 blue:0.70 alpha:1.0], // Blue-gray: Neoforge
+            @"quilt": [UIColor colorWithRed:0.70 green:0.40 blue:0.70 alpha:1.0]    // Purple: Quilt loader
         };
     });
     
@@ -294,17 +288,9 @@
     NSString *lowercaseTag = [tag lowercaseString];
     
     // First try exact match
-    for (NSString *key in tagColors) {
-        if ([lowercaseTag isEqualToString:key]) {
-            return tagColors[key];
-        }
-    }
-    
-    // Then try contains matching
-    for (NSString *key in tagColors.allKeys) {
-        if ([lowercaseTag containsString:key] || [key containsString:lowercaseTag]) {
-            return tagColors[key];
-        }
+    UIColor *color = tagColors[lowercaseTag];
+    if (color) {
+        return color;
     }
     
     // Calculate a unique color based on the tag string (for unknown tags)
@@ -314,7 +300,6 @@
         hash = ((hash << 5) - hash) + character;
     }
     
-    // Use the hash to create a repeatable color with good saturation and brightness
     CGFloat hue = (hash % 256) / 256.0;
     return [UIColor colorWithHue:hue saturation:0.75 brightness:0.85 alpha:1.0];
 }
@@ -952,10 +937,11 @@
     self.isSearchActive = NO;
     self.hasMoreResults = YES;
     
-    // Setup popular tags for quick filtering
+    // Setup popular tags for quick filtering with the official modpack categories
     self.popularTags = @[
-        @"Magic", @"Tech", @"Adventure", @"Quests", @"Fabric", 
-        @"Forge", @"Multiplayer", @"Lightweight", @"Kitchen Sink", @"Skyblock"
+        @"Adventure", @"Magic", @"Technology", @"Quests", @"Fabric", 
+        @"Forge", @"Multiplayer", @"Lightweight", @"Kitchen Sink", @"Optimization",
+        @"Challenging", @"Combat", @"Neoforge", @"Quilt"
     ];
     
     // Setup tag collection view for horizontal scrolling tags
