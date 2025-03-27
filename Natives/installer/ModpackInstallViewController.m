@@ -120,9 +120,6 @@
         self.containerView.clipsToBounds = YES;
         [self.contentView addSubview:self.containerView];
         
-        // Make sure the container doesn't block touches
-        self.containerView.userInteractionEnabled = NO;
-        
         // Modpack icon - circular with auto sizing and shadow
         self.modpackIconView = [[UIImageView alloc] init];
         self.modpackIconView.translatesAutoresizingMaskIntoConstraints = NO;
