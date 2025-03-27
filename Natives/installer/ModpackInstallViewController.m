@@ -1781,6 +1781,7 @@
     } else {
         dispatch_async(dispatch_get_main_queue(), ^{
             self.isDataLoading = NO;
+            self.tableView.allowsSelection = YES; // Explicitly enable selection for initial loads
         });
     }
     
