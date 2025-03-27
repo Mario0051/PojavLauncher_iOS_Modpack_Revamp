@@ -2807,20 +2807,39 @@
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    // Show shimmer cells when loading
+    // Show shimmer cells when loading or for the loading more indicator
     if (self.isDataLoading) {
         ShimmerCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ShimmerCell" forIndexPath:indexPath];
         return cell;
     }
     
-    ModpackVersionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ModpackVersionCell" forIndexPath:indexPath];
-    
-    // SEARCH MODE: Show unified search results
+    // SEARCH MODE: Determine correct cell type based on index path
     if (self.isSearchActive) {
+        [self.dataLock lock];
+        NSInteger resultsCount = self.unifiedSearchResults.count;
+        BOOL hasMore = self.hasMoreResults;
+        [self.dataLock unlock];
+        
+        // If we're showing the loading indicator row (last row when more results available)
+        if (hasMore && indexPath.row == resultsCount) {
+            // Use shimmer cell for loading state
+            ShimmerCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ShimmerCell" forIndexPath:indexPath];
+            
+            // Trigger loading more results if not already loading
+            if (!self.isLoadingMoreResults) {
+                [self loadMoreResults];
+            }
+            
+            return cell;
+        }
+        
+        // For actual content, use the ModpackVersionCell
+        ModpackVersionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ModpackVersionCell" forIndexPath:indexPath];
         return [self configureSearchModeCellAtIndexPath:indexPath cell:cell];
     }
     
-    // CATEGORY MODE: Show categorized results
+    // CATEGORY MODE: Standard content cell
+    ModpackVersionCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ModpackVersionCell" forIndexPath:indexPath];
     return [self configureCategoryModeCellAtIndexPath:indexPath cell:cell];
 }
 
@@ -2830,22 +2849,6 @@
     [self.dataLock lock];
     
     NSInteger resultsCount = self.unifiedSearchResults.count;
-    BOOL hasMore = self.hasMoreResults;
-    
-    // If we're showing the loading indicator row
-    if (hasMore && indexPath.row == resultsCount) {
-        [self.dataLock unlock];
-        
-        // Use shimmer cell for loading state
-        ShimmerCell *shimmerCell = [self.tableView dequeueReusableCellWithIdentifier:@"ShimmerCell" forIndexPath:indexPath];
-        
-        // Trigger loading more results if not already loading
-        if (!self.isLoadingMoreResults) {
-            [self loadMoreResults];
-        }
-        
-        return shimmerCell;
-    }
     
     // If we have no results
     if (resultsCount == 0) {
