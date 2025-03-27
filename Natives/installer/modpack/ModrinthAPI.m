@@ -64,9 +64,12 @@ extern void showDialog(NSString *title, NSString *message);
         configuration.timeoutIntervalForRequest = 30.0;
         configuration.timeoutIntervalForResource = 60.0;
         
+        // Initialize user agent with a default value to avoid nil crashes
+        self.userAgent = @"PojavLauncher-iOS";
+        
         // Use a descriptive user agent
         configuration.HTTPAdditionalHeaders = @{
-            @"User-Agent": @"PojavLauncher-iOS",
+            @"User-Agent": self.userAgent,
             @"Accept": @"application/json"
         };
         
@@ -75,6 +78,9 @@ extern void showDialog(NSString *title, NSString *message);
         
         // Initialize other properties
         self.reachedLastPage = NO;
+        
+        // Initialize download tracking objects
+        self.downloadCountLock = [[NSLock alloc] init];
     }
     return self;
 }
@@ -243,8 +249,14 @@ extern void showDialog(NSString *title, NSString *message);
         return;
     }
     
-    // Create headers with proper User-Agent
-    NSDictionary *headers = @{@"User-Agent": self.userAgent};
+    // Create headers with proper User-Agent - with nil check
+    NSDictionary *headers;
+    if (self.userAgent) {
+        headers = @{@"User-Agent": self.userAgent};
+    } else {
+        // Fallback to default user agent if property is nil
+        headers = @{@"User-Agent": @"PojavLauncher-iOS"};
+    }
     
     // First, load full project details to get complete category info and other metadata
     NSString *projectEndpoint = [NSString stringWithFormat:@"project/%@", projectId];
@@ -395,6 +407,12 @@ extern void showDialog(NSString *title, NSString *message);
     // Create URL with parameters
     NSMutableString *urlString = [NSMutableString stringWithString:endpoint];
     
+    // Add API base URL if not already included
+    if (![urlString hasPrefix:@"http"]) {
+        // Default to Modrinth API base URL
+        [urlString insertString:@"https://api.modrinth.com/v2/" atIndex:0];
+    }
+    
     // Add query parameters if provided
     if (params && params.count > 0) {
         [urlString appendString:@"?"];
@@ -416,10 +434,12 @@ extern void showDialog(NSString *title, NSString *message);
     // Set HTTP method
     [request setHTTPMethod:@"GET"];
     
-    // Set headers
+    // Set headers with nil safety
     if (headers) {
         for (NSString *key in headers) {
-            [request setValue:headers[key] forHTTPHeaderField:key];
+            if (headers[key]) { // Ensure we're not adding nil values
+                [request setValue:headers[key] forHTTPHeaderField:key];
+            }
         }
     }
     
@@ -486,7 +506,8 @@ extern void showDialog(NSString *title, NSString *message);
 
 // Compatibility method for old code - forwards to method with headers
 - (id)getEndpoint:(NSString *)endpoint params:(NSDictionary *)params {
-    return [self getEndpoint:endpoint params:params headers:@{@"User-Agent": self.userAgent}];
+    NSDictionary *headers = @{@"User-Agent": self.userAgent ?: @"PojavLauncher-iOS"};
+    return [self getEndpoint:endpoint params:params headers:headers];
 }
 
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
