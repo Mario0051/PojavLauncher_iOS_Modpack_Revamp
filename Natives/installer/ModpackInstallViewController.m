@@ -2189,13 +2189,12 @@
     // Create dictionary to group modpacks by category
     NSMutableDictionary *categorizedModpacks = [NSMutableDictionary dictionary];
     
-    // Default categories for organization
+    // Default categories for organization - removed "Other Modpacks"
     NSArray *defaultCategories = @[
         localize(@"Featured Modpacks", nil),
         localize(@"Magic Modpacks", nil),
         localize(@"Tech Modpacks", nil),
-        localize(@"Adventure Modpacks", nil),
-        localize(@"Other Modpacks", nil)
+        localize(@"Adventure Modpacks", nil)
     ];
     
     // Initialize categories
@@ -2291,7 +2290,7 @@
         }
         
         // Find the category with the highest score
-        NSString *bestCategory = localize(@"Other Modpacks", nil);
+        NSString *bestCategory = localize(@"Featured Modpacks", nil); // Default to Featured instead of Other
         int highestScore = 0;
         
         for (NSString *category in categoryScores) {
@@ -2302,18 +2301,18 @@
             }
         }
         
-        // If no category had a score, use the default "Other"
-        NSString *category = (highestScore > 0) ? bestCategory : localize(@"Other Modpacks", nil);
+        // If no category had a score, add to Featured instead of Other
+        NSString *category = bestCategory;
         
         // Add to appropriate category - check for valid arrays first
         NSMutableArray *categoryArray = categorizedModpacks[category];
         if (categoryArray && [categoryArray isKindOfClass:[NSMutableArray class]]) {
             [categoryArray addObject:modpack];
         } else {
-            // If category doesn't exist for some reason, add to Other
-            NSMutableArray *otherArray = categorizedModpacks[localize(@"Other Modpacks", nil)];
-            if (otherArray && [otherArray isKindOfClass:[NSMutableArray class]]) {
-                [otherArray addObject:modpack];
+            // If category doesn't exist for some reason, add to Featured
+            NSMutableArray *featuredArray = categorizedModpacks[localize(@"Featured Modpacks", nil)];
+            if (featuredArray && [featuredArray isKindOfClass:[NSMutableArray class]]) {
+                [featuredArray addObject:modpack];
             }
         }
     }
@@ -2380,63 +2379,154 @@
         }
     }
     
-    // For simplicity, we'll just add all new modpacks to the "Other" category
-    NSString *otherCategory = localize(@"Other Modpacks", nil);
+    // Get the list of current categories for reference
+    NSArray *currentCategories = [self.categories copy];
     
-    // Find or create the "Other" category
-    NSUInteger otherIndex = [self.categories indexOfObject:otherCategory];
-    if (otherIndex == NSNotFound) {
-        [self.categories addObject:otherCategory];
-        [self.visibilityList addObject:@YES];
-        [self.organizedModpacks addObject:[NSMutableArray array]];
-        [self.filteredModpacks addObject:[NSMutableArray array]];
-        otherIndex = self.categories.count - 1;
-    }
+    // Define the category keywords for classification - same as in organizeModpacksByCategory
+    NSDictionary *categoryKeywords = @{
+        localize(@"Magic Modpacks", nil): @[@"magic", @"wizard", @"spell", @"arcane", @"mage", @"witch", @"sorcery", @"mystical", @"enchant", @"thaumcraft", @"blood magic", @"botania"],
+        
+        localize(@"Tech Modpacks", nil): @[@"tech", @"machine", @"redstone", @"industrial", @"energy", @"power", @"mechanism", @"factory", @"automation", @"engineer", @"buildcraft", @"immersive engineering", @"thermal", @"computercraft", @"create"],
+        
+        localize(@"Adventure Modpacks", nil): @[@"adventure", @"quest", @"explore", @"journey", @"dungeon", @"rpg", @"dimension", @"battle", @"biome", @"structure", @"twilight forest", @"aether"]
+    };
     
-    // Add new modpacks to the "Other" category, checking for duplicates
-    if (otherIndex < self.organizedModpacks.count) {
-        NSMutableArray *otherModpacks = self.organizedModpacks[otherIndex];
-        if ([otherModpacks isKindOfClass:[NSMutableArray class]]) {
-            // Create a copy of new modpacks to avoid mutation issues during iteration
-            NSArray *safeNewModpacks = [newModpacks copy];
-            
-            for (NSDictionary *newModpack in safeNewModpacks) {
-                // Skip if not a dictionary
-                if (![newModpack isKindOfClass:[NSDictionary class]]) continue;
-                
-                // Skip if this modpack ID is already in our collection
-                if ([newModpack[@"id"] isKindOfClass:[NSString class]] && 
-                    [existingModpackIds containsObject:newModpack[@"id"]]) {
-                    continue;
-                }
-                
-                // Add this modpack and track its ID
-                [otherModpacks addObject:newModpack];
-                if ([newModpack[@"id"] isKindOfClass:[NSString class]]) {
-                    [existingModpackIds addObject:newModpack[@"id"]];
-                }
-            }
+    // Pre-process for quicker text search
+    NSMutableDictionary *keywordCache = [NSMutableDictionary dictionary];
+    for (NSString *category in categoryKeywords) {
+        NSArray *keywords = categoryKeywords[category];
+        for (NSString *keyword in keywords) {
+            keywordCache[keyword] = category;
         }
     }
     
-    if (otherIndex < self.filteredModpacks.count) {
-        NSMutableArray *filteredOtherModpacks = self.filteredModpacks[otherIndex];
-        if ([filteredOtherModpacks isKindOfClass:[NSMutableArray class]]) {
-            // Create a copy of new modpacks to avoid mutation issues during iteration
-            NSArray *safeNewModpacks = [newModpacks copy];
+    // Create a copy of new modpacks to avoid mutation issues during iteration
+    NSArray *safeNewModpacks = [newModpacks copy];
+    
+    // Process each new modpack
+    for (NSDictionary *newModpack in safeNewModpacks) {
+        // Skip if not a dictionary
+        if (![newModpack isKindOfClass:[NSDictionary class]]) continue;
+        
+        // Skip if this modpack ID is already in our collection
+        if ([newModpack[@"id"] isKindOfClass:[NSString class]] && 
+            [existingModpackIds containsObject:newModpack[@"id"]]) {
+            continue;
+        }
+        
+        // Categorize the modpack
+        NSString *title = [[newModpack[@"title"] ?: @"" lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        NSString *description = [[newModpack[@"description"] ?: @"" lowercaseString] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        
+        // Ensure tags is an array
+        id tagsObj = newModpack[@"categories"];
+        NSArray *tags = [tagsObj isKindOfClass:[NSArray class]] ? tagsObj : @[];
+        
+        // Create a safe copy of tags to iterate through
+        NSArray *safeTags = [tags copy];
+        
+        // Start with a score for each category
+        NSMutableDictionary *categoryScores = [NSMutableDictionary dictionary];
+        for (NSString *category in categoryKeywords) {
+            categoryScores[category] = @0;
+        }
+        
+        // Calculate scores for each category based on keyword matching
+        NSArray *titleWords = [title componentsSeparatedByString:@" "];
+        for (NSString *word in titleWords) {
+            NSString *category = keywordCache[word];
+            if (category) {
+                int currentScore = [categoryScores[category] intValue];
+                categoryScores[category] = @(currentScore + 5);
+            }
+        }
+        
+        // Check for partial matches in title and description
+        for (NSString *category in categoryKeywords) {
+            NSArray *keywords = categoryKeywords[category];
             
-            for (NSDictionary *newModpack in safeNewModpacks) {
-                // Skip if not a dictionary
-                if (![newModpack isKindOfClass:[NSDictionary class]]) continue;
-                
-                // Skip if this modpack ID is already in our collection
-                if ([newModpack[@"id"] isKindOfClass:[NSString class]] && 
-                    [existingModpackIds containsObject:newModpack[@"id"]]) {
-                    continue;
+            for (NSString *keyword in keywords) {
+                if ([title containsString:keyword]) {
+                    int currentScore = [categoryScores[category] intValue];
+                    categoryScores[category] = @(currentScore + 2);
                 }
                 
-                // Add to filtered list as well
-                [filteredOtherModpacks addObject:newModpack];
+                if ([description containsString:keyword]) {
+                    int currentScore = [categoryScores[category] intValue];
+                    categoryScores[category] = @(currentScore + 1);
+                }
+                
+                // Check tags for this keyword
+                for (id tagObj in safeTags) {
+                    if (![tagObj isKindOfClass:[NSString class]]) continue;
+                    
+                    NSString *tag = [(NSString *)tagObj lowercaseString];
+                    if ([tag isEqualToString:keyword]) {
+                        int currentScore = [categoryScores[category] intValue];
+                        categoryScores[category] = @(currentScore + 5);
+                    } else if ([tag containsString:keyword]) {
+                        int currentScore = [categoryScores[category] intValue];
+                        categoryScores[category] = @(currentScore + 3);
+                    }
+                }
+            }
+        }
+        
+        // Find the category with the highest score
+        NSString *bestCategory = localize(@"Featured Modpacks", nil); // Default to Featured
+        int highestScore = 0;
+        
+        for (NSString *category in categoryScores) {
+            int score = [categoryScores[category] intValue];
+            if (score > highestScore) {
+                highestScore = score;
+                bestCategory = category;
+            }
+        }
+        
+        // Add to the determined category
+        NSString *targetCategory = highestScore > 0 ? bestCategory : localize(@"Featured Modpacks", nil);
+        
+        // Find the index of the target category
+        NSUInteger categoryIndex = [currentCategories indexOfObject:targetCategory];
+        
+        // If category exists, add the modpack
+        if (categoryIndex != NSNotFound && categoryIndex < self.organizedModpacks.count) {
+            NSMutableArray *categoryModpacks = self.organizedModpacks[categoryIndex];
+            if ([categoryModpacks isKindOfClass:[NSMutableArray class]]) {
+                [categoryModpacks addObject:newModpack];
+            }
+            
+            NSMutableArray *filteredCategoryModpacks = self.filteredModpacks[categoryIndex];
+            if ([filteredCategoryModpacks isKindOfClass:[NSMutableArray class]]) {
+                [filteredCategoryModpacks addObject:newModpack];
+            }
+            
+            // Track this ID to avoid duplicates
+            if ([newModpack[@"id"] isKindOfClass:[NSString class]]) {
+                [existingModpackIds addObject:newModpack[@"id"]];
+            }
+        } 
+        else {
+            // If target category doesn't exist, add to Featured
+            NSUInteger featuredIndex = [currentCategories indexOfObject:localize(@"Featured Modpacks", nil)];
+            
+            if (featuredIndex != NSNotFound && featuredIndex < self.organizedModpacks.count) {
+                NSMutableArray *featuredModpacks = self.organizedModpacks[featuredIndex];
+                if ([featuredModpacks isKindOfClass:[NSMutableArray class]]) {
+                    [featuredModpacks addObject:newModpack];
+                    
+                    // Also add to filtered array
+                    NSMutableArray *filteredFeaturedModpacks = self.filteredModpacks[featuredIndex];
+                    if ([filteredFeaturedModpacks isKindOfClass:[NSMutableArray class]]) {
+                        [filteredFeaturedModpacks addObject:newModpack];
+                    }
+                    
+                    // Track this ID
+                    if ([newModpack[@"id"] isKindOfClass:[NSString class]]) {
+                        [existingModpackIds addObject:newModpack[@"id"]];
+                    }
+                }
             }
         }
     }
@@ -2446,9 +2536,6 @@
         // Create safe copies of the current search criteria
         NSString *currentSearchText = [self.searchText copy];
         NSSet *activeTagFiltersCopy = [NSSet setWithSet:self.activeTagFilters];
-        
-        // Create a copy of new modpacks to avoid mutation issues during iteration
-        NSArray *safeNewModpacks = [newModpacks copy];
         
         for (id modpackObj in safeNewModpacks) {
             // Ensure the modpack is a dictionary
