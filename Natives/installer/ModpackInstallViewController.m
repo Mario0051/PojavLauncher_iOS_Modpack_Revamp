@@ -1013,14 +1013,6 @@
     });
 }
 
-// Update method for filter indicators to handle removal of tag filter button
-- (void)updateFilterIndicators {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        // Update collection view to reflect current filter state
-        [self.tagCollectionView reloadData];
-    });
-}
-
 - (void)setupSegmentedControl {
     // Create modern segmented control with improved styling
     self.segmentedControl = [[UISegmentedControl alloc] initWithItems:@[
@@ -2024,34 +2016,6 @@
 
 - (void)updateFilterIndicators {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Update navigation title to indicate active filters
-        // First check if rightBarButtonItems has enough elements
-        if (self.navigationItem.rightBarButtonItems.count > 1) {
-            UIBarButtonItem *closeButton = self.navigationItem.rightBarButtonItems[0];
-            
-            // Create the appropriate tag filter button based on filter state
-            UIBarButtonItem *tagFilterButton;
-            if (self.activeTagFilters.count > 0) {
-                // Use more visually appealing indicator with tint color
-                tagFilterButton = [[UIBarButtonItem alloc] 
-                                 initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
-                                 style:UIBarButtonItemStylePlain 
-                                 target:self 
-                                 action:@selector(showTagFilterMenu:)];
-                tagFilterButton.tintColor = [UIColor systemBlueColor];
-            } else {
-                // Reset to normal appearance
-                tagFilterButton = [[UIBarButtonItem alloc] 
-                                 initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
-                                 style:UIBarButtonItemStylePlain 
-                                 target:self 
-                                 action:@selector(showTagFilterMenu:)];
-            }
-            
-            // Set right bar button items with new array
-            self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
-        }
-        
         // Update collection view to reflect current filter state
         [self.tagCollectionView reloadData];
     });
