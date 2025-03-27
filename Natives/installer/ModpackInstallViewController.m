@@ -1832,7 +1832,8 @@
             }
             
             // Cancel any pending timeout for this operation
-            objc_setAssociatedObject(weakSelf, [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation], 
+            NSString *timeoutKey = [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation];
+            objc_setAssociatedObject(weakSelf, (__bridge const void *)timeoutKey, 
                                    @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             
             // Update pagination status
@@ -1895,12 +1896,14 @@
     });
     
     // Set a timeout for the operation, but don't block the main thread
-    objc_setAssociatedObject(self, [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation], 
+    NSString *timeoutKey = [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation];
+    objc_setAssociatedObject(self, (__bridge const void *)timeoutKey, 
                            @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Check if timeout is still active for this operation
-        NSNumber *isTimeoutActive = objc_getAssociatedObject(weakSelf, [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation]);
+        NSString *timeoutKey = [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation];
+        NSNumber *isTimeoutActive = objc_getAssociatedObject(weakSelf, (__bridge const void *)timeoutKey);
         NSNumber *storedSearchOp = objc_getAssociatedObject(weakSelf, @"currentSearchOperation");
         
         // Only show timeout message if this is still the current operation and timeout wasn't canceled
@@ -1960,13 +1963,15 @@
     __weak typeof(self) weakSelf = self;
     
     // Set a timeout flag that can be canceled when operation completes
-    objc_setAssociatedObject(self, [NSString stringWithFormat:@"loadTimeout_%ld", (long)currentLoadOperation], 
+    NSString *timeoutKey = [NSString stringWithFormat:@"loadTimeout_%ld", (long)currentLoadOperation];
+    objc_setAssociatedObject(self, (__bridge const void *)timeoutKey, 
                            @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     
     // Set a timeout to reset loading state if the request takes too long
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         // Check if timeout is still active for this operation
-        NSNumber *isTimeoutActive = objc_getAssociatedObject(weakSelf, [NSString stringWithFormat:@"loadTimeout_%ld", (long)currentLoadOperation]);
+        NSString *timeoutKey = [NSString stringWithFormat:@"loadTimeout_%ld", (long)currentLoadOperation];
+        NSNumber *isTimeoutActive = objc_getAssociatedObject(weakSelf, (__bridge const void *)timeoutKey);
         
         // Only reset if this is still the current operation and timeout wasn't canceled
         NSNumber *storedOpId = objc_getAssociatedObject(weakSelf, @"currentLoadOperation");
