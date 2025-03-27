@@ -98,6 +98,67 @@ typedef struct {
     self.uiUpdateTimer = nil;
 }
 
+- (void)checkCompletionStatus {
+    @synchronized(self) {
+        // Check if total downloads match successful downloads and queue is empty
+        if (self.totalDownloads > 0 &&
+            self.successfulDownloads >= self.totalDownloads &&
+            self.pendingDownloads.count == 0 &&
+            self.activeDownloads == 0) {
+            
+            NSLog(@"[MCDL] All items seem complete or cached immediately.");
+            
+            // Ensure progress reflects completion
+            if (self.progress.totalUnitCount == 0) {
+                // If we have nothing to track (all cached), add a dummy unit
+                self.progress.totalUnitCount = 1;
+                self.textProgress.totalUnitCount = 1;
+            }
+            
+            self.progress.completedUnitCount = self.progress.totalUnitCount;
+            self.textProgress.completedUnitCount = self.textProgress.totalUnitCount;
+            
+            // Add completion marker for UI
+            if (![self.fileList containsObject:@"Complete"]) {
+                @synchronized(self.fileList) {
+                    [self.fileList addObject:@"Complete"];
+                }
+                // Trigger UI update
+                self.needsUIUpdate = YES;
+            }
+        }
+    }
+}
+
+- (void)downloadClientJar:(NSDictionary *)versionMetadata {
+    NSDictionary *downloads = versionMetadata[@"downloads"];
+    NSDictionary *clientInfo = downloads[@"client"];
+    if (!clientInfo) {
+        NSLog(@"[MCDL] No client JAR information found in version metadata.");
+        return;
+    }
+    
+    NSString *url = clientInfo[@"url"];
+    NSString *sha1 = clientInfo[@"sha1"];
+    NSUInteger size = [clientInfo[@"size"] unsignedIntegerValue];
+    NSString *versionId = versionMetadata[@"id"]; // Get version ID for path
+    
+    if (!versionId || !url || !sha1) {
+        NSLog(@"[MCDL] Client JAR information incomplete. Cannot download.");
+        return;
+    }
+    
+    NSString *path = [NSString stringWithFormat:@"%s/versions/%@/%@.jar", getenv("POJAV_GAME_DIR"), versionId, versionId];
+    NSString *altName = [NSString stringWithFormat:@"%@.jar", versionId];
+    
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Enqueuing client JAR: %@", altName);
+    }
+    
+    // Create and enqueue the task (will be handled by the queue)
+    [self createDownloadTask:url size:size sha:sha1 altName:altName toPath:path success:nil failure:nil];
+}
+
 - (void)processBatchedUIUpdates {
     if (!self.needsUIUpdate) return;
     
@@ -116,18 +177,17 @@ typedef struct {
 }
 
 - (void)prepareForDownload {
-    // Create a fresh progress object with proper initial values
     @synchronized(self) {
-        // Create a new progress tracking object starting with 1 unit
+        // Create a new progress tracking object starting with 0 units
         self.progress = [NSProgress new];
-        self.progress.totalUnitCount = 1; // Critical: Start with 1 instead of 0
+        self.progress.totalUnitCount = 0; // Start with 0 instead of 1
         self.progress.cancellable = YES;
         
         // Create a text progress for UI display
         self.textProgress = [NSProgress new];
         self.textProgress.kind = NSProgressKindFile;
         self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
-        self.textProgress.totalUnitCount = 1; // Critical: Start with 1 instead of 0
+        self.textProgress.totalUnitCount = 0; // Start with 0 instead of 1
         self.textProgress.cancellable = YES;
         
         // Reset counters
@@ -232,7 +292,7 @@ typedef struct {
             return nil;
         }
         
-        // Track total downloads
+        // Track total downloads early
         self.totalDownloads++;
         
         // Check if file already exists
@@ -246,12 +306,22 @@ typedef struct {
         BOOL isLatestVersionFile = (altName && 
                                   ([altName containsString:@"latest-release"] || 
                                    [altName containsString:@"latest-snapshot"]));
-
+        
         // Determine if we should verify SHA now or defer it
         BOOL shouldVerifyNow = !self.deferSHAVerification || isVersionFile || isLatestVersionFile;
         
         if (shouldVerifyNow && fileExists && sha && sha.length > 0 && 
             [self checkSHA:sha forFile:path altName:altName]) {
+            
+            // Use estimated size if actual size is 0
+            NSUInteger itemSize = size > 0 ? size : 100000; // Use 100KB estimate if size unknown
+            @synchronized(self) {
+                self.progress.totalUnitCount += itemSize;
+                self.progress.completedUnitCount += itemSize; // Mark as complete
+                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+            }
+            
             // Increment successful downloads counter
             self.successfulDownloads++;
             
@@ -280,6 +350,15 @@ typedef struct {
             // Add to verification list for later checking
             [self addFileToVerificationList:path sha:sha altName:altName url:url size:size];
             
+            // Update overall progress
+            NSUInteger itemSize = size > 0 ? size : 100000; // Use 100KB estimate if size unknown
+            @synchronized(self) {
+                self.progress.totalUnitCount += itemSize;
+                self.progress.completedUnitCount += itemSize; // Mark as complete
+                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+            }
+            
             // Count as successful for UI purposes (will be verified later)
             self.successfulDownloads++;
             
@@ -293,13 +372,13 @@ typedef struct {
         } else if (![self checkAccessWithDialog:YES]) {
             return nil;
         }
-
+        
         // Only log detailed URL information for files we're actually downloading
         if (self.verboseLogging) {
             NSLog(@"[MCDL] Creating download task - URL: %@", url);
             NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path);
         }
-
+        
         // Use filename as display name if no alternate name provided
         NSString *name = altName ?: path.lastPathComponent;
         
@@ -329,8 +408,9 @@ typedef struct {
             [self.fileList addObject:name];
         }
         
-        // Create a progress object for this download before the task is created
-        NSProgress *downloadProgress = [NSProgress progressWithTotalUnitCount:size > 0 ? size : 1000000];
+        // Estimate size if 0, necessary for adding to totalUnitCount early
+        NSUInteger estimatedSize = size > 0 ? size : 100000; // 100KB estimate
+        NSProgress *downloadProgress = [NSProgress progressWithTotalUnitCount:estimatedSize];
         downloadProgress.kind = NSProgressKindFile;
         
         // Add this progress to our tracking list - using synchronization for thread safety
@@ -342,33 +422,31 @@ typedef struct {
                     [self.progressList addObject:downloadProgress];
                 }
                 
-                // Update overall progress total
-                if (!self.progress) {
-                    self.progress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
-                } else {
-                    self.progress.totalUnitCount += downloadProgress.totalUnitCount;
-                }
+                // Increment total BEFORE adding child
+                self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
                 
-                if (!self.textProgress) {
-                    self.textProgress = [NSProgress progressWithTotalUnitCount:downloadProgress.totalUnitCount];
-                } else {
-                    self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-                }
-                
-                // Add the progress as a child to our overall progress
+                // Add child progress
                 [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
+                
+                // Mark progress as tracked
+                objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 progressAdded = YES;
             } @catch (NSException *exception) {
                 NSLog(@"[MCDL] Exception adding progress: %@", exception);
+                
+                // If adding progress fails, remove from fileList to maintain consistency
+                @synchronized(self.fileList) {
+                    [self.fileList removeLastObject]; // Assuming it was the last added
+                }
+                self.totalDownloads--; // Decrement total count
+                return nil; // Cannot proceed without progress tracking
             }
         }
         
         if (!progressAdded) {
             NSLog(@"[MCDL] Failed to add progress for %@", name);
         }
-        
-        // Mark the progress object as tracked by this task
-        objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         
         // Create weak reference to self to avoid retain cycles
         __weak typeof(self) weakSelf = self;
@@ -403,15 +481,7 @@ typedef struct {
             NSLog(@"[MCDL] Downloading %@", name);
             NSProgress *progress = [self.manager downloadProgressForTask:task];
             
-            if (!size && task) {
-                [weakSelf addDownloadTaskToProgress:task size:response.expectedContentLength];
-                
-                @synchronized(weakSelf.fileList) {
-                    [weakSelf.fileList addObject:name];
-                }
-            }
-            
-            // If size wasn't provided but response has size info, update progress
+            // Update progress size if response has size info
             if (size == 0 && response.expectedContentLength > 0) {
                 NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
                 
@@ -423,7 +493,7 @@ typedef struct {
                         
                         // Update parent progress total
                         if (weakSelf.progress) {
-                            weakSelf.progress.totalUnitCount = weakSelf.progress.totalUnitCount - oldSize + actualSize;
+                            weakSelf.progress.totalUnitCount = MAX(0, weakSelf.progress.totalUnitCount - oldSize + actualSize);
                         }
                         
                         if (weakSelf.textProgress) {
@@ -552,6 +622,9 @@ typedef struct {
                                                            code:1000 
                                                        userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
                         
+                        // Decrement success count on SHA failure
+                        weakSelf.successfulDownloads--;
+                        
                         if (failure) {
                             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                                 failure(shaError);
@@ -584,8 +657,11 @@ typedef struct {
                     success();
                 });
             }
+            
+            // Check overall completion after each successful task
+            [weakSelf checkCompletionStatus];
         }];
-
+        
         // Instead of immediately resuming, queue it for controlled execution
         @synchronized(self.pendingDownloads) {
             [self.pendingDownloads addObject:task];
@@ -597,7 +673,7 @@ typedef struct {
                 });
             }
         }
-
+        
         return task;
     }
 }
@@ -997,42 +1073,55 @@ typedef struct {
     
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
     
-    // Chain download operations
+    // Step 1: Download Version Metadata
     [self downloadVersionMetadata:version success:^{
-        [self downloadAssetMetadataWithSuccess:^{
-            // Download libraries and assets in parallel
-            NSArray *libTasks = [self downloadClientLibraries];
-            NSArray *assetTasks = [self downloadClientAssets];
+        // This block executes *after* version JSON is downloaded and parsed
+        @synchronized(self) {
+            if (self.progress.cancelled) return; // Check cancellation
             
-            @synchronized(self) {
-                // Critical: Drop the 1 byte we set initially 
-                self.progress.totalUnitCount--;
-                self.textProgress.totalUnitCount--;
-                
-                // If we have nothing to download, mark as complete
-                if (self.progress.totalUnitCount == 0) {
-                    // Set progress to 100% complete
-                    self.progress.totalUnitCount = 1;
-                    self.progress.completedUnitCount = 1;
-                    self.textProgress.totalUnitCount = 1;
-                    self.textProgress.completedUnitCount = 1;
-                    
-                    // Add completion marker to file list for UI
-                    @synchronized(self.fileList) {
-                        [self.fileList addObject:@"Complete"];
+            // Metadata is now in self.metadata
+            NSDictionary *localMetadata = self.metadata; // Use a local ref inside block
+            
+            // Step 2: Enqueue libraries based on version JSON
+            NSLog(@"[MCDL] Enqueuing libraries...");
+            NSArray *libTasks = [self downloadClientLibraries:localMetadata]; // Pass metadata
+            
+            // Step 3: Enqueue client JAR based on version JSON
+            NSLog(@"[MCDL] Enqueuing client JAR...");
+            [self downloadClientJar:localMetadata]; // Pass metadata
+            
+            // Step 4: Check if Asset Index needs download
+            NSDictionary *assetIndexInfo = localMetadata[@"assetIndex"];
+            if (assetIndexInfo) {
+                NSLog(@"[MCDL] Downloading Asset Metadata...");
+                // Step 4a: Download Asset Metadata
+                [self downloadAssetMetadataWithSuccess:^{
+                    // This block executes *after* asset index JSON is downloaded and parsed
+                    @synchronized(self) {
+                        if (self.progress.cancelled) return;
+                        
+                        // Asset index metadata is now in self.metadata[@"assetIndexObj"]
+                        NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
+                        
+                        // Step 4b: Enqueue assets based on asset index JSON
+                        NSLog(@"[MCDL] Enqueuing assets...");
+                        NSArray *assetTasks = [self downloadClientAssets:assetIndexObj]; // Pass asset index obj
+                        
+                        // Clean up large metadata if no longer needed immediately
+                        [self.metadata removeObjectForKey:@"assetIndexObj"];
+                        
+                        NSLog(@"[MCDL] All asset/library tasks enqueued.");
+                        // Check if all downloads might already be complete (e.g., cached)
+                        [self checkCompletionStatus];
                     }
-                    
-                    return;
-                }
+                }];
+            } else {
+                // No assets to download for this version
+                NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
+                // Check if all downloads might already be complete
+                [self checkCompletionStatus];
             }
-            
-            // Start all queued download tasks
-            [libTasks makeObjectsPerformSelector:@selector(resume)];
-            [assetTasks makeObjectsPerformSelector:@selector(resume)];
-            
-            // Clean up large metadata we don't need anymore
-            [self.metadata removeObjectForKey:@"assetIndexObj"];
-        }];
+        }
     }];
 }
 
@@ -1267,24 +1356,24 @@ typedef struct {
     }
 }
 
-- (NSArray *)downloadClientLibraries {
+- (NSArray *)downloadClientLibraries:(NSDictionary *)versionMetadata {
     NSMutableArray *tasks = [NSMutableArray new];
     
     // Skip if no libraries defined
-    if (!self.metadata[@"libraries"] || ![self.metadata[@"libraries"] isKindOfClass:[NSArray class]]) {
+    if (!versionMetadata[@"libraries"] || ![versionMetadata[@"libraries"] isKindOfClass:[NSArray class]]) {
         return tasks;
     }
     
-    NSInteger libraryCount = [self.metadata[@"libraries"] count];
+    NSInteger libraryCount = [versionMetadata[@"libraries"] count];
     
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Processing %ld libraries for download", (long)libraryCount);
     }
     
-    for (NSDictionary *library in self.metadata[@"libraries"]) {
+    for (NSDictionary *library in versionMetadata[@"libraries"]) {
         NSString *name = library[@"name"];
         if (!name) continue;
-
+        
         // Skip Forge/NeoForge client JARs entirely - they're already installed by the installer
         if (([name containsString:@"net.minecraftforge:forge:"] || 
              [name containsString:@"net.neoforged:neoforge:"]) && 
@@ -1294,7 +1383,7 @@ typedef struct {
             }
             continue;
         }
-
+        
         NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
         if (artifactDict == nil && [name containsString:@":"]) {
             if (self.verboseLogging) {
@@ -1349,7 +1438,7 @@ typedef struct {
                 }
             }
         }
-
+        
         // Skip library if marked to skip
         if ([library[@"skip"] boolValue]) {
             if (self.verboseLogging) {
@@ -1357,7 +1446,7 @@ typedef struct {
             }
             continue;
         }
-
+        
         // Build the download path
         NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
         NSString *sha = artifactDict[@"sha1"];
@@ -1370,8 +1459,8 @@ typedef struct {
             continue;
         }
         
-        // Create download task
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil];
+        // Create download task (DO NOT RESUME HERE)
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil failure:nil];
         if (task) {
             [tasks addObject:task];
         } else if (self.progress.cancelled) {
@@ -1379,19 +1468,18 @@ typedef struct {
         }
     }
     
-    NSLog(@"[MCDL] Created %lu library download tasks", (unsigned long)tasks.count);
+    NSLog(@"[MCDL] Enqueued %lu library download tasks", (unsigned long)tasks.count);
     return tasks;
 }
 
-- (NSArray *)downloadClientAssets {
+- (NSArray *)downloadClientAssets:(NSDictionary *)assetIndexObj {
     NSMutableArray *tasks = [NSMutableArray new];
-    NSDictionary *assets = self.metadata[@"assetIndexObj"];
     
-    if (!assets || !assets[@"objects"] || ![assets[@"objects"] isKindOfClass:[NSDictionary class]]) {
+    if (!assetIndexObj || !assetIndexObj[@"objects"] || ![assetIndexObj[@"objects"] isKindOfClass:[NSDictionary class]]) {
         return tasks;
     }
     
-    NSDictionary *objectsDict = assets[@"objects"];
+    NSDictionary *objectsDict = assetIndexObj[@"objects"];
     NSArray *assetNames = objectsDict.allKeys;
     NSInteger totalAssets = assetNames.count;
     
@@ -1415,18 +1503,18 @@ typedef struct {
             return nil;
         }
         
-        NSDictionary *object = assets[@"objects"][name];
+        NSDictionary *object = assetIndexObj[@"objects"][name];
         NSString *hash = object[@"hash"];
         NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
         NSUInteger size = [object[@"size"] unsignedLongLongValue];
-
+        
         NSString *path;
-        if ([assets[@"map_to_resources"] boolValue]) {
+        if ([assetIndexObj[@"map_to_resources"] boolValue]) {
             path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
         } else {
             path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
         }
-
+        
         /* Special case for 1.19+
          * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
          * However, if an IOException occurs, it won't try to set.
@@ -1435,9 +1523,9 @@ typedef struct {
             [NSFileManager.defaultManager removeItemAtPath:path error:nil];
             continue;
         }
-
+        
         NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil];
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil failure:nil];
         if (task) {
             [tasks addObject:task];
         } else if (self.progress.cancelled) {
@@ -1445,7 +1533,7 @@ typedef struct {
         }
     }
     
-    NSLog(@"[MCDL] Created %lu asset download tasks", (unsigned long)tasks.count);
+    NSLog(@"[MCDL] Enqueued %lu asset download tasks", (unsigned long)tasks.count);
     return tasks;
 }
 
