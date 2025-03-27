@@ -3254,6 +3254,9 @@
     }
 }
 
+// This is the updated loadModpackDetails:atIndexPath: method in ModpackInstallViewController.m
+// that preserves the original order of categories
+
 - (void)loadModpackDetails:(NSMutableDictionary *)modpack atIndexPath:(NSIndexPath *)indexPath {
     // Show loading indicator
     ModpackVersionCell *cell = (ModpackVersionCell *)[self.tableView cellForRowAtIndexPath:indexPath];
@@ -3346,24 +3349,35 @@
                                                                 }
                                                             } failure:nil];
                 
-                // Fix the tag duplication issue by creating a unique set of categories
-                NSMutableSet *uniqueCategories = [NSMutableSet set];
+                // Fix the tag duplication issue while preserving original order
+                NSMutableArray *finalCategories = [NSMutableArray array];
+                NSMutableSet *addedTags = [NSMutableSet set]; // To track uniqueness
                 
-                // Add new categories if they exist
-                if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
-                    [uniqueCategories addObjectsFromArray:modpack[@"categories"]];
+                // 1. Add original categories first, preserving their order
+                NSArray *originalCategories = modpack[@"original_categories"];
+                if ([originalCategories isKindOfClass:[NSArray class]]) {
+                    for (id category in originalCategories) {
+                        if ([category isKindOfClass:[NSString class]] && ![addedTags containsObject:category]) {
+                            [finalCategories addObject:category];
+                            [addedTags addObject:category];
+                        }
+                    }
                 }
                 
-                // Add original categories if they exist and weren't already added
-                if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
-                    [uniqueCategories addObjectsFromArray:modpack[@"original_categories"]];
+                // 2. Add any new categories from the details load that weren't in the originals
+                NSArray *updatedCategories = modpack[@"categories"];
+                if ([updatedCategories isKindOfClass:[NSArray class]]) {
+                    for (id category in updatedCategories) {
+                        if ([category isKindOfClass:[NSString class]] && ![addedTags containsObject:category]) {
+                            // Only add if it wasn't already added from the original list
+                            [finalCategories addObject:category];
+                            [addedTags addObject:category];
+                        }
+                    }
                 }
                 
-                // Convert set back to array for the tags
-                NSArray *uniqueCategoriesArray = [uniqueCategories allObjects];
-                
-                // Update the cell's tags with the unique categories
-                [versionCell setTags:uniqueCategoriesArray];
+                // 3. Update the cell's tags with the correctly ordered array
+                [versionCell setTags:finalCategories];
             }
             
             // Show version menu if details loaded successfully
