@@ -3,6 +3,8 @@
 
 @implementation ModpackUtils
 
+#pragma mark - Archive Extraction Methods
+
 + (void)archive:(UZKArchive *)archive extractDirectory:(NSString *)dir toPath:(NSString *)path error:(NSError *__autoreleasing*)error {
     // Save the original path length to use for path calculation - critical for proper extraction
     NSUInteger dirPrefixLength = dir.length + 1; // +1 for the trailing slash
@@ -88,6 +90,46 @@
         info[@"json"] = [NSString stringWithFormat:FabricUtils.endpoints[@"Quilt"][@"json"], minecraftVersion, dependency[@"quilt-loader"]];
     }
     return info;
+}
+
+#pragma mark - Dictionary Safety Methods
+
+/**
+ * Safely sets an object for a key in a dictionary, ensuring neither is nil.
+ * @param object The object to store in the dictionary.
+ * @param key The key with which to associate the object.
+ * @param dict The dictionary to modify.
+ */
++ (void)safeSetObject:(id)object forKey:(id<NSCopying>)key inDictionary:(NSMutableDictionary *)dict {
+    if (object != nil && key != nil && dict != nil) {
+        [dict setObject:object forKey:key];
+    } else {
+        NSLog(@"[ModpackUtils] Warning: Attempted to set nil object/key in dictionary");
+    }
+}
+
+/**
+ * Creates a mutable dictionary from another dictionary, skipping any nil values.
+ * @param dict The source dictionary to copy from.
+ * @return A new mutable dictionary with all non-nil values from the source, or an empty dictionary if source is nil.
+ */
++ (NSMutableDictionary *)safeMutableDictionaryWithDictionary:(NSDictionary *)dict {
+    if (dict == nil) {
+        return [NSMutableDictionary dictionary];
+    }
+    
+    NSMutableDictionary *result = [NSMutableDictionary dictionaryWithCapacity:dict.count];
+    
+    for (id key in dict) {
+        id value = dict[key];
+        if (value != nil) {
+            result[key] = value;
+        } else {
+            NSLog(@"[ModpackUtils] Warning: Skipped nil value for key %@ when creating safe dictionary", key);
+        }
+    }
+    
+    return result;
 }
 
 @end
