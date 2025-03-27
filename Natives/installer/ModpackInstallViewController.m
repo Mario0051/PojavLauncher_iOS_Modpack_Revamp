@@ -407,6 +407,11 @@
         tagLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
         tagLabel.textColor = [UIColor whiteColor];
         tagLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        
+        // Important: Set proper label properties to prevent truncation
+        tagLabel.lineBreakMode = NSLineBreakByWordWrapping;
+        tagLabel.numberOfLines = 1;
+        
         [tagView addSubview:tagLabel];
         
         // Check cache for text size or calculate if needed
@@ -417,6 +422,7 @@
         if (cachedSizeValue) {
             textSize = [cachedSizeValue CGSizeValue];
         } else {
+            // Use a more generous size calculation to ensure full text is visible
             textSize = [formattedTag boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, tagHeight)
                                                   options:NSStringDrawingUsesLineFragmentOrigin
                                                attributes:@{NSFontAttributeName: tagLabel.font}
@@ -424,13 +430,16 @@
             [tagSizeCache setObject:[NSValue valueWithCGSize:textSize] forKey:cacheKey];
         }
         
-        CGFloat tagWidth = textSize.width + 20; // More padding for better readability
+        // Increase padding to ensure the text isn't cut off
+        CGFloat tagWidth = textSize.width + 28; // More padding to ensure full text visibility
         tagView.frame = CGRectMake(xOffset, 0, tagWidth, tagHeight);
         
         // Position label centered in tag
         [NSLayoutConstraint activateConstraints:@[
             [tagLabel.centerXAnchor constraintEqualToAnchor:tagView.centerXAnchor],
-            [tagLabel.centerYAnchor constraintEqualToAnchor:tagView.centerYAnchor]
+            [tagLabel.centerYAnchor constraintEqualToAnchor:tagView.centerYAnchor],
+            // Add width constraint to ensure label doesn't exceed tag width
+            [tagLabel.widthAnchor constraintLessThanOrEqualToAnchor:tagView.widthAnchor constant:-8]
         ]];
         
         // Update offset for next tag
@@ -462,6 +471,7 @@
         moreLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
         moreLabel.textColor = [UIColor whiteColor];
         moreLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        moreLabel.textAlignment = NSTextAlignmentCenter;
         [moreView addSubview:moreLabel];
         
         // Check cache for text size or calculate
@@ -479,7 +489,8 @@
             [tagSizeCache setObject:[NSValue valueWithCGSize:moreTextSize] forKey:moreCacheKey];
         }
         
-        CGFloat moreWidth = moreTextSize.width + 20; // More padding for readability
+        // Ensure the "more" indicator has enough space
+        CGFloat moreWidth = moreTextSize.width + 24; // More padding for readability
         moreView.frame = CGRectMake(xOffset, 0, moreWidth, tagHeight);
         
         // Update gradient frame to match the actual width
@@ -487,7 +498,8 @@
         
         [NSLayoutConstraint activateConstraints:@[
             [moreLabel.centerXAnchor constraintEqualToAnchor:moreView.centerXAnchor],
-            [moreLabel.centerYAnchor constraintEqualToAnchor:moreView.centerYAnchor]
+            [moreLabel.centerYAnchor constraintEqualToAnchor:moreView.centerYAnchor],
+            [moreLabel.widthAnchor constraintLessThanOrEqualToAnchor:moreView.widthAnchor constant:-4]
         ]];
         
         xOffset += moreWidth + tagSpacing;
@@ -963,19 +975,13 @@
     self.progressView.resolvedTintColor = self.view.tintColor;
     [self.progressView addTarget:self action:@selector(actionCancelDownload) forControlEvents:UIControlEventTouchUpInside];
     
-    // Add tag filter button to navigation with modern SF Symbol
-    UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
-                                        initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
-                                        style:UIBarButtonItemStylePlain 
-                                        target:self 
-                                        action:@selector(showTagFilterMenu:)];
-    
+    // Add only close button to navigation (removed tag filter button)
     UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] 
                                    initWithBarButtonSystemItem:UIBarButtonSystemItemClose
                                    target:self 
                                    action:@selector(actionClose)];
     
-    self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
+    self.navigationItem.rightBarButtonItems = @[closeButton];
     
     // Initialize data structures with thread safety
     self.categories = [NSMutableArray new];
@@ -1004,6 +1010,14 @@
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 0.1 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
             [self updateSearchResults];
         });
+    });
+}
+
+// Update method for filter indicators to handle removal of tag filter button
+- (void)updateFilterIndicators {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Update collection view to reflect current filter state
+        [self.tagCollectionView reloadData];
     });
 }
 
@@ -1042,8 +1056,6 @@
     // Add scope buttons for better filtering
     self.searchController.searchBar.scopeButtonTitles = @[
         localize(@"All", nil),
-        localize(@"Magic", nil),
-        localize(@"Tech", nil)
     ];
     
     // Customize search bar appearance
@@ -1266,7 +1278,7 @@
         [containerView.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor]
     ]];
     
-    // Constraints for label
+    // Constraints for label - adjusted to show full text
     [NSLayoutConstraint activateConstraints:@[
         [tagLabel.leadingAnchor constraintEqualToAnchor:containerView.leadingAnchor constant:12],
         [tagLabel.centerYAnchor constraintEqualToAnchor:containerView.centerYAnchor],
@@ -1286,9 +1298,9 @@
                                         attributes:@{NSFontAttributeName: font}
                                            context:nil].size;
     
-    // Add padding and check if tag is active
+    // Add more padding to ensure full text visibility
     BOOL isActive = [self.activeTagFilters containsObject:[self.popularTags[indexPath.item] lowercaseString]];
-    CGFloat width = textSize.width + (isActive ? 56 : 24); // Extra space for checkmark if active
+    CGFloat width = textSize.width + (isActive ? 56 : 32); // More space for full text visibility
     
     return CGSizeMake(width, 32);
 }
@@ -1994,19 +2006,9 @@
                                        initWithBarButtonSystemItem:UIBarButtonSystemItemClose
                                        target:self 
                                        action:@selector(actionClose)];
-                                       
-        UIBarButtonItem *tagFilterButton = [[UIBarButtonItem alloc] 
-                                            initWithImage:[UIImage systemImageNamed:@"tag.circle.fill"]
-                                            style:UIBarButtonItemStylePlain 
-                                            target:self 
-                                            action:@selector(showTagFilterMenu:)];
         
-        // Update tag button appearance based on filter state
-        if (self.activeTagFilters.count > 0) {
-            tagFilterButton.tintColor = [UIColor systemBlueColor];
-        }
-        
-        self.navigationItem.rightBarButtonItems = @[closeButton, tagFilterButton];
+        // Update right bar button items to only include the close button
+        self.navigationItem.rightBarButtonItems = @[closeButton];
         
         // Allow dismissal and interaction again
         self.navigationController.modalInPresentation = NO;
