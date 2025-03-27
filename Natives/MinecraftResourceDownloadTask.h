@@ -58,12 +58,16 @@
 - (BOOL)verifyPendingFiles;
 - (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 
+// New helper method to check completion status
+- (void)checkCompletionStatus;
+
 // Main download methods
 - (void)downloadVersion:(NSDictionary *)version;
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success;
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success;
-- (NSArray *)downloadClientLibraries;
-- (NSArray *)downloadClientAssets;
+- (NSArray *)downloadClientLibraries:(NSDictionary *)versionMetadata;
+- (NSArray *)downloadClientAssets:(NSDictionary *)assetIndexObj;
+- (void)downloadClientJar:(NSDictionary *)versionMetadata;
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
 
 @end
