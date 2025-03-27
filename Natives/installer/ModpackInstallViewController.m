@@ -102,8 +102,8 @@
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
     if (self) {
-        // Prepare the cell with modern styling
-        self.selectionStyle = UITableViewCellSelectionStyleNone;
+        // Make cell properly selectable - this is a key change
+        self.selectionStyle = UITableViewCellSelectionStyleDefault;
         
         // Add a shadow to give the cell a "card" appearance
         self.layer.shadowColor = [UIColor blackColor].CGColor;
@@ -119,6 +119,9 @@
         self.containerView.layer.masksToBounds = YES;
         self.containerView.clipsToBounds = YES;
         [self.contentView addSubview:self.containerView];
+        
+        // Make sure the container doesn't block touches
+        self.containerView.userInteractionEnabled = NO;
         
         // Modpack icon - circular with auto sizing and shadow
         self.modpackIconView = [[UIImageView alloc] init];
@@ -213,6 +216,9 @@
             [self.tagsScrollView.heightAnchor constraintEqualToConstant:26], // Slightly taller for better readability
             [self.tagsScrollView.bottomAnchor constraintLessThanOrEqualToAnchor:self.containerView.bottomAnchor constant:-12]
         ]];
+        
+        // Set default accessory type - important for navigation indication
+        self.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
     return self;
 }
@@ -249,7 +255,7 @@
     }
     
     // Reset accessory view if needed
-    self.accessoryType = UITableViewCellAccessoryNone;
+    self.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     self.accessoryView = nil;
     
     // Clear any associated objects
@@ -920,6 +926,13 @@
     // Ensure the table view doesn't scroll under the navigation bar
     self.extendedLayoutIncludesOpaqueBars = NO;
     self.edgesForExtendedLayout = UIRectEdgeNone;
+    
+    // Explicitly set delegate and dataSource to self
+    self.tableView.delegate = self;
+    self.tableView.dataSource = self;
+    
+    // Explicitly enable selection
+    self.tableView.allowsSelection = YES;
     
     // Register custom cell and header view
     [self.tableView registerClass:[ModpackVersionCell class] forCellReuseIdentifier:@"ModpackVersionCell"];
@@ -3100,7 +3113,10 @@
 #pragma mark - UITableViewDelegate
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    // Add visual feedback by delaying the deselection slightly
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    });
     
     // Add haptic feedback for better user experience
     UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
@@ -3147,6 +3163,9 @@
               (long)indexPath.section, (long)indexPath.row);
         return;
     }
+    
+    // Add a log message to track execution
+    NSLog(@"[ModpackInstall] Selected modpack: %@", modpack[@"title"]);
     
     // Check if details already loaded
     if ([modpack[@"versionDetailsLoaded"] boolValue]) {
