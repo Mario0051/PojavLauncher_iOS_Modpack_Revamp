@@ -279,28 +279,43 @@ extern void showDialog(NSString *title, NSString *message);
             }
         }
         
-        // Get complete categories list
+        // Get complete categories list - safely with nil checks
         if (projectDetails[@"categories"] && [projectDetails[@"categories"] isKindOfClass:[NSArray class]]) {
             item[@"categories"] = projectDetails[@"categories"];
         }
         
-        // Get additional tags if available
+        // Get additional tags if available - safely with nil checks
         if (projectDetails[@"additional_categories"] && [projectDetails[@"additional_categories"] isKindOfClass:[NSArray class]]) {
-            NSMutableArray *allCategories = [NSMutableArray arrayWithArray:item[@"categories"] ?: @[]];
+            // Create a mutable array to hold combined categories
+            NSMutableArray *allCategories = [NSMutableArray array];
+            
+            // Add existing categories if they exist (with type check)
+            if (item[@"categories"] && [item[@"categories"] isKindOfClass:[NSArray class]]) {
+                [allCategories addObjectsFromArray:item[@"categories"]];
+            }
+            
+            // Add additional categories
             [allCategories addObjectsFromArray:projectDetails[@"additional_categories"]];
-            item[@"categories"] = allCategories;
+            
+            // Update item with combined categories
+            if (allCategories.count > 0) {
+                item[@"categories"] = allCategories;
+            }
         }
         
-        // Get client/server side info
-        if (projectDetails[@"client_side"]) {
+        // Get client/server side info - with nil checks
+        if (projectDetails[@"client_side"] && [projectDetails[@"client_side"] isKindOfClass:[NSString class]]) {
             item[@"client_side"] = projectDetails[@"client_side"];
         }
-        if (projectDetails[@"server_side"]) {
+        
+        if (projectDetails[@"server_side"] && [projectDetails[@"server_side"] isKindOfClass:[NSString class]]) {
             item[@"server_side"] = projectDetails[@"server_side"];
         }
         
-        // Get license info
-        if (projectDetails[@"license"]) {
+        // Get license info - with nil check
+        if (projectDetails[@"license"] && [projectDetails[@"license"] isKindOfClass:[NSDictionary class]]) {
+            item[@"license"] = projectDetails[@"license"];
+        } else if (projectDetails[@"license"] && [projectDetails[@"license"] isKindOfClass:[NSString class]]) {
             item[@"license"] = projectDetails[@"license"];
         }
     }
@@ -344,9 +359,12 @@ extern void showDialog(NSString *title, NSString *message);
         
         // Get Minecraft version
         if (version[@"game_versions"] && [version[@"game_versions"] isKindOfClass:[NSArray class]] && 
-            [version[@"game_versions"] count] > 0 && 
-            [version[@"game_versions"][0] isKindOfClass:[NSString class]]) {
-            mcNames[i] = version[@"game_versions"][0];
+            [version[@"game_versions"] count] > 0) {
+            // Make sure we have a string at index 0
+            id firstVersion = version[@"game_versions"][0];
+            if ([firstVersion isKindOfClass:[NSString class]]) {
+                mcNames[i] = firstVersion;
+            }
         }
         
         // Get file information - prefer primary file if available
@@ -355,44 +373,57 @@ extern void showDialog(NSString *title, NSString *message);
             
             // Find the primary file first if possible
             NSDictionary *primaryFile = nil;
-            for (NSDictionary *file in version[@"files"]) {
-                if ([file isKindOfClass:[NSDictionary class]] && 
-                    [file[@"primary"] boolValue]) {
-                    primaryFile = file;
-                    break;
+            for (id fileObj in version[@"files"]) {
+                if ([fileObj isKindOfClass:[NSDictionary class]]) {
+                    NSDictionary *file = (NSDictionary *)fileObj;
+                    if (file[@"primary"] && [file[@"primary"] boolValue]) {
+                        primaryFile = file;
+                        break;
+                    }
                 }
             }
             
-            // If no primary file, use the first file
-            NSDictionary *file = primaryFile ?: version[@"files"][0];
+            // If no primary file, use the first file (with type checking)
+            id firstFileObj = version[@"files"][0];
+            NSDictionary *file = nil;
             
-            if ([file isKindOfClass:[NSDictionary class]]) {
-                // Get file size
+            if (primaryFile) {
+                file = primaryFile;
+            } else if ([firstFileObj isKindOfClass:[NSDictionary class]]) {
+                file = (NSDictionary *)firstFileObj;
+            }
+            
+            if (file) {
+                // Get file size (with type checking)
                 if (file[@"size"] && [file[@"size"] isKindOfClass:[NSNumber class]]) {
                     sizes[i] = file[@"size"];
                 }
                 
-                // Get download URL
+                // Get download URL (with type checking)
                 if (file[@"url"] && [file[@"url"] isKindOfClass:[NSString class]]) {
                     NSString *fileUrl = [file[@"url"] stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
                     urls[i] = fileUrl;
                 }
                 
-                // Get hash
-                if (file[@"hashes"] && [file[@"hashes"] isKindOfClass:[NSDictionary class]] && 
-                    file[@"hashes"][@"sha1"] && [file[@"hashes"][@"sha1"] isKindOfClass:[NSString class]]) {
-                    hashes[i] = file[@"hashes"][@"sha1"];
+                // Get hash (with nested type checking)
+                if (file[@"hashes"] && [file[@"hashes"] isKindOfClass:[NSDictionary class]]) {
+                    id sha1Hash = file[@"hashes"][@"sha1"];
+                    if (sha1Hash && [sha1Hash isKindOfClass:[NSString class]]) {
+                        hashes[i] = sha1Hash;
+                    }
                 }
             }
         }
     }];
     
-    // Update the item with version information
-    item[@"versionNames"] = names;
-    item[@"mcVersionNames"] = mcNames;
-    item[@"versionSizes"] = sizes;
-    item[@"versionUrls"] = urls;
-    item[@"versionHashes"] = hashes;
+    // Update the item with version information - all arrays should have valid values now
+    if (names.count > 0) item[@"versionNames"] = names;
+    if (mcNames.count > 0) item[@"mcVersionNames"] = mcNames;
+    if (sizes.count > 0) item[@"versionSizes"] = sizes;
+    if (urls.count > 0) item[@"versionUrls"] = urls;
+    if (hashes.count > 0) item[@"versionHashes"] = hashes;
+    
+    // Set loaded flag only after successfully processing
     item[@"versionDetailsLoaded"] = @(YES);
 }
 
