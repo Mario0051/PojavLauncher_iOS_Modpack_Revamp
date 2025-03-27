@@ -1929,21 +1929,6 @@
         return;
     }
     
-    // Check if we already have search results
-    [self.dataLock lock];
-    NSInteger currentResultCount = self.isSearchActive ? self.unifiedSearchResults.count : 0;
-    [self.dataLock unlock];
-    
-    // If we have very few results, assume there aren't any more to load regardless of reachedLastPage flag
-    if (currentResultCount <= 3) {
-        self.hasMoreResults = NO;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self.tableView reloadData];
-            [self updateEmptyStateVisibility];
-        });
-        return;
-    }
-    
     // Set loading flag first to prevent multiple concurrent loads
     self.isLoadingMoreResults = YES;
     
@@ -2772,17 +2757,6 @@
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
     // Don't process if not in search mode or already loading
     if (!self.isSearchActive || self.isLoadingMoreResults || !self.hasMoreResults) {
-        return;
-    }
-    
-    // Check if we have sufficient results to warrant loading more
-    [self.dataLock lock];
-    NSInteger currentResultCount = self.unifiedSearchResults.count;
-    [self.dataLock unlock];
-    
-    // If we have very few results, assume there aren't any more to load
-    if (currentResultCount <= 3) {
-        self.hasMoreResults = NO;
         return;
     }
     
