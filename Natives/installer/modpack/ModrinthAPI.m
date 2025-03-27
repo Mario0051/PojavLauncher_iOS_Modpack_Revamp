@@ -79,147 +79,136 @@ extern void showDialog(NSString *title, NSString *message);
     return self;
 }
 
-- (NSMutableArray *)searchModWithFilters:(NSDictionary<NSString *, NSString *> *)searchFilters previousPageResult:(NSMutableArray *)modrinthSearchResult {
-    // Check for nil input to prevent crashes
-    if (!searchFilters) {
-        NSLog(@"[ModrinthAPI] Warning: searchFilters is nil");
-        return modrinthSearchResult ?: [NSMutableArray new];
+- (NSMutableArray *)searchModWithFilters:(NSDictionary *)filters previousPageResult:(NSMutableArray *)previousPageResult {
+    // Safety check for filters
+    if (!filters) {
+        filters = @{};
     }
     
-    int limit = 50;
-
-    // Build the facets with appropriate null checks
-    NSMutableString *facetString = [NSMutableString new];
-    [facetString appendString:@"["];
+    // Get pagination info
+    NSInteger offset = [previousPageResult count];
     
-    // Safely handle boolean value
-    BOOL isModpack = NO;
-    if (searchFilters[@"isModpack"] && [searchFilters[@"isModpack"] isKindOfClass:[NSNumber class]]) {
-        isModpack = [searchFilters[@"isModpack"] boolValue];
-    }
-    [facetString appendFormat:@"[\"project_type:%@\"]", isModpack ? @"modpack" : @"mod"];
+    // Create URL with basic endpoint - default project type is "mod"
+    NSString *urlStr = @"https://api.modrinth.com/v2/search";
+    NSURL *url = [NSURL URLWithString:urlStr];
     
-    // Safely handle MC version
-    if (searchFilters[@"mcVersion"] && [searchFilters[@"mcVersion"] isKindOfClass:[NSString class]] && searchFilters[@"mcVersion"].length > 0) {
-        [facetString appendFormat:@",[\"versions:%@\"]", searchFilters[@"mcVersion"]];
-    }
-    [facetString appendString:@"]"];
-
-    // Create parameters dictionary with appropriate null checks
-    NSMutableDictionary *params = [NSMutableDictionary dictionary];
-    params[@"facets"] = facetString;
+    // Prepare parameters dictionary with nil safety
+    NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
     
-    // Safely handle search query - properly handle whitespace
-    if (searchFilters[@"name"] && [searchFilters[@"name"] isKindOfClass:[NSString class]]) {
-        NSString *queryString = [searchFilters[@"name"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        if (queryString.length > 0) {
-            // Use the trimmed string as is - AFNetworking will handle URL encoding
-            params[@"query"] = queryString;
-        }
+    // Include the standard facets for modpacks
+    if ([filters[@"isModpack"] boolValue]) {
+        parameters[@"facets"] = @"[[\"project_type:modpack\"]]";
     }
     
-    params[@"limit"] = @(limit);
+    // Set limit for results per page
+    parameters[@"limit"] = @"50";
     
-    // Handle sort method for improved search relevance
-    if (searchFilters[@"sortMethod"] && [searchFilters[@"sortMethod"] isKindOfClass:[NSString class]]) {
-        params[@"index"] = searchFilters[@"sortMethod"];
+    // Only include offset if we have previous results
+    if (offset > 0) {
+        parameters[@"offset"] = [NSString stringWithFormat:@"%ld", (long)offset];
+    }
+    
+    // Apply sort method if provided
+    NSString *sortMethod = filters[@"sortMethod"];
+    if (sortMethod && sortMethod.length > 0) {
+        parameters[@"index"] = sortMethod;
     } else {
-        params[@"index"] = @"relevance";
+        parameters[@"index"] = @"relevance";
     }
     
-    // Set offset for pagination
-    if (modrinthSearchResult && modrinthSearchResult.count > 0) {
-        params[@"offset"] = @(modrinthSearchResult.count);
-    } else {
-        params[@"offset"] = @(0);
+    // Apply search term if provided - ensure it's not nil
+    NSString *searchTerm = filters[@"name"];
+    if (searchTerm && searchTerm.length > 0) {
+        parameters[@"query"] = searchTerm;
     }
     
-    NSLog(@"[ModrinthAPI] Searching with params: %@", params);
+    // Log the parameters for debugging
+    NSLog(@"[ModrinthAPI] Searching with params: %@", parameters);
     
-    // Create headers with proper User-Agent
-    NSDictionary *headers = @{@"User-Agent": self.userAgent};
+    // Create request
+    NSError *error;
+    NSURLRequest *request = [[AFJSONRequestSerializer serializer] requestWithMethod:@"GET" URLString:urlStr parameters:parameters error:&error];
     
-    // Make the API request
-    NSDictionary *response = [self getEndpoint:@"search" params:params headers:headers];
-    if (!response) {
-        NSLog(@"[ModrinthAPI] Error: API response is nil");
-        return modrinthSearchResult ?: [NSMutableArray new];
+    if (error) {
+        NSLog(@"[ModrinthAPI] Error creating request: %@", error);
+        self.lastError = error;
+        return previousPageResult ?: [NSMutableArray array];
     }
-
-    // Create or use existing results array
-    NSMutableArray *result = modrinthSearchResult ?: [NSMutableArray new];
     
-    // Safely process hits
-    NSArray *hits = response[@"hits"];
+    // Perform synchronous request
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block id responseObject = nil;
+    __block NSError *requestError = nil;
+    
+    [self.sessionManager dataTaskWithRequest:request uploadProgress:nil downloadProgress:nil completionHandler:^(NSURLResponse *response, id responseData, NSError *dataError) {
+        responseObject = responseData;
+        requestError = dataError;
+        dispatch_semaphore_signal(semaphore);
+    }] resume];
+    
+    dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
+    
+    // Handle request errors
+    if (requestError) {
+        NSLog(@"[ModrinthAPI] Network error: %@", requestError);
+        self.lastError = requestError;
+        return previousPageResult ?: [NSMutableArray array];
+    }
+    
+    // Parse response
+    NSDictionary *jsonResponse = responseObject;
+    NSArray *hits = jsonResponse[@"hits"];
+    
+    // If no results, return empty array
     if (!hits || ![hits isKindOfClass:[NSArray class]]) {
-        NSLog(@"[ModrinthAPI] Warning: API response has no valid hits");
-        self.reachedLastPage = YES;
-        return result;
+        NSLog(@"[ModrinthAPI] No hits in response or invalid format");
+        return previousPageResult ?: [NSMutableArray array];
     }
+    
+    // Update pagination state
+    NSNumber *totalHits = jsonResponse[@"total_hits"];
+    NSInteger totalResults = [totalHits integerValue];
+    self.reachedLastPage = (offset + hits.count >= totalResults);
     
     NSLog(@"[ModrinthAPI] Got %lu search results", (unsigned long)hits.count);
+    NSLog(@"[ModrinthAPI] Pagination: %ld/%ld (reached last page: %@)", 
+          (long)(offset + hits.count), 
+          (long)totalResults, 
+          self.reachedLastPage ? @"YES" : @"NO");
     
-    // Process each hit with null checking
-    for (NSDictionary *hit in hits) {
-        if (![hit isKindOfClass:[NSDictionary class]]) {
+    // Create result array
+    NSMutableArray *modpacks = previousPageResult ?: [NSMutableArray array];
+    
+    // Process each result
+    for (NSDictionary *modData in hits) {
+        // Skip invalid data
+        if (![modData isKindOfClass:[NSDictionary class]]) {
             continue;
         }
         
-        // Default values for all properties
-        NSString *projectId = hit[@"project_id"] ?: @"";
-        NSString *title = hit[@"title"] ?: @"Unknown";
-        NSString *description = hit[@"description"] ?: @"";
-        NSString *iconUrl = hit[@"icon_url"];
+        // Create safe copy of data
+        NSMutableDictionary *modpack = [NSMutableDictionary dictionary];
         
-        // Ensure we have a valid icon URL, use a fallback URL if missing
-        if (!iconUrl || ![iconUrl isKindOfClass:[NSString class]] || iconUrl.length == 0) {
-            // Use a placeholder URL or default image path
-            iconUrl = @"";
-            NSLog(@"[ModrinthAPI] No icon URL for project %@, using empty string", projectId);
-        } else {
-            // Make sure icon URL is properly formatted (no escaped slashes)
-            iconUrl = [iconUrl stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
-            
-            // Apply WebP conversion
-            iconUrl = [self convertWebPUrl:iconUrl];
-            NSLog(@"[ModrinthAPI] Project %@ has icon URL: %@", projectId, iconUrl);
+        // Copy standard fields with nil checks
+        if (modData[@"title"]) modpack[@"title"] = modData[@"title"];
+        if (modData[@"slug"]) modpack[@"slug"] = modData[@"slug"];
+        if (modData[@"description"]) modpack[@"description"] = modData[@"description"];
+        if (modData[@"project_id"]) modpack[@"id"] = modData[@"project_id"];
+        if (modData[@"categories"]) modpack[@"categories"] = modData[@"categories"];
+        if (modData[@"downloads"]) modpack[@"downloads"] = modData[@"downloads"];
+        
+        // Handle icon URL
+        NSString *iconUrl = modData[@"icon_url"];
+        if (iconUrl && iconUrl.length > 0) {
+            modpack[@"imageUrl"] = iconUrl;
+            NSLog(@"[ModrinthAPI] Project %@ has icon URL: %@", modpack[@"id"], iconUrl);
         }
         
-        BOOL isModpackItem = [hit[@"project_type"] isKindOfClass:[NSString class]] && 
-                             [hit[@"project_type"] isEqualToString:@"modpack"];
-        
-        // Extract categories/tags if available
-        NSArray *categories = hit[@"categories"] ?: @[];
-        
-        // Create the result dictionary
-        NSMutableDictionary *itemDict = [NSMutableDictionary dictionary];
-        itemDict[@"apiSource"] = @(1); // Constant MODRINTH
-        itemDict[@"isModpack"] = @(isModpackItem);
-        itemDict[@"id"] = projectId;
-        itemDict[@"title"] = title;
-        itemDict[@"description"] = description;
-        itemDict[@"imageUrl"] = iconUrl;
-        itemDict[@"categories"] = categories; // Store categories from search
-        itemDict[@"versionDetailsLoaded"] = @NO;
-        
-        [result addObject:itemDict];
+        // Add to result array
+        [modpacks addObject:modpack];
     }
     
-    // Check if we've reached the last page
-    if ([response[@"total_hits"] isKindOfClass:[NSNumber class]]) {
-        NSInteger totalHits = [response[@"total_hits"] integerValue];
-        NSInteger offset = params[@"offset"] ? [params[@"offset"] integerValue] : 0;
-        NSInteger newCount = offset + hits.count;
-        self.reachedLastPage = (newCount >= totalHits) || (hits.count == 0);
-        
-        NSLog(@"[ModrinthAPI] Pagination: %ld/%ld (reached last page: %@)", 
-              (long)newCount, (long)totalHits, 
-              self.reachedLastPage ? @"YES" : @"NO");
-    } else {
-        self.reachedLastPage = YES; // Default to true if no total_hits
-    }
-    
-    return result;
+    return modpacks;
 }
 
 - (void)loadDetailsOfMod:(NSMutableDictionary *)item {
