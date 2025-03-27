@@ -55,15 +55,26 @@ extern void showDialog(NSString *title, NSString *message);
 }
 
 - (instancetype)init {
-    self = [super initWithURL:@"https://api.modrinth.com/v2"];
+    self = [super init];
     if (self) {
-        self.pendingModpackDownloads = 0;
-        self.downloadCountLock = [[NSLock alloc] init];
-        self.fileProcessingQueue = dispatch_queue_create("net.kdt.pojavlauncher.fileProcessingQueue", DISPATCH_QUEUE_CONCURRENT);
+        // Create URL session configuration with appropriate settings
+        NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
         
-        // Set a proper user agent to identify the app to Modrinth
-        self.userAgent = [NSString stringWithFormat:@"PojavLauncher/%@ (iOS; contact@pojavlauncher.com)",
-                          [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"]];
+        // Set reasonable timeouts
+        configuration.timeoutIntervalForRequest = 30.0;
+        configuration.timeoutIntervalForResource = 60.0;
+        
+        // Use a descriptive user agent
+        configuration.HTTPAdditionalHeaders = @{
+            @"User-Agent": @"PojavLauncher-iOS",
+            @"Accept": @"application/json"
+        };
+        
+        // Initialize URL session with configuration
+        self.session = [NSURLSession sessionWithConfiguration:configuration];
+        
+        // Initialize other properties
+        self.reachedLastPage = NO;
     }
     return self;
 }
