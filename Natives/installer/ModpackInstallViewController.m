@@ -323,10 +323,13 @@
 - (NSString *)formatTagName:(NSString *)tagName {
     if (tagName.length == 0) return @"";
     
-    NSMutableString *formattedTag = [NSMutableString string];
-    NSArray *words = [tagName componentsSeparatedByString:@" "];
+    NSString *trimmedTag = [tagName stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
     
-    for (NSString *word in words) {
+    NSMutableString *formattedTag = [NSMutableString string];
+    NSArray *words = [trimmedTag componentsSeparatedByString:@" "];
+    
+    for (NSUInteger i = 0; i < words.count; i++) {
+        NSString *word = words[i];
         if (word.length > 0) {
             // Capitalize first letter, keep rest lowercase
             NSString *firstLetter = [[word substringToIndex:1] uppercaseString];
@@ -335,7 +338,7 @@
             [formattedTag appendString:restOfWord];
             
             // Add space if not the last word
-            if (![word isEqual:[words lastObject]]) {
+            if (i < words.count - 1) {
                 [formattedTag appendString:@" "];
             }
         }
@@ -361,15 +364,22 @@
     CGFloat tagHeight = 24; // Slightly taller for better readability
     CGFloat tagSpacing = 8;
     
-    // First, sort tags alphabetically and eliminate duplicates
-    NSSet *uniqueTags = [NSSet setWithArray:tags];
-    NSArray *sortedTags = [[uniqueTags allObjects] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    // Remove duplicates while preserving order
+    NSMutableArray *uniqueTags = [NSMutableArray array];
+    NSMutableSet *seenTags = [NSMutableSet set];
+    
+    for (NSString *tag in tags) {
+        if (![seenTags containsObject:tag]) {
+            [seenTags addObject:tag];
+            [uniqueTags addObject:tag];
+        }
+    }
     
     // Limit to a reasonable number of tags
     NSInteger maxTags = 5;
-    NSArray *displayTags = sortedTags.count > maxTags ? 
-                           [sortedTags subarrayWithRange:NSMakeRange(0, maxTags)] : 
-                           sortedTags;
+    NSArray *displayTags = uniqueTags.count > maxTags ? 
+                          [uniqueTags subarrayWithRange:NSMakeRange(0, maxTags)] : 
+                          uniqueTags;
     
     // Use a measurement cache to avoid recalculating text sizes
     static NSCache *tagSizeCache = nil;
@@ -447,8 +457,8 @@
     }
     
     // If we limited the tags, add a +X more indicator with improved styling
-    if (sortedTags.count > maxTags) {
-        NSString *moreText = [NSString stringWithFormat:@"+%lu more", (unsigned long)(sortedTags.count - maxTags)];
+    if (uniqueTags.count > maxTags) {
+        NSString *moreText = [NSString stringWithFormat:@"+%lu more", (unsigned long)(uniqueTags.count - maxTags)];
         
         UIView *moreView = [[UIView alloc] init];
         moreView.backgroundColor = [UIColor systemGrayColor];
@@ -475,7 +485,7 @@
         [moreView addSubview:moreLabel];
         
         // Check cache for text size or calculate
-        NSString *moreCacheKey = [NSString stringWithFormat:@"more-%lu", (unsigned long)(sortedTags.count - maxTags)];
+        NSString *moreCacheKey = [NSString stringWithFormat:@"more-%lu", (unsigned long)(uniqueTags.count - maxTags)];
         NSValue *cachedMoreSize = [tagSizeCache objectForKey:moreCacheKey];
         CGSize moreTextSize;
         
@@ -1221,14 +1231,18 @@
         [subview removeFromSuperview];
     }
     
+    // Get tag and trim any whitespace
+    NSString *tagText = self.popularTags[indexPath.item];
+    tagText = [tagText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    
     // Create tag label
     UILabel *tagLabel = [[UILabel alloc] init];
     tagLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    tagLabel.text = self.popularTags[indexPath.item];
+    tagLabel.text = tagText;
     tagLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     
     // Check if this tag is active
-    BOOL isActive = [self.activeTagFilters containsObject:[self.popularTags[indexPath.item] lowercaseString]];
+    BOOL isActive = [self.activeTagFilters containsObject:[tagText lowercaseString]];
     
     // Container view with rounded corners
     UIView *containerView = [[UIView alloc] init];
@@ -2081,8 +2095,22 @@
         [containerView addSubview:indicator];
         [indicator startAnimating];
         
-        // Set as right bar button item
-        self.navigationItem.rightBarButtonItems = @[[[UIBarButtonItem alloc] initWithCustomView:containerView]];
+        // Only use the close button in the navigation bar
+        UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] 
+                                       initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                       target:self 
+                                       action:@selector(actionClose)];
+        
+        self.navigationItem.rightBarButtonItems = @[closeButton];
+        
+        // Set loading indicator on table footer instead to prevent interfering with navigation bar
+        UIView *loadingFooterView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.tableView.bounds.size.width, 80)];
+        UIActivityIndicatorView *footerIndicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        footerIndicator.center = CGPointMake(loadingFooterView.bounds.size.width / 2, loadingFooterView.bounds.size.height / 2);
+        [loadingFooterView addSubview:footerIndicator];
+        [footerIndicator startAnimating];
+        
+        self.tableView.tableFooterView = loadingFooterView;
         
         // Prevent dismissal during loading
         self.navigationController.modalInPresentation = YES;
@@ -2101,13 +2129,8 @@
         // Avoid double-setting ready state
         if (!self.isDataLoading) return;
         
-        // Stop any activity indicators
-        UIView *containerView = self.navigationItem.rightBarButtonItems[0].customView;
-        for (UIView *subview in containerView.subviews) {
-            if ([subview isKindOfClass:[UIActivityIndicatorView class]]) {
-                [(UIActivityIndicatorView *)subview stopAnimating];
-            }
-        }
+        // Remove the loading footer
+        self.tableView.tableFooterView = nil;
         
         // Restore normal navigation items with modern styling
         UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] 
