@@ -1196,21 +1196,78 @@ typedef struct {
             
             // Explicitly mark as NOT a modpack installation
             weakSelf.metadata[@"isModpackInstall"] = @NO;
-        }
-        
-        // Handle inheritsFrom for mod versions
-        @synchronized(weakSelf) {
+            
+            // Handle inheritsFrom for mod versions
             if (weakSelf.metadata[@"inheritsFrom"]) {
                 NSLog(@"[MCDL] Version inherits from: %@", weakSelf.metadata[@"inheritsFrom"]);
                 NSString *inheritsFromPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", 
-                                            getenv("POJAV_GAME_DIR"), 
-                                            weakSelf.metadata[@"inheritsFrom"]];
+                                             getenv("POJAV_GAME_DIR"), 
+                                             weakSelf.metadata[@"inheritsFrom"]];
+                
+                // Save the original javaVersion before processing
+                NSDictionary *originalJavaVersion = [weakSelf.metadata[@"javaVersion"] copy];
                 
                 // Read parent version JSON
                 NSMutableDictionary *inheritsFromDict = parseJSONFromFile(inheritsFromPath);
                 if (inheritsFromDict) {
+                    // Process version with inheritance
                     [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:inheritsFromDict];
+                    
+                    // Use the merged metadata
                     weakSelf.metadata = inheritsFromDict;
+                    
+                    // Restore the original javaVersion if it exists
+                    if (originalJavaVersion) {
+                        NSLog(@"[MCDL] Restoring original javaVersion for %@: %@", weakSelf.metadata[@"id"], originalJavaVersion);
+                        weakSelf.metadata[@"javaVersion"] = originalJavaVersion;
+                    }
+                } else {
+                    // If parent not found, attempt to download it first
+                    NSLog(@"[MCDL] Parent version %@ not found, attempting to download...", weakSelf.metadata[@"inheritsFrom"]);
+                    
+                    // Get parent version info
+                    NSDictionary *parentVersion = (id)[MinecraftResourceUtils findVersion:weakSelf.metadata[@"inheritsFrom"] inList:remoteVersionList];
+                    
+                    if (parentVersion) {
+                        // Save original metadata and success callback
+                        NSMutableDictionary *modMetadata = [weakSelf.metadata mutableCopy];
+                        void (^originalSuccess)(void) = [success copy];
+                        
+                        // Download parent version first, then process the mod version
+                        [weakSelf downloadVersionMetadata:parentVersion success:^{
+                            NSString *parentPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", 
+                                                   getenv("POJAV_GAME_DIR"), 
+                                                   modMetadata[@"inheritsFrom"]];
+                            
+                            NSMutableDictionary *parentDict = parseJSONFromFile(parentPath);
+                            if (parentDict) {
+                                // Save the original javaVersion
+                                NSDictionary *originalJavaVersion = [modMetadata[@"javaVersion"] copy];
+                                
+                                // Process version inheritance
+                                [MinecraftResourceUtils processVersion:modMetadata inheritsFrom:parentDict];
+                                weakSelf.metadata = parentDict;
+                                
+                                // Restore the original javaVersion if it exists
+                                if (originalJavaVersion) {
+                                    NSLog(@"[MCDL] Restoring original javaVersion after parent download for %@: %@", 
+                                          weakSelf.metadata[@"id"], originalJavaVersion);
+                                    weakSelf.metadata[@"javaVersion"] = originalJavaVersion;
+                                }
+                            }
+                            
+                            // Apply version tweaks
+                            [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
+                            
+                            // Call original success callback
+                            if (originalSuccess) {
+                                originalSuccess();
+                            }
+                        }];
+                        
+                        // Return early to avoid calling the second copy of success
+                        return;
+                    }
                 }
             }
             
@@ -1264,7 +1321,6 @@ typedef struct {
         }
     }
 }
-
 
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success {
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
