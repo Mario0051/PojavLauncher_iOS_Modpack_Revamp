@@ -681,13 +681,15 @@ extern NSString* getPrefObject(NSString* key);
 
 // Method to initiate the download process for a modpack package (.mrpack file)
 - (void)downloader:(MinecraftResourceDownloadTask *)downloader submitDownloadTasksFromPackage:(NSString *)packagePath toPath:(NSString *)destPath {
-    NSError *error;
+    // **FIX:** Declare error with __autoreleasing qualifier
+    NSError * __autoreleasing error = nil;
 
     // --- 1. Open the Modpack Archive ---
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:packagePath error:&error];
     if (error || !archive) {
         NSString *errorMessage = @"Failed to open modpack archive";
          if (error) errorMessage = [errorMessage stringByAppendingFormat:@": %@", error.localizedDescription];
+         error = nil; // Clear error after handling
         [downloader finishDownloadWithErrorString:errorMessage];
         return;
     }
@@ -697,7 +699,7 @@ extern NSString* getPrefObject(NSString* key);
     // --- 2. Ensure Destination Directory Exists ---
     // Use the file processing queue for directory creation
     dispatch_async(self.fileProcessingQueue, ^{
-         NSError *dirError;
+         NSError * __autoreleasing dirError = nil; // Use separate error var for async block
          [[NSFileManager defaultManager] createDirectoryAtPath:destPath
                                   withIntermediateDirectories:YES
                                                    attributes:nil
@@ -723,14 +725,20 @@ extern NSString* getPrefObject(NSString* key);
 
 
         // Try extracting index.json (newer?) then modrinth.index.json (older)
-        NSData *indexData = [archive extractDataFromFile:@"index.json" error:nil];
+         NSError * __autoreleasing indexReadError = nil; // Use separate error var
+        NSData *indexData = [archive extractDataFromFile:@"index.json" error:&indexReadError];
+        if (!indexData && indexReadError) { // Check error from first attempt
+             NSLog(@"[ModrinthAPI] Note: Failed to read index.json: %@. Trying modrinth.index.json.", indexReadError.localizedDescription);
+             indexReadError = nil; // Clear error before next attempt
+        }
+
         if (!indexData) {
-            indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&error];
+            indexData = [archive extractDataFromFile:@"modrinth.index.json" error:&indexReadError];
         }
 
         if (!indexData) {
             NSString *errorMessage = @"Failed to find index.json or modrinth.index.json in modpack";
-            if (error) errorMessage = [errorMessage stringByAppendingFormat:@". Error: %@", error.localizedDescription];
+            if (indexReadError) errorMessage = [errorMessage stringByAppendingFormat:@". Error: %@", indexReadError.localizedDescription];
             dispatch_async(dispatch_get_main_queue(), ^{
                  [downloader finishDownloadWithErrorString:errorMessage];
             });
@@ -738,10 +746,11 @@ extern NSString* getPrefObject(NSString* key);
         }
 
         // Parse the index JSON data
-        NSDictionary* indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:kNilOptions error:&error];
-        if (error || !indexDict || ![indexDict isKindOfClass:[NSDictionary class]]) {
+         NSError * __autoreleasing jsonError = nil; // Use separate error var
+        NSDictionary* indexDict = [NSJSONSerialization JSONObjectWithData:indexData options:kNilOptions error:&jsonError];
+        if (jsonError || !indexDict || ![indexDict isKindOfClass:[NSDictionary class]]) {
             NSString *errorMessage = @"Failed to parse modpack index JSON";
-            if (error) errorMessage = [errorMessage stringByAppendingFormat:@": %@", error.localizedDescription];
+            if (jsonError) errorMessage = [errorMessage stringByAppendingFormat:@": %@", jsonError.localizedDescription];
             dispatch_async(dispatch_get_main_queue(), ^{
                  [downloader finishDownloadWithErrorString:errorMessage];
             });
@@ -908,7 +917,7 @@ extern NSString* getPrefObject(NSString* key);
             // Create directory structure on the file processing queue
             dispatch_async(self.fileProcessingQueue, ^{
                  NSString *dirPath = [path stringByDeletingLastPathComponent];
-                 NSError *dirError;
+                 NSError * __autoreleasing dirError = nil; // Use separate error var
                  [[NSFileManager defaultManager] createDirectoryAtPath:dirPath
                                           withIntermediateDirectories:YES
                                                            attributes:nil
