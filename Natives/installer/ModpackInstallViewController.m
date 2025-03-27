@@ -1775,10 +1775,15 @@
         NSMutableDictionary *searchFilters;
         @synchronized(self.filters) {
             searchFilters = [NSMutableDictionary dictionaryWithDictionary:self.filters];
-            searchFilters[@"name"] = name;
+            // Ensure we don't insert nil value into dictionary
+            if (name) {
+                searchFilters[@"name"] = name;
+            } else {
+                searchFilters[@"name"] = @"";
+            }
             
             // Update main filters with current search text
-            self.filters[@"name"] = name;
+            self.filters[@"name"] = name ?: @"";
         }
         
         // Get previous results if appending
@@ -1789,9 +1794,15 @@
             [weakSelf.dataLock unlock];
         }
         
-        // Perform the search
-        NSMutableArray *newResults = [weakSelf.modrinth searchModWithFilters:searchFilters 
-                                                       previousPageResult:prevResults];
+        // Perform the search with error handling
+        NSMutableArray *newResults = nil;
+        @try {
+            newResults = [weakSelf.modrinth searchModWithFilters:searchFilters 
+                                               previousPageResult:prevResults];
+        } @catch (NSException *exception) {
+            NSLog(@"[ModpackInstall] Exception in searchModWithFilters: %@", exception);
+            newResults = nil;
+        }
         
         // Update pagination status
         BOOL hasMoreItems = !weakSelf.modrinth.reachedLastPage;
