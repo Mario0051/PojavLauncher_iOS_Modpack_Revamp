@@ -102,7 +102,6 @@
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
     if (self) {
-        // Make cell properly selectable - this is a key change
         self.selectionStyle = UITableViewCellSelectionStyleDefault;
         
         // Add a shadow to give the cell a "card" appearance
@@ -160,13 +159,6 @@
         // Initialize tag views array
         self.tagViews = [NSMutableArray array];
         
-        // Add disclosure indicator with more modern styling
-        UIImageView *chevronView = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
-        chevronView.tintColor = [UIColor systemGrayColor];
-        chevronView.translatesAutoresizingMaskIntoConstraints = NO;
-        chevronView.contentMode = UIViewContentModeScaleAspectFit;
-        [self.containerView addSubview:chevronView];
-        
         // Container view constraints - full content view with padding
         [NSLayoutConstraint activateConstraints:@[
             [self.containerView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:8],
@@ -183,19 +175,11 @@
             [self.modpackIconView.heightAnchor constraintEqualToConstant:48] // Larger icon
         ]];
         
-        // Chevron constraints
-        [NSLayoutConstraint activateConstraints:@[
-            [chevronView.trailingAnchor constraintEqualToAnchor:self.containerView.trailingAnchor constant:-16],
-            [chevronView.centerYAnchor constraintEqualToAnchor:self.containerView.centerYAnchor],
-            [chevronView.widthAnchor constraintEqualToConstant:20],
-            [chevronView.heightAnchor constraintEqualToConstant:20]
-        ]];
-        
         // Title label constraints - positioned after icon with more spacing
         [NSLayoutConstraint activateConstraints:@[
             [self.titleLabel.topAnchor constraintEqualToAnchor:self.containerView.topAnchor constant:12],
             [self.titleLabel.leadingAnchor constraintEqualToAnchor:self.modpackIconView.trailingAnchor constant:16],
-            [self.titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:chevronView.leadingAnchor constant:-8]
+            [self.titleLabel.trailingAnchor constraintEqualToAnchor:self.containerView.trailingAnchor constant:-12]
         ]];
         
         // Subtitle label constraints - below title with proper spacing
@@ -209,7 +193,7 @@
         [NSLayoutConstraint activateConstraints:@[
             [self.tagsScrollView.topAnchor constraintEqualToAnchor:self.subtitleLabel.bottomAnchor constant:8],
             [self.tagsScrollView.leadingAnchor constraintEqualToAnchor:self.titleLabel.leadingAnchor],
-            [self.tagsScrollView.trailingAnchor constraintEqualToAnchor:chevronView.leadingAnchor constant:-8],
+            [self.tagsScrollView.trailingAnchor constraintEqualToAnchor:self.containerView.trailingAnchor constant:-12],
             [self.tagsScrollView.heightAnchor constraintEqualToConstant:26], // Slightly taller for better readability
             [self.tagsScrollView.bottomAnchor constraintLessThanOrEqualToAnchor:self.containerView.bottomAnchor constant:-12]
         ]];
