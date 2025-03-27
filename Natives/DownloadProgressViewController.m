@@ -311,12 +311,16 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     // Simplified Completion Check
     BOOL isComplete = NO;
     @synchronized(self.task) {
+        // Check if progress is complete
         isComplete = self.task.progress.finished || (self.task.progress.totalUnitCount > 0 && self.task.progress.fractionCompleted >= 1.0);
-        // Also consider the counters if progress object lags
+        
+        // Also consider successful downloads vs total downloads
+        // Since we can't access pendingDownloads and activeDownloads directly
+        // (they're private properties), we'll rely on progress and counts
         if (!isComplete && self.task.totalDownloads > 0 && 
-            self.task.successfulDownloads >= self.task.totalDownloads && 
-            self.task.pendingDownloads.count == 0 && 
-            self.task.activeDownloads == 0) {
+            self.task.successfulDownloads >= self.task.totalDownloads) {
+            // If all downloads are successful, and there's been some delay in progress update,
+            // consider it complete
             isComplete = YES;
         }
     }
