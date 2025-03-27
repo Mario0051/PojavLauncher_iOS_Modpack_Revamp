@@ -1774,8 +1774,21 @@
     // Create a weak reference to self to avoid retain cycles
     __weak typeof(self) weakSelf = self;
     
+    // Create a unique identifier for this search operation
+    static NSInteger searchOperationCounter = 0;
+    NSInteger currentSearchOperation = ++searchOperationCounter;
+    
+    // Store the operation ID to track completions
+    objc_setAssociatedObject(self, @"currentSearchOperation", @(currentSearchOperation), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
     // Perform the search in background without blocking the main thread
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Check if this is still the current operation
+        NSNumber *storedSearchOp = objc_getAssociatedObject(weakSelf, @"currentSearchOperation");
+        if (!storedSearchOp || [storedSearchOp integerValue] != currentSearchOperation) {
+            return; // A newer search operation has started, discard this one
+        }
+        
         // Create a copy of filters for this search
         NSMutableDictionary *searchFilters;
         @synchronized(self.filters) {
@@ -1798,38 +1811,63 @@
         NSMutableArray *newResults = [weakSelf.modrinth searchModWithFilters:searchFilters 
                                                       previousPageResult:prevResults];
         
-        // Update pagination status
+        // Check if this is still the current operation
+        storedSearchOp = objc_getAssociatedObject(weakSelf, @"currentSearchOperation");
+        if (!storedSearchOp || [storedSearchOp integerValue] != currentSearchOperation) {
+            return; // A newer search operation has started, discard this one
+        }
+        
+        // Update pagination status - if we have very few or no results, force end of pagination
         BOOL hasMoreItems = !weakSelf.modrinth.reachedLastPage;
+        if (!newResults || newResults.count <= 3) {
+            hasMoreItems = NO;
+        }
         
         // Update UI on main thread
         dispatch_async(dispatch_get_main_queue(), ^{
-            // Check if view controller is still alive
-            if (!weakSelf) return;
+            // Check if view controller is still alive and this is still the current operation
+            NSNumber *finalStoredOp = objc_getAssociatedObject(weakSelf, @"currentSearchOperation");
+            if (!weakSelf || !finalStoredOp || [finalStoredOp integerValue] != currentSearchOperation) {
+                return; // Operation was canceled or superseded
+            }
+            
+            // Cancel any pending timeout for this operation
+            objc_setAssociatedObject(weakSelf, [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation], 
+                                   @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             
             // Update pagination status
             weakSelf.hasMoreResults = hasMoreItems;
             weakSelf.isLoadingMoreResults = NO;
             
             if (newResults) {
-                if (!prevList) {
-                    // For a fresh search, organize by category and update search results
-                    [weakSelf organizeModpacksByCategory:newResults];
-                    
-                    // In search mode, also update unified results
-                    if (weakSelf.isSearchActive) {
-                        [weakSelf updateUnifiedSearchResults];
+                if (newResults.count == 0) {
+                    // Handle empty results properly - ensure we don't try to load more
+                    weakSelf.hasMoreResults = NO;
+                    if (!prevList) {
+                        // For a fresh search with no results, set up empty categories
+                        [weakSelf organizeModpacksByCategory:@[]];
                     }
                 } else {
-                    // For pagination, append to existing results
-                    [weakSelf updateOrganizedModpacks:newResults];
-                    
-                    // In search mode, append to unified results
-                    if (weakSelf.isSearchActive) {
-                        [weakSelf appendToUnifiedSearchResults:newResults];
+                    if (!prevList) {
+                        // For a fresh search, organize by category and update search results
+                        [weakSelf organizeModpacksByCategory:newResults];
+                        
+                        // In search mode, also update unified results
+                        if (weakSelf.isSearchActive) {
+                            [weakSelf updateUnifiedSearchResults];
+                        }
+                    } else {
+                        // For pagination, append to existing results
+                        [weakSelf updateOrganizedModpacks:newResults];
+                        
+                        // In search mode, append to unified results
+                        if (weakSelf.isSearchActive) {
+                            [weakSelf appendToUnifiedSearchResults:newResults];
+                        }
                     }
                 }
             } else {
-                // Handle error
+                // Handle error (like network failure)
                 if (weakSelf.modrinth.lastError) {
                     showDialog(localize(@"Error", nil), weakSelf.modrinth.lastError.localizedDescription);
                 } else {
@@ -1840,6 +1878,9 @@
                 if (weakSelf.categories.count == 0) {
                     [weakSelf organizeModpacksByCategory:@[]];
                 }
+                
+                // Ensure we don't try to load more results
+                weakSelf.hasMoreResults = NO;
             }
             
             // Update UI state
@@ -1854,12 +1895,31 @@
     });
     
     // Set a timeout for the operation, but don't block the main thread
+    objc_setAssociatedObject(self, [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation], 
+                           @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // If we're still loading, show a timeout error
-        if (weakSelf && weakSelf.isDataLoading) {
+        // Check if timeout is still active for this operation
+        NSNumber *isTimeoutActive = objc_getAssociatedObject(weakSelf, [NSString stringWithFormat:@"timeout_%ld", (long)currentSearchOperation]);
+        NSNumber *storedSearchOp = objc_getAssociatedObject(weakSelf, @"currentSearchOperation");
+        
+        // Only show timeout message if this is still the current operation and timeout wasn't canceled
+        if (weakSelf && 
+            isTimeoutActive && [isTimeoutActive boolValue] &&
+            storedSearchOp && [storedSearchOp integerValue] == currentSearchOperation && 
+            weakSelf.isDataLoading) {
+            
             dispatch_async(dispatch_get_main_queue(), ^{
                 [weakSelf switchToReadyState];
                 showDialog(localize(@"Error", nil), @"Loading timed out. Please try again.");
+                
+                // Ensure we don't try to load more results
+                weakSelf.hasMoreResults = NO;
+                weakSelf.isLoadingMoreResults = NO;
+                
+                // Update empty state
+                [weakSelf updateEmptyStateVisibility];
+                [weakSelf.tableView reloadData];
             });
         }
     });
@@ -1868,6 +1928,21 @@
 - (void)loadMoreResults {
     // Only proceed if we're not already loading and have more results to fetch
     if (self.isLoadingMoreResults || !self.hasMoreResults) {
+        return;
+    }
+    
+    // Check if we already have search results
+    [self.dataLock lock];
+    NSInteger currentResultCount = self.isSearchActive ? self.unifiedSearchResults.count : 0;
+    [self.dataLock unlock];
+    
+    // If we have very few results, assume there aren't any more to load regardless of reachedLastPage flag
+    if (currentResultCount <= 3) {
+        self.hasMoreResults = NO;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self.tableView reloadData];
+            [self updateEmptyStateVisibility];
+        });
         return;
     }
     
@@ -1884,17 +1959,32 @@
     // Use a weak reference to self to prevent retain cycles
     __weak typeof(self) weakSelf = self;
     
+    // Set a timeout flag that can be canceled when operation completes
+    objc_setAssociatedObject(self, [NSString stringWithFormat:@"loadTimeout_%ld", (long)currentLoadOperation], 
+                           @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
     // Set a timeout to reset loading state if the request takes too long
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // Only reset if this is still the current operation
+        // Check if timeout is still active for this operation
+        NSNumber *isTimeoutActive = objc_getAssociatedObject(weakSelf, [NSString stringWithFormat:@"loadTimeout_%ld", (long)currentLoadOperation]);
+        
+        // Only reset if this is still the current operation and timeout wasn't canceled
         NSNumber *storedOpId = objc_getAssociatedObject(weakSelf, @"currentLoadOperation");
-        if (storedOpId && [storedOpId integerValue] == currentLoadOperation && weakSelf.isLoadingMoreResults) {
+        if (isTimeoutActive && [isTimeoutActive boolValue] && 
+            storedOpId && [storedOpId integerValue] == currentLoadOperation && 
+            weakSelf.isLoadingMoreResults) {
+            
             weakSelf.isLoadingMoreResults = NO;
+            weakSelf.hasMoreResults = NO; // Prevent further loading attempts after timeout
             NSLog(@"[ModpackInstall] Warning: Loading more results timed out (operation %ld)", (long)currentLoadOperation);
             
             // Refresh UI in case of timeout
             dispatch_async(dispatch_get_main_queue(), ^{
                 [weakSelf.tableView reloadData];
+                [weakSelf updateEmptyStateVisibility];
+                
+                // Show a subtle toast instead of a full dialog for pagination timeouts
+                [weakSelf showToast:localize(@"Loading more results timed out", nil)];
             });
         }
     });
@@ -1908,34 +1998,55 @@
         // Check if we need to show empty state
         BOOL shouldShowEmptyState = NO;
         
-        if (self.isSearchActive) {
+        if (self.isDataLoading) {
+            // Don't show empty state while actively loading
+            shouldShowEmptyState = NO;
+        } else if (self.isSearchActive) {
             // In search mode, check unified results
-            shouldShowEmptyState = (self.unifiedSearchResults.count == 0 && !self.isDataLoading && !self.hasMoreResults);
+            [self.dataLock lock];
+            NSInteger resultCount = self.unifiedSearchResults.count;
+            BOOL isLoading = self.isLoadingMoreResults;
+            [self.dataLock unlock];
+            
+            shouldShowEmptyState = (resultCount == 0 && !isLoading);
         } else {
             // In regular mode, check all categories
             BOOL hasAnyModpacks = NO;
+            
+            [self.dataLock lock];
             for (NSArray *categoryModpacks in self.organizedModpacks) {
                 if ([categoryModpacks isKindOfClass:[NSArray class]] && categoryModpacks.count > 0) {
                     hasAnyModpacks = YES;
                     break;
                 }
             }
-            shouldShowEmptyState = (!hasAnyModpacks && !self.isDataLoading && !self.hasMoreResults);
+            BOOL isLoading = self.isLoadingMoreResults;
+            [self.dataLock unlock];
+            
+            shouldShowEmptyState = (!hasAnyModpacks && !isLoading);
         }
         
         // Update empty state visibility
         self.emptyStateView.hidden = !shouldShowEmptyState;
         
         // Update empty state message based on active filters
-        if (shouldShowEmptyState && self.activeTagFilters.count > 0) {
-            self.emptyStateLabel.text = localize(@"No modpacks match your current filters. Try clearing some filters.", nil);
-            self.emptyStateImageView.image = [UIImage systemImageNamed:@"tag.slash"];
-        } else if (shouldShowEmptyState && self.searchController.isActive && self.searchText.length > 0) {
-            self.emptyStateLabel.text = localize(@"No modpacks match your search. Try different keywords.", nil);
-            self.emptyStateImageView.image = [UIImage systemImageNamed:@"magnifyingglass"];
-        } else if (shouldShowEmptyState) {
-            self.emptyStateLabel.text = localize(@"No modpacks found. Try refreshing or check your network connection.", nil);
-            self.emptyStateImageView.image = [UIImage systemImageNamed:@"cube.box"];
+        if (shouldShowEmptyState) {
+            if (self.activeTagFilters.count > 0) {
+                self.emptyStateLabel.text = localize(@"No modpacks match your current filters. Try clearing some filters.", nil);
+                self.emptyStateImageView.image = [UIImage systemImageNamed:@"tag.slash"];
+            } else if (self.searchController.isActive && self.searchText.length > 0) {
+                self.emptyStateLabel.text = localize(@"No modpacks match your search. Try different keywords.", nil);
+                self.emptyStateImageView.image = [UIImage systemImageNamed:@"magnifyingglass"];
+            } else {
+                self.emptyStateLabel.text = localize(@"No modpacks found. Try refreshing or check your network connection.", nil);
+                self.emptyStateImageView.image = [UIImage systemImageNamed:@"cube.box"];
+            }
+            
+            // Always animate the empty state appearance for better UX
+            self.emptyStateView.alpha = 0;
+            [UIView animateWithDuration:0.3 animations:^{
+                self.emptyStateView.alpha = 1;
+            }];
         }
     });
 }
@@ -2568,16 +2679,27 @@
         return;
     }
     
+    // Check if we have sufficient results to warrant loading more
+    [self.dataLock lock];
+    NSInteger currentResultCount = self.unifiedSearchResults.count;
+    [self.dataLock unlock];
+    
+    // If we have very few results, assume there aren't any more to load
+    if (currentResultCount <= 3) {
+        self.hasMoreResults = NO;
+        return;
+    }
+    
     // Check if we're near the bottom of the table view and should load more
     CGFloat currentOffset = scrollView.contentOffset.y;
     CGFloat contentHeight = scrollView.contentSize.height;
     CGFloat frameHeight = scrollView.frame.size.height;
-    
-    // Use relative threshold instead of fixed value
-    CGFloat loadMoreThreshold = frameHeight * 0.8; 
+
+    // Only trigger when closer to the bottom to prevent excessive loading attempts
+    CGFloat loadMoreThreshold = MIN(frameHeight * 0.5, 100); 
     CGFloat bottomDistance = contentHeight - (currentOffset + frameHeight);
     
-    if (bottomDistance < loadMoreThreshold) {
+    if (bottomDistance < loadMoreThreshold && contentHeight > frameHeight * 1.5) {
         [self loadMoreResults];
     }
 }
