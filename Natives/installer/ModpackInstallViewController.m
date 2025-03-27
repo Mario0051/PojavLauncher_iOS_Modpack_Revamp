@@ -3499,11 +3499,49 @@
                 continue;
             }
             
-            UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
-                                                                style:UIAlertActionStyleDefault
-                                                              handler:^(UIAlertAction * _Nonnull alertAction) {
-                                                                  action.handler(action);
-                                                              }];
+            // Create a handler that performs the same action as the UIAction would
+            // Store a copy of the index to avoid block-capture issues
+            NSUInteger versionIndex = [menuItems indexOfObject:action];
+            if (versionIndex != NSNotFound && versionIndex >= 2) { // Skip title and separator items
+                NSUInteger modpackVersionIndex = versionIndex - 2; // Adjust for title and separator
+                if (modpackVersionIndex < versionNames.count) {
+                    UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
+                                                                        style:UIAlertActionStyleDefault
+                                                                      handler:^(UIAlertAction * _Nonnull alertAction) {
+                                                                          // Close the view controller
+                                                                          [weakSelf actionClose];
+                                                                          
+                                                                          // Same logic as in the original UIAction handler
+                                                                          NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
+                                                                          
+                                                                          if (modpack[@"original_categories"]) {
+                                                                              NSMutableArray *allCategories = [NSMutableArray array];
+                                                                              if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
+                                                                                  [allCategories addObjectsFromArray:modpack[@"original_categories"]];
+                                                                              }
+                                                                              if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
+                                                                                  for (id category in modpack[@"categories"]) {
+                                                                                      if (![allCategories containsObject:category]) {
+                                                                                          [allCategories addObject:category];
+                                                                                      }
+                                                                                  }
+                                                                              }
+                                                                              modpackWithCategories[@"categories"] = allCategories;
+                                                                          }
+                                                                          
+                                                                          NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
+                                                                          UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
+                                                                          [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
+                                                                          
+                                                                          UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+                                                                          [generator prepare];
+                                                                          [generator impactOccurred];
+                                                                          
+                                                                          [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:modpackVersionIndex];
+                                                                      }];
+                    [alertController addAction:alertAction];
+                }
+            }
             [alertController addAction:alertAction];
         }
         
@@ -3542,11 +3580,48 @@
                         continue;
                     }
                     
-                    UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
-                                                                        style:UIAlertActionStyleDefault
-                                                                      handler:^(UIAlertAction * _Nonnull alertAction) {
-                                                                          action.handler(action);
-                                                                      }];
+                    // Create a handler that performs the same action as the UIAction would
+                    NSUInteger versionIndex = [menuItems indexOfObject:action];
+                    if (versionIndex != NSNotFound && versionIndex >= 2) { // Skip title and separator items
+                        NSUInteger modpackVersionIndex = versionIndex - 2; // Adjust for title and separator
+                        if (modpackVersionIndex < versionNames.count) {
+                            UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
+                                                                                style:UIAlertActionStyleDefault
+                                                                              handler:^(UIAlertAction * _Nonnull alertAction) {
+                                                                                  // Close the view controller
+                                                                                  [weakSelf actionClose];
+                                                                                  
+                                                                                  // Same logic as in the original UIAction handler
+                                                                                  NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
+                                                                                  
+                                                                                  if (modpack[@"original_categories"]) {
+                                                                                      NSMutableArray *allCategories = [NSMutableArray array];
+                                                                                      if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
+                                                                                          [allCategories addObjectsFromArray:modpack[@"original_categories"]];
+                                                                                      }
+                                                                                      if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
+                                                                                          for (id category in modpack[@"categories"]) {
+                                                                                              if (![allCategories containsObject:category]) {
+                                                                                                  [allCategories addObject:category];
+                                                                                              }
+                                                                                          }
+                                                                                      }
+                                                                                      modpackWithCategories[@"categories"] = allCategories;
+                                                                                  }
+                                                                                  
+                                                                                  NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
+                                                                                  UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
+                                                                                  [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
+                                                                                  
+                                                                                  UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+                                                                                  [generator prepare];
+                                                                                  [generator impactOccurred];
+                                                                                  
+                                                                                  [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:modpackVersionIndex];
+                                                                              }];
+                            [alertController addAction:alertAction];
+                        }
+                    }
                     [alertController addAction:alertAction];
                 }
                 
@@ -3576,11 +3651,48 @@
                     continue;
                 }
                 
-                UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
-                                                                    style:UIAlertActionStyleDefault
-                                                                  handler:^(UIAlertAction * _Nonnull alertAction) {
-                                                                      action.handler(action);
-                                                                  }];
+                // Create a handler that performs the same action as the UIAction would
+                NSUInteger versionIndex = [menuItems indexOfObject:action];
+                if (versionIndex != NSNotFound && versionIndex >= 2) { // Skip title and separator items
+                    NSUInteger modpackVersionIndex = versionIndex - 2; // Adjust for title and separator
+                    if (modpackVersionIndex < versionNames.count) {
+                        UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
+                                                                            style:UIAlertActionStyleDefault
+                                                                          handler:^(UIAlertAction * _Nonnull alertAction) {
+                                                                              // Close the view controller
+                                                                              [weakSelf actionClose];
+                                                                              
+                                                                              // Same logic as in the original UIAction handler
+                                                                              NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
+                                                                              
+                                                                              if (modpack[@"original_categories"]) {
+                                                                                  NSMutableArray *allCategories = [NSMutableArray array];
+                                                                                  if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
+                                                                                      [allCategories addObjectsFromArray:modpack[@"original_categories"]];
+                                                                                  }
+                                                                                  if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
+                                                                                      for (id category in modpack[@"categories"]) {
+                                                                                          if (![allCategories containsObject:category]) {
+                                                                                              [allCategories addObject:category];
+                                                                                          }
+                                                                                      }
+                                                                                  }
+                                                                                  modpackWithCategories[@"categories"] = allCategories;
+                                                                              }
+                                                                              
+                                                                              NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
+                                                                              UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
+                                                                              [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
+                                                                              
+                                                                              UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+                                                                              [generator prepare];
+                                                                              [generator impactOccurred];
+                                                                              
+                                                                              [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:modpackVersionIndex];
+                                                                          }];
+                        [alertController addAction:alertAction];
+                    }
+                }
                 [alertController addAction:alertAction];
             }
             
