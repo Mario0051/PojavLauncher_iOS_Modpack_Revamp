@@ -3,7 +3,7 @@
 
 @interface ModrinthAPI : ModpackAPI
 
-//User-Agent
 @property(nonatomic, strong) NSString *userAgent;
+@property(nonatomic, strong) NSURLSession *session;
 
 @end
