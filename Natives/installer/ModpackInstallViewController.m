@@ -4,6 +4,7 @@
 #import "UIKit+AFNetworking.h"
 #import "UIKit+hook.h"
 #import "WFWorkflowProgressView.h"
+#import "modpack/ModpackUtils.h"
 #import "modpack/ModrinthAPI.h"
 #import "config.h"
 #import "ios_uikit_bridge.h"
@@ -1771,19 +1772,15 @@
     
     // Perform the search in background without blocking the main thread
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Create a copy of filters for this search
-        NSMutableDictionary *searchFilters;
+        // Create a copy of filters for this search using the safe method
+        NSMutableDictionary *searchFilters = [ModpackUtils safeMutableDictionaryWithDictionary:self.filters];
+        
+        // Safely set search text, ensuring it's not nil
+        [ModpackUtils safeSetObject:(name ?: @"") forKey:@"name" inDictionary:searchFilters];
+        
+        // Update main filters with current search text (thread-safely)
         @synchronized(self.filters) {
-            searchFilters = [NSMutableDictionary dictionaryWithDictionary:self.filters];
-            // Ensure we don't insert nil value into dictionary
-            if (name) {
-                searchFilters[@"name"] = name;
-            } else {
-                searchFilters[@"name"] = @"";
-            }
-            
-            // Update main filters with current search text
-            self.filters[@"name"] = name ?: @"";
+            [ModpackUtils safeSetObject:(name ?: @"") forKey:@"name" inDictionary:self.filters];
         }
         
         // Get previous results if appending
@@ -1798,7 +1795,7 @@
         NSMutableArray *newResults = nil;
         @try {
             newResults = [weakSelf.modrinth searchModWithFilters:searchFilters 
-                                               previousPageResult:prevResults];
+                                              previousPageResult:prevResults];
         } @catch (NSException *exception) {
             NSLog(@"[ModpackInstall] Exception in searchModWithFilters: %@", exception);
             newResults = nil;
