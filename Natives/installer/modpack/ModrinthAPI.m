@@ -88,9 +88,8 @@ extern void showDialog(NSString *title, NSString *message);
     // Get pagination info
     NSInteger offset = [previousPageResult count];
     
-    // Create URL with basic endpoint - default project type is "mod"
+    // Create URL with basic endpoint
     NSString *urlStr = @"https://api.modrinth.com/v2/search";
-    NSURL *url = [NSURL URLWithString:urlStr];
     
     // Prepare parameters dictionary with nil safety
     NSMutableDictionary *parameters = [NSMutableDictionary dictionary];
@@ -125,13 +124,23 @@ extern void showDialog(NSString *title, NSString *message);
     // Log the parameters for debugging
     NSLog(@"[ModrinthAPI] Searching with params: %@", parameters);
     
-    // Create request
-    NSError *error;
-    NSURLRequest *request = [[AFJSONRequestSerializer serializer] requestWithMethod:@"GET" URLString:urlStr parameters:parameters error:&error];
+    // Create session and manager for the request
+    NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+    AFURLSessionManager *manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
     
-    if (error) {
-        NSLog(@"[ModrinthAPI] Error creating request: %@", error);
-        self.lastError = error;
+    // Create request serializer
+    AFJSONRequestSerializer *requestSerializer = [AFJSONRequestSerializer serializer];
+    
+    // Create the request with parameters
+    NSError *serializationError;
+    NSMutableURLRequest *request = [requestSerializer requestWithMethod:@"GET" 
+                                                             URLString:urlStr 
+                                                            parameters:parameters 
+                                                                 error:&serializationError];
+    
+    if (serializationError) {
+        NSLog(@"[ModrinthAPI] Error creating request: %@", serializationError);
+        self.lastError = serializationError;
         return previousPageResult ?: [NSMutableArray array];
     }
     
@@ -140,11 +149,13 @@ extern void showDialog(NSString *title, NSString *message);
     __block id responseObject = nil;
     __block NSError *requestError = nil;
     
-    [self.sessionManager dataTaskWithRequest:request uploadProgress:nil downloadProgress:nil completionHandler:^(NSURLResponse *response, id responseData, NSError *dataError) {
+    NSURLSessionDataTask *dataTask = [manager dataTaskWithRequest:request uploadProgress:nil downloadProgress:nil completionHandler:^(NSURLResponse *response, id responseData, NSError *dataError) {
         responseObject = responseData;
         requestError = dataError;
         dispatch_semaphore_signal(semaphore);
-    }] resume];
+    }];
+    
+    [dataTask resume];
     
     dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC));
     
@@ -157,6 +168,13 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Parse response
     NSDictionary *jsonResponse = responseObject;
+    
+    // Safety check for JSON response
+    if (!jsonResponse || ![jsonResponse isKindOfClass:[NSDictionary class]]) {
+        NSLog(@"[ModrinthAPI] Invalid JSON response");
+        return previousPageResult ?: [NSMutableArray array];
+    }
+    
     NSArray *hits = jsonResponse[@"hits"];
     
     // If no results, return empty array
