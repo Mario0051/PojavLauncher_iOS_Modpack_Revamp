@@ -3354,8 +3354,6 @@
         cell.modpackIconView.image = [UIImage imageNamed:@"DefaultProfile"];
     }
     
-    NSMutableArray<UIAction *> *menuItems = [[NSMutableArray alloc] init];
-    
     // Validate the version arrays
     NSArray *versionNames = modpack[@"versionNames"];
     NSArray *mcVersionNames = modpack[@"mcVersionNames"];
@@ -3366,352 +3364,97 @@
         return;
     }
     
-    // Create a weak reference to self to prevent retain cycles
-    __weak typeof(self) weakSelf = self;
-    
-    // Add a title menu item
-    UIAction *titleAction = [UIAction actionWithTitle:modpack[@"title"] 
-                                                image:[UIImage systemImageNamed:@"info.circle"]
-                                           identifier:nil
-                                              handler:^(UIAction *action) {
-                                                  // No action - this is just a title
-                                              }];
-    titleAction.attributes = UIMenuElementAttributesDisabled;
-    [menuItems addObject:titleAction];
-    
     // Check if we have any versions
     if (versionNames.count == 0) {
-        UIAction *noVersionsAction = [UIAction actionWithTitle:localize(@"No versions available", nil)
-                                                         image:nil
-                                                    identifier:nil
-                                                       handler:^(UIAction *action) {}];
-        noVersionsAction.attributes = UIMenuElementAttributesDisabled;
-        [menuItems addObject:noVersionsAction];
-    } else {
-        // Add a separator
-        UIAction *separator = [UIAction actionWithTitle:localize(@"Select version to install:", nil)
-                                                  image:nil
-                                             identifier:nil
-                                                handler:^(UIAction *action) {}];
-        separator.attributes = UIMenuElementAttributesDisabled;
-        [menuItems addObject:separator];
-        
-        // Add version actions
-        [versionNames enumerateObjectsUsingBlock:
-        ^(NSString *name, NSUInteger i, BOOL *stop) {
-            // Skip invalid indices
-            if (i >= mcVersionNames.count) return;
-            
-            // Skip non-string values
-            if (![name isKindOfClass:[NSString class]] || 
-                ![mcVersionNames[i] isKindOfClass:[NSString class]]) return;
-            
-            NSString *nameWithVersion = name;
-            NSString *mcVersion = mcVersionNames[i];
-            if (![name hasSuffix:mcVersion]) {
-                nameWithVersion = [NSString stringWithFormat:@"%@ - %@", name, mcVersion];
-            }
-            
-            // Determine the appropriate icon based on Minecraft version
-            UIImage *versionIcon = nil;
-            if ([mcVersion hasPrefix:@"1.20"]) {
-                versionIcon = [UIImage systemImageNamed:@"star.fill"];
-            } else if ([mcVersion hasPrefix:@"1.19"]) {
-                versionIcon = [UIImage systemImageNamed:@"star"];
-            } else if ([mcVersion hasPrefix:@"1.18"]) {
-                versionIcon = [UIImage systemImageNamed:@"mountain.2.fill"];
-            } else if ([mcVersion hasPrefix:@"1.17"]) {
-                versionIcon = [UIImage systemImageNamed:@"mountain.2"];
-            } else if ([mcVersion hasPrefix:@"1.16"]) {
-                versionIcon = [UIImage systemImageNamed:@"flame.fill"];
-            } else {
-                versionIcon = [UIImage systemImageNamed:@"cube.box.fill"];
-            }
-            
-            [menuItems addObject:[UIAction
-                actionWithTitle:nameWithVersion
-                image:versionIcon
-                identifier:nil
-                handler:^(UIAction *action) {
-                    [weakSelf actionClose];
-                    
-                    // Create a mutable copy of modpack to include original categories
-                    NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
-                    
-                    // If we have original categories stored, make sure they're included
-                    if (modpack[@"original_categories"]) {
-                        NSMutableArray *allCategories = [NSMutableArray array];
-                        
-                        // Add original categories
-                        if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
-                            [allCategories addObjectsFromArray:modpack[@"original_categories"]];
-                        }
-                        
-                        // Add new categories if different from originals
-                        if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
-                            for (id category in modpack[@"categories"]) {
-                                if (![allCategories containsObject:category]) {
-                                    [allCategories addObject:category];
-                                }
-                            }
-                        }
-                        
-                        // Use the combined categories
-                        modpackWithCategories[@"categories"] = allCategories;
-                    }
-                    
-                    // Safely create the icon path
-                    NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
-                    UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
-                    [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
-                    
-                    // Add haptic feedback for selection
-                    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-                    [generator prepare];
-                    [generator impactOccurred];
-                    
-                    // Safely install the modpack with preserved categories
-                    [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:i];
-                }]];
-        }];
-    }
-    
-    // If no valid menu items, show error
-    if (menuItems.count <= 2) { // Title + separator only
-        showDialog(localize(@"Error", nil), @"No valid versions available for this modpack.");
+        showDialog(localize(@"Error", nil), @"No versions available for this modpack.");
         return;
     }
     
-    // Create modern menu with sections
-    self.currentMenu = [UIMenu menuWithTitle:@"" children:menuItems];
+    // Create a weak reference to self to prevent retain cycles
+    __weak typeof(self) weakSelf = self;
     
-    // Check if we're running on iOS 14 or later
-    if (@available(iOS 14.0, *)) {
-        // Use the standard UIMenu presentation API for iOS 14+
-        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:modpack[@"title"]
-                                                                              message:localize(@"Select version to install:", nil)
-                                                                       preferredStyle:UIAlertControllerStyleActionSheet];
+    // Create and configure the alert controller
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:modpack[@"title"]
+                                                                            message:localize(@"Select version to install:", nil)
+                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
+    
+    // Add version actions using the same handling logic from the original UIAction implementation
+    [versionNames enumerateObjectsUsingBlock:^(NSString *name, NSUInteger i, BOOL *stop) {
+        // Skip invalid indices
+        if (i >= mcVersionNames.count) return;
         
-        // Add actions for each version
-        for (UIAction *action in menuItems) {
-            // Skip title and separator actions
-            if (action.attributes == UIMenuElementAttributesDisabled) {
-                continue;
-            }
-            
-            // Create a handler that performs the same action as the UIAction would
-            // Store a copy of the index to avoid block-capture issues
-            NSUInteger versionIndex = [menuItems indexOfObject:action];
-            if (versionIndex != NSNotFound && versionIndex >= 2) { // Skip title and separator items
-                NSUInteger modpackVersionIndex = versionIndex - 2; // Adjust for title and separator
-                if (modpackVersionIndex < versionNames.count) {
-                    UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
-                                                                        style:UIAlertActionStyleDefault
-                                                                      handler:^(UIAlertAction * _Nonnull alertAction) {
-                                                                          // Close the view controller
-                                                                          [weakSelf actionClose];
-                                                                          
-                                                                          // Same logic as in the original UIAction handler
-                                                                          NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
-                                                                          
-                                                                          if (modpack[@"original_categories"]) {
-                                                                              NSMutableArray *allCategories = [NSMutableArray array];
-                                                                              if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
-                                                                                  [allCategories addObjectsFromArray:modpack[@"original_categories"]];
-                                                                              }
-                                                                              if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
-                                                                                  for (id category in modpack[@"categories"]) {
-                                                                                      if (![allCategories containsObject:category]) {
-                                                                                          [allCategories addObject:category];
-                                                                                      }
-                                                                                  }
-                                                                              }
-                                                                              modpackWithCategories[@"categories"] = allCategories;
-                                                                          }
-                                                                          
-                                                                          NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
-                                                                          UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
-                                                                          [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
-                                                                          
-                                                                          UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-                                                                          [generator prepare];
-                                                                          [generator impactOccurred];
-                                                                          
-                                                                          [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:modpackVersionIndex];
-                                                                      }];
-                    [alertController addAction:alertAction];
-                }
-            }
-            [alertController addAction:alertAction];
+        // Skip non-string values
+        if (![name isKindOfClass:[NSString class]] || 
+            ![mcVersionNames[i] isKindOfClass:[NSString class]]) return;
+        
+        NSString *nameWithVersion = name;
+        NSString *mcVersion = mcVersionNames[i];
+        if (![name hasSuffix:mcVersion]) {
+            nameWithVersion = [NSString stringWithFormat:@"%@ - %@", name, mcVersion];
         }
         
-        // Add cancel option
-        UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                                            style:UIAlertActionStyleCancel
-                                                          handler:nil];
-        [alertController addAction:cancelAction];
-        
-        // Configure popover for iPad
-        alertController.popoverPresentationController.sourceView = cell;
-        alertController.popoverPresentationController.sourceRect = cell.bounds;
-        
-        // Present the alert
-        [self presentViewController:alertController animated:YES completion:nil];
-    } else {
-        // Fallback for earlier iOS versions using context menu
-        UIContextMenuInteraction *interaction = [[UIContextMenuInteraction alloc] initWithDelegate:self];
-        
-        // Only set interactions if cell is visible
-        if ([cell superview]) {
-            cell.interactions = @[interaction];
-            if ([interaction respondsToSelector:@selector(_presentMenuAtLocation:)]) {
-                // Try to use the private API if available
-                [interaction performSelector:@selector(_presentMenuAtLocation:) withObject:[NSValue valueWithCGPoint:CGPointZero]];
-            } else {
-                // Fallback to using standard alert controller
-                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:modpack[@"title"]
-                                                                                      message:localize(@"Select version to install:", nil)
-                                                                               preferredStyle:UIAlertControllerStyleActionSheet];
+        // Create alert action for this version
+        UIAlertAction *versionAction = [UIAlertAction actionWithTitle:nameWithVersion
+                                                        style:UIAlertActionStyleDefault
+                                                      handler:^(UIAlertAction * _Nonnull action) {
+            // Close the view controller
+            [weakSelf actionClose];
+            
+            // Create a mutable copy of modpack to include original categories
+            NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
+            
+            // If we have original categories stored, make sure they're included
+            if (modpack[@"original_categories"]) {
+                NSMutableArray *allCategories = [NSMutableArray array];
                 
-                // Add actions for each version
-                for (UIAction *action in menuItems) {
-                    // Skip title and separator actions
-                    if (action.attributes == UIMenuElementAttributesDisabled) {
-                        continue;
-                    }
-                    
-                    // Create a handler that performs the same action as the UIAction would
-                    NSUInteger versionIndex = [menuItems indexOfObject:action];
-                    if (versionIndex != NSNotFound && versionIndex >= 2) { // Skip title and separator items
-                        NSUInteger modpackVersionIndex = versionIndex - 2; // Adjust for title and separator
-                        if (modpackVersionIndex < versionNames.count) {
-                            UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
-                                                                                style:UIAlertActionStyleDefault
-                                                                              handler:^(UIAlertAction * _Nonnull alertAction) {
-                                                                                  // Close the view controller
-                                                                                  [weakSelf actionClose];
-                                                                                  
-                                                                                  // Same logic as in the original UIAction handler
-                                                                                  NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
-                                                                                  
-                                                                                  if (modpack[@"original_categories"]) {
-                                                                                      NSMutableArray *allCategories = [NSMutableArray array];
-                                                                                      if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
-                                                                                          [allCategories addObjectsFromArray:modpack[@"original_categories"]];
-                                                                                      }
-                                                                                      if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
-                                                                                          for (id category in modpack[@"categories"]) {
-                                                                                              if (![allCategories containsObject:category]) {
-                                                                                                  [allCategories addObject:category];
-                                                                                              }
-                                                                                          }
-                                                                                      }
-                                                                                      modpackWithCategories[@"categories"] = allCategories;
-                                                                                  }
-                                                                                  
-                                                                                  NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
-                                                                                  UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
-                                                                                  [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
-                                                                                  
-                                                                                  UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-                                                                                  [generator prepare];
-                                                                                  [generator impactOccurred];
-                                                                                  
-                                                                                  [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:modpackVersionIndex];
-                                                                              }];
-                            [alertController addAction:alertAction];
+                // Add original categories
+                if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
+                    [allCategories addObjectsFromArray:modpack[@"original_categories"]];
+                }
+                
+                // Add new categories if different from originals
+                if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
+                    for (id category in modpack[@"categories"]) {
+                        if (![allCategories containsObject:category]) {
+                            [allCategories addObject:category];
                         }
                     }
-                    [alertController addAction:alertAction];
                 }
                 
-                // Add cancel option
-                UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                                                    style:UIAlertActionStyleCancel
-                                                                  handler:nil];
-                [alertController addAction:cancelAction];
-                
-                // Configure popover for iPad
-                alertController.popoverPresentationController.sourceView = cell;
-                alertController.popoverPresentationController.sourceRect = cell.bounds;
-                
-                // Present the alert
-                [self presentViewController:alertController animated:YES completion:nil];
-            }
-        } else {
-            // If cell isn't visible, present menu from a fixed point using alert controller
-            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:modpack[@"title"]
-                                                                                  message:localize(@"Select version to install:", nil)
-                                                                           preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            // Add actions for each version
-            for (UIAction *action in menuItems) {
-                // Skip title and separator actions
-                if (action.attributes == UIMenuElementAttributesDisabled) {
-                    continue;
-                }
-                
-                // Create a handler that performs the same action as the UIAction would
-                NSUInteger versionIndex = [menuItems indexOfObject:action];
-                if (versionIndex != NSNotFound && versionIndex >= 2) { // Skip title and separator items
-                    NSUInteger modpackVersionIndex = versionIndex - 2; // Adjust for title and separator
-                    if (modpackVersionIndex < versionNames.count) {
-                        UIAlertAction *alertAction = [UIAlertAction actionWithTitle:action.title
-                                                                            style:UIAlertActionStyleDefault
-                                                                          handler:^(UIAlertAction * _Nonnull alertAction) {
-                                                                              // Close the view controller
-                                                                              [weakSelf actionClose];
-                                                                              
-                                                                              // Same logic as in the original UIAction handler
-                                                                              NSMutableDictionary *modpackWithCategories = [modpack mutableCopy];
-                                                                              
-                                                                              if (modpack[@"original_categories"]) {
-                                                                                  NSMutableArray *allCategories = [NSMutableArray array];
-                                                                                  if ([modpack[@"original_categories"] isKindOfClass:[NSArray class]]) {
-                                                                                      [allCategories addObjectsFromArray:modpack[@"original_categories"]];
-                                                                                  }
-                                                                                  if ([modpack[@"categories"] isKindOfClass:[NSArray class]]) {
-                                                                                      for (id category in modpack[@"categories"]) {
-                                                                                          if (![allCategories containsObject:category]) {
-                                                                                              [allCategories addObject:category];
-                                                                                          }
-                                                                                      }
-                                                                                  }
-                                                                                  modpackWithCategories[@"categories"] = allCategories;
-                                                                              }
-                                                                              
-                                                                              NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
-                                                                              UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
-                                                                              [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
-                                                                              
-                                                                              UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
-                                                                              [generator prepare];
-                                                                              [generator impactOccurred];
-                                                                              
-                                                                              [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:modpackVersionIndex];
-                                                                          }];
-                        [alertController addAction:alertAction];
-                    }
-                }
-                [alertController addAction:alertAction];
+                // Use the combined categories
+                modpackWithCategories[@"categories"] = allCategories;
             }
             
-            // Add cancel option
-            UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                                                style:UIAlertActionStyleCancel
-                                                              handler:nil];
-            [alertController addAction:cancelAction];
+            // Safely create the icon path
+            NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
+            UIImage *iconImage = cell.modpackIconView.image ?: [UIImage systemImageNamed:@"cube.fill"];
+            [UIImagePNGRepresentation([iconImage _imageWithSize:CGSizeMake(40, 40)]) writeToFile:tmpIconPath atomically:YES];
             
-            // Configure popover for iPad
-            UIView *sourceView = self.view;
-            CGRect sourceRect = CGRectMake(self.view.bounds.size.width / 2, self.view.bounds.size.height / 2, 1, 1);
-            alertController.popoverPresentationController.sourceView = sourceView;
-            alertController.popoverPresentationController.sourceRect = sourceRect;
+            // Add haptic feedback for selection
+            UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+            [generator prepare];
+            [generator impactOccurred];
             
-            // Present the alert
-            [self presentViewController:alertController animated:YES completion:nil];
-        }
-    }
+            // Install the selected modpack version
+            [weakSelf.modrinth installModpackFromDetail:modpackWithCategories atIndex:i];
+        }];
+        
+        // Add the action to the alert controller
+        [alertController addAction:versionAction];
+    }];
+    
+    // Add cancel option
+    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                                        style:UIAlertActionStyleCancel
+                                                      handler:nil];
+    [alertController addAction:cancelAction];
+    
+    // Configure popover for iPad
+    alertController.popoverPresentationController.sourceView = cell;
+    alertController.popoverPresentationController.sourceRect = cell.bounds;
+    
+    // Present the alert
+    [self presentViewController:alertController animated:YES completion:nil];
 }
 
 @end
