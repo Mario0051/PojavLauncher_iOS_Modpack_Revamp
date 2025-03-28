@@ -11,6 +11,8 @@
 
 // Handle inheritsFrom
 + (void)processVersion:(NSMutableDictionary *)json inheritsFrom:(NSMutableDictionary *)inheritsFrom {
+    NSDictionary *originalJavaVersion = [json[@"javaVersion"] copy];
+    
     [self insertSafety:inheritsFrom from:json arr:@[
         @"assetIndex", @"assets", @"id",
         @"inheritsFrom",
@@ -18,7 +20,12 @@
         @"optifineLib", @"releaseTime", @"time", @"type"
     ]];
     inheritsFrom[@"arguments"] = json[@"arguments"];
-
+    
+    // Preserve the javaVersion field from the mod version if it exists
+    if (originalJavaVersion) {
+        inheritsFrom[@"javaVersion"] = originalJavaVersion;
+    }
+    
     for (NSMutableDictionary *lib in json[@"libraries"]) {
         NSString *libName = [lib[@"name"] substringToIndex:[lib[@"name"] rangeOfString:@":" options:NSBackwardsSearch].location];
         int i;
@@ -40,7 +47,6 @@
 
     //inheritsFrom[@"inheritsFrom"] = nil;
 }
-
 + (void)insertSafety:(NSMutableDictionary *)targetVer from:(NSDictionary *)fromVer arr:(NSArray *)arr {
     for (NSString *key in arr) {
         if (([fromVer[key] isKindOfClass:NSString.class] && [fromVer[key] length] > 0) || targetVer[key] == nil) {
@@ -122,25 +128,56 @@
     if (json[@"inheritsFrom"] == nil || json[@"arguments"][@"jvm"] == nil) {
         return;
     }
-    json[@"arguments"][@"jvm_processed"] = [[NSMutableArray alloc] init];
+    
+    // Create jvm_processed array only if it doesn't already exist
+    if (json[@"arguments"][@"jvm_processed"] == nil) {
+        json[@"arguments"][@"jvm_processed"] = [[NSMutableArray alloc] init];
+    } else {
+        // If it already exists, ensure it's mutable
+        if (![json[@"arguments"][@"jvm_processed"] isKindOfClass:[NSMutableArray class]]) {
+            json[@"arguments"][@"jvm_processed"] = [json[@"arguments"][@"jvm_processed"] mutableCopy];
+        }
+        // Clear existing items to avoid duplicates
+        [json[@"arguments"][@"jvm_processed"] removeAllObjects];
+    }
+    
     NSDictionary *varArgMap = @{
         @"${classpath_separator}": @":",
         @"${library_directory}": [NSString stringWithFormat:@"%s/libraries", getenv("POJAV_GAME_DIR")],
         @"${version_name}": json[@"id"]
     };
+    
     int argsToSkip = 0;
-    for (NSString *arg in json[@"arguments"][@"jvm"]) {
-        if (argsToSkip == 0) {
-            argsToSkip = [self numberOfArgsToSkipForArg:arg];
+    
+    // Properly process each JVM argument
+    for (id arg in json[@"arguments"][@"jvm"]) {
+        // Skip non-string items or rule-based items
+        if (![arg isKindOfClass:[NSString class]]) {
+            // Check if it's a dictionary with rules
+            if ([arg isKindOfClass:[NSDictionary class]] && arg[@"value"]) {
+                // Handle rule-based arguments (typically OS-specific)
+                // For now, we skip these as they need special handling
+                continue;
+            }
+            continue; // Skip any other non-string args
         }
+        
+        NSString *argStr = (NSString *)arg;
+        
+        if (argsToSkip > 0) {
+            argsToSkip--;
+            continue;
+        }
+        
+        // Check if we need to skip this and subsequent args
+        argsToSkip = [self numberOfArgsToSkipForArg:argStr];
+        
         if (argsToSkip == 0) {
-            NSString *argStr = arg;
+            // Replace variables in argument string
             for (NSString *key in varArgMap.allKeys) {
                 argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
-            }
+            }        
             [json[@"arguments"][@"jvm_processed"] addObject:argStr];
-        } else {
-            argsToSkip--;
         }
     }
 }
