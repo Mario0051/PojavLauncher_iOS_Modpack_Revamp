@@ -33,6 +33,7 @@ typedef struct {
 @property(nonatomic, assign) NSInteger activeDownloads; // Track active downloads
 @property(nonatomic, strong) NSTimer *uiUpdateTimer; // Timer for batched UI updates
 @property(nonatomic, assign) BOOL needsUIUpdate; // Flag for pending UI updates
+@property(nonatomic, assign) BOOL hasProcessedAssets;
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -80,6 +81,9 @@ typedef struct {
         
         // Initialize verification flag
         self.deferSHAVerification = !getPrefBool(@"general.check_sha");
+        
+        // Flag to prevent duplicate asset processing
+        self.hasProcessedAssets = NO;
         
         // Setup timer for batched UI updates with lower frequency
         self.needsUIUpdate = NO;
@@ -193,6 +197,9 @@ typedef struct {
         // Reset counters
         self.successfulDownloads = 0;
         self.totalDownloads = 0;
+        
+        // Reset the asset processing flag
+        self.hasProcessedAssets = NO;
     }
     
     // Reset tracking lists with proper synchronization
@@ -1473,6 +1480,18 @@ typedef struct {
 }
 
 - (NSArray *)downloadClientAssets:(NSDictionary *)assetIndexObj {
+    // Use a synchronized block to ensure we only process assets once per session
+    @synchronized(self) {
+        // If we've already processed assets for this download session, return an empty array
+        if (self.hasProcessedAssets) {
+            NSLog(@"[MCDL] Assets already processed for this session, skipping");
+            return @[];
+        }
+        
+        // Mark that we've processed assets
+        self.hasProcessedAssets = YES;
+    }
+    
     NSMutableArray *tasks = [NSMutableArray new];
     
     if (!assetIndexObj || !assetIndexObj[@"objects"] || ![assetIndexObj[@"objects"] isKindOfClass:[NSDictionary class]]) {
