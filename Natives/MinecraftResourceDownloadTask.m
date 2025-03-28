@@ -1209,13 +1209,16 @@ typedef struct {
                 
                 // Explicitly save the javaVersion for tracking - important!
                 NSDictionary *originalJavaVersion = [weakSelf.metadata[@"javaVersion"] copy];
+                
+                // Store modId at higher scope so it's available in all blocks
+                NSString *modId = weakSelf.metadata[@"id"];
+                BOOL needsJava17 = NO;
+                
                 if (originalJavaVersion) {
                     NSLog(@"[MCDL] Found javaVersion in mod metadata: %@", originalJavaVersion);
                 } else {
                     // For known modloaders, explicitly add Java version if missing
                     // Check for both Forge and NeoForge for 1.17+, plus Fabric for 1.17+
-                    BOOL needsJava17 = NO;
-                    NSString *modId = weakSelf.metadata[@"id"];
                     
                     // Check for specific mod loaders that require Java 17
                     if (([modId containsString:@"forge-"] && 
@@ -1274,6 +1277,11 @@ typedef struct {
                         NSMutableDictionary *modMetadata = originalModMetadata; // Use the saved copy
                         void (^originalSuccess)(void) = [success copy];
                         
+                        // Capture modId and needsJava17 for inner block
+                        NSString *capturedModId = modId; 
+                        BOOL capturedNeedsJava17 = needsJava17;
+                        NSDictionary *capturedJavaVersion = originalJavaVersion;
+                        
                         // Download parent version first, then process the mod version
                         [weakSelf downloadVersionMetadata:parentVersion success:^{
                             NSString *parentPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", 
@@ -1287,17 +1295,17 @@ typedef struct {
                                 weakSelf.metadata = parentDict;
                                 
                                 // CRITICAL: Ensure the correct Java version is restored/set after parent download
-                                if (originalJavaVersion) {
+                                if (capturedJavaVersion) {
                                     // Always preserve the mod's original javaVersion if it was set
-                                    weakSelf.metadata[@"javaVersion"] = originalJavaVersion;
-                                    NSLog(@"[MCDL] Restored original javaVersion after parent download: %@", originalJavaVersion);
-                                } else if (!weakSelf.metadata[@"javaVersion"] && needsJava17) {
+                                    weakSelf.metadata[@"javaVersion"] = capturedJavaVersion;
+                                    NSLog(@"[MCDL] Restored original javaVersion after parent download: %@", capturedJavaVersion);
+                                } else if (!weakSelf.metadata[@"javaVersion"] && capturedNeedsJava17) {
                                     // If STILL no javaVersion after merge, add it for modern mods
                                     weakSelf.metadata[@"javaVersion"] = @{
                                         @"component": @"java-runtime-gamma",
                                         @"majorVersion": @17
                                     };
-                                    NSLog(@"[MCDL] Added missing javaVersion after parent download for: %@", modId);
+                                    NSLog(@"[MCDL] Added missing javaVersion after parent download for: %@", capturedModId);
                                 }
                                 
                                 // Final logging of what we ended up with
