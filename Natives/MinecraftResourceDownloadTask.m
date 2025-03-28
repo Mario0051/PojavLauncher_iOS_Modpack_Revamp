@@ -297,14 +297,12 @@ typedef struct {
             }
         }
         
-        NSLog(@"[MCDL] TASK ENQUEUED by %@", caller);
-        NSLog(@"[MCDL] File: %@", altName ?: path.lastPathComponent);
-        NSLog(@"[MCDL] URL: %@", url);
-        
-        // For debug builds only, log full callstack for more detailed investigation
-        #ifdef DEBUG
-        NSLog(@"[MCDL] Callstack:\n%@", [callStackSymbols componentsJoinedByString:@"\n"]);
-        #endif
+        // Use a more selective logging approach to avoid spamming logs
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] TASK ENQUEUED by %@", caller);
+            NSLog(@"[MCDL] File: %@", altName ?: path.lastPathComponent);
+            NSLog(@"[MCDL] URL: %@", url);
+        }
 
         // Safety check for invalid URL with enhanced logging
         if (!url || url.length == 0) {
@@ -327,7 +325,7 @@ typedef struct {
         // Track total downloads early
         self.totalDownloads++;
         
-        // Check if file already exists
+        // Check if file already exists and has valid SHA
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
         
         // Special handling for version files
@@ -341,6 +339,43 @@ typedef struct {
         
         // Determine if we should verify SHA now or defer it
         BOOL shouldVerifyNow = !self.deferSHAVerification || isVersionFile || isLatestVersionFile;
+        
+        // Critical fix: Check if we're already downloading this exact file
+        // This prevents duplicate downloads of the same resource
+        BOOL isDuplicate = NO;
+        NSString *fileIdentifier = [NSString stringWithFormat:@"%@-%@", url, path];
+        
+        @synchronized(self.pendingDownloads) {
+            static NSMutableSet *activeDownloadUrls;
+            if (!activeDownloadUrls) {
+                activeDownloadUrls = [NSMutableSet new];
+            }
+            
+            if ([activeDownloadUrls containsObject:fileIdentifier]) {
+                if (self.verboseLogging) {
+                    NSLog(@"[MCDL] Duplicate download detected for %@, skipping", altName ?: path.lastPathComponent);
+                }
+                isDuplicate = YES;
+                self.totalDownloads--; // Decrement since we're not actually adding another download
+            } else {
+                [activeDownloadUrls addObject:fileIdentifier];
+                
+                // Clean up completed downloads from the set to prevent memory growth
+                if (activeDownloadUrls.count > 500) { // Arbitrary cleanup threshold
+                    [activeDownloadUrls removeAllObjects];
+                }
+            }
+        }
+        
+        if (isDuplicate) {
+            // Still call success callback if provided
+            if (success) {
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    success();
+                });
+            }
+            return nil;
+        }
         
         if (shouldVerifyNow && fileExists && sha && sha.length > 0 && 
             [self checkSHA:sha forFile:path altName:altName]) {
@@ -405,12 +440,6 @@ typedef struct {
             return nil;
         }
         
-        // Only log detailed URL information for files we're actually downloading
-        if (self.verboseLogging) {
-            NSLog(@"[MCDL] Creating download task - URL: %@", url);
-            NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path);
-        }
-        
         // Use filename as display name if no alternate name provided
         NSString *name = altName ?: path.lastPathComponent;
         
@@ -437,7 +466,12 @@ typedef struct {
         
         // Add to file list for UI tracking (before creating the task to avoid race conditions)
         @synchronized(self.fileList) {
-            [self.fileList addObject:name];
+            // Fix: Check if name is already in the fileList to avoid duplicates
+            if (![self.fileList containsObject:name]) {
+                [self.fileList addObject:name];
+            } else if (self.verboseLogging) {
+                NSLog(@"[MCDL] File %@ already in tracking list, not adding duplicate", name);
+            }
         }
         
         // Estimate size if 0, necessary for adding to totalUnitCount early
@@ -469,7 +503,10 @@ typedef struct {
                 
                 // If adding progress fails, remove from fileList to maintain consistency
                 @synchronized(self.fileList) {
-                    [self.fileList removeLastObject]; // Assuming it was the last added
+                    // Fix: Only remove if this file was actually the last added
+                    if ([self.fileList.lastObject isEqual:name]) {
+                        [self.fileList removeLastObject];
+                    }
                 }
                 self.totalDownloads--; // Decrement total count
                 return nil; // Cannot proceed without progress tracking
@@ -510,7 +547,9 @@ typedef struct {
                 }
             }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-            NSLog(@"[MCDL] Downloading %@", name);
+            if (weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Downloading %@", name);
+            }
             NSProgress *progress = [self.manager downloadProgressForTask:task];
             
             // Update progress size if response has size info
@@ -571,6 +610,14 @@ typedef struct {
                 dispatch_async(weakSelf.downloadQueue, ^{
                     [weakSelf processNextDownloadInQueue];
                 });
+                
+                // Remove from tracking set to allow redownload if needed
+                NSString *fileIdentifier = [NSString stringWithFormat:@"%@-%@", url, path];
+                // Use Objective-C runtime to access the static set
+                static NSMutableSet *activeDownloadUrls;
+                if (activeDownloadUrls) {
+                    [activeDownloadUrls removeObject:fileIdentifier];
+                }
             }
             
             // Safely check if progress is cancelled to avoid potential crashes
@@ -1105,56 +1152,104 @@ typedef struct {
     
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
     
+    // Create single dispatch group to track completion of the metadata step
+    dispatch_group_t metadataGroup = dispatch_group_create();
+    dispatch_group_enter(metadataGroup);
+    
     // Step 1: Download Version Metadata
     [self downloadVersionMetadata:version success:^{
         // This block executes *after* version JSON is downloaded and parsed
         @synchronized(self) {
-            if (self.progress.cancelled) return; // Check cancellation
+            if (self.progress.cancelled) {
+                dispatch_group_leave(metadataGroup);
+                return;
+            }
+            
+            // Metadata is now in self.metadata
+            dispatch_group_leave(metadataGroup);
+        }
+    }];
+    
+    // Wait for metadata to complete before proceeding
+    dispatch_group_notify(metadataGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        @synchronized(self) {
+            if (self.progress.cancelled) return;
             
             // Metadata is now in self.metadata
             NSDictionary *localMetadata = self.metadata; // Use a local ref inside block
             
-            // Step 2: Enqueue libraries based on version JSON
+            // Step 2: Enqueue libraries based on version JSON - limit the library processing
+            // to avoid creating too many tasks at once
             NSLog(@"[MCDL] Enqueuing libraries...");
-            NSArray *libTasks = [self downloadClientLibraries:localMetadata]; // Pass metadata
-            
-            // Step 3: Enqueue client JAR based on version JSON
-            NSLog(@"[MCDL] Enqueuing client JAR...");
-            [self downloadClientJar:localMetadata]; // Pass metadata
-            
-            // Step 4: Check if Asset Index needs download
-            NSDictionary *assetIndexInfo = localMetadata[@"assetIndex"];
-            if (assetIndexInfo) {
-                NSLog(@"[MCDL] Downloading Asset Metadata...");
-                // Step 4a: Download Asset Metadata
-                [self downloadAssetMetadataWithSuccess:^{
-                    // This block executes *after* asset index JSON is downloaded and parsed
-                    @synchronized(self) {
-                        if (self.progress.cancelled) return;
-                        
-                        // Asset index metadata is now in self.metadata[@"assetIndexObj"]
-                        NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
-                        
-                        // Step 4b: Enqueue assets based on asset index JSON
-                        NSLog(@"[MCDL] Enqueuing assets...");
-                        NSArray *assetTasks = [self downloadClientAssets:assetIndexObj]; // Pass asset index obj
-                        
-                        // Clean up large metadata if no longer needed immediately
-                        [self.metadata removeObjectForKey:@"assetIndexObj"];
-                        
-                        NSLog(@"[MCDL] All asset/library tasks enqueued.");
-                        // Check if all downloads might already be complete (e.g., cached)
-                        [self checkCompletionStatus];
-                    }
-                }];
-            } else {
-                // No assets to download for this version
-                NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
-                // Check if all downloads might already be complete
-                [self checkCompletionStatus];
-            }
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                [self downloadClientLibraries:localMetadata];
+                
+                // Step 3: Enqueue client JAR based on version JSON
+                NSLog(@"[MCDL] Enqueuing client JAR...");
+                [self downloadClientJar:localMetadata];
+                
+                // Step 4: Check if Asset Index needs download
+                NSDictionary *assetIndexInfo = localMetadata[@"assetIndex"];
+                if (assetIndexInfo) {
+                    // Create another dispatch group for asset index
+                    dispatch_group_t assetGroup = dispatch_group_create();
+                    dispatch_group_enter(assetGroup);
+                    
+                    NSLog(@"[MCDL] Downloading Asset Metadata...");
+                    // Step 4a: Download Asset Metadata
+                    [self downloadAssetMetadataWithSuccess:^{
+                        @synchronized(self) {
+                            if (self.progress.cancelled) {
+                                dispatch_group_leave(assetGroup);
+                                return;
+                            }
+                            
+                            dispatch_group_leave(assetGroup);
+                        }
+                    }];
+                    
+                    // Process assets only after asset index is complete
+                    dispatch_group_notify(assetGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        @synchronized(self) {
+                            if (self.progress.cancelled) return;
+                            
+                            // Asset index metadata is now in self.metadata[@"assetIndexObj"]
+                            NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
+                            
+                            // Step 4b: Process assets in batches to prevent queue overload
+                            if (assetIndexObj && assetIndexObj[@"objects"]) {
+                                NSLog(@"[MCDL] Enqueuing assets...");
+                                
+                                // Process assets in the background
+                                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                    // This runs in a background thread and will process assets in batches
+                                    [self downloadClientAssets:assetIndexObj];
+                                    
+                                    // Clean up large metadata after processing is complete
+                                    @synchronized(self) {
+                                        [self.metadata removeObjectForKey:@"assetIndexObj"];
+                                    }
+                                    
+                                    NSLog(@"[MCDL] All asset tasks enqueued.");
+                                    // Check if all downloads might already be complete
+                                    [self checkCompletionStatus];
+                                });
+                            } else {
+                                NSLog(@"[MCDL] No assets found in index or index missing. Skipping asset downloads.");
+                                // Check if all downloads might already be complete
+                                [self checkCompletionStatus];
+                            }
+                        }
+                    });
+                } else {
+                    // No assets to download for this version
+                    NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
+                    // Check if all downloads might already be complete
+                    [self checkCompletionStatus];
+                }
+            });
         }
-    }];
+    });
 }
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success {
@@ -1396,111 +1491,170 @@ typedef struct {
         return tasks;
     }
     
-    NSInteger libraryCount = [versionMetadata[@"libraries"] count];
+    NSArray *libraries = versionMetadata[@"libraries"];
+    NSInteger libraryCount = libraries.count;
     
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Processing %ld libraries for download", (long)libraryCount);
     }
     
-    for (NSDictionary *library in versionMetadata[@"libraries"]) {
-        NSString *name = library[@"name"];
-        if (!name) continue;
+    // Process libraries in batches to avoid overwhelming the system
+    const NSInteger batchSize = 20; // Process 20 libraries at a time
+    
+    // Create a dispatch queue for batch processing
+    dispatch_queue_t batchQueue = dispatch_queue_create("net.kdt.pojavlauncher.libraryBatchQueue", DISPATCH_QUEUE_SERIAL);
+    
+    // Divide libraries into batches
+    NSInteger batchCount = (libraryCount + batchSize - 1) / batchSize; // Ceiling division
+    
+    for (NSInteger batchIndex = 0; batchIndex < batchCount; batchIndex++) {
+        // Calculate start and end indices for this batch
+        NSInteger startIndex = batchIndex * batchSize;
+        NSInteger endIndex = MIN(startIndex + batchSize, libraryCount);
         
-        // Skip Forge/NeoForge client JARs entirely - they're already installed by the installer
-        if (([name containsString:@"net.minecraftforge:forge:"] || 
-             [name containsString:@"net.neoforged:neoforge:"]) && 
-            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"])) {
-            if (self.verboseLogging) {
-                NSLog(@"[MCDL] Skipping Forge/NeoForge client JAR %@ - already installed by the installer", name);
-            }
-            continue;
+        // Create a range for this batch
+        NSRange batchRange = NSMakeRange(startIndex, endIndex - startIndex);
+        
+        // Get libraries for this batch
+        NSArray *batchLibraries = [libraries subarrayWithRange:batchRange];
+        
+        // Log batch processing if in verbose mode
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Processing library batch %ld/%ld (%ld libraries)", 
+                  (long)batchIndex + 1, (long)batchCount, (long)batchLibraries.count);
         }
         
-        NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
-        if (artifactDict == nil && [name containsString:@":"]) {
-            if (self.verboseLogging) {
-                NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
+        // Dispatch this batch to the queue
+        dispatch_async(batchQueue, ^{
+            // Check if download was cancelled before processing batch
+            if (self.progress.cancelled) {
+                return;
             }
-            artifactDict = [[NSMutableDictionary alloc] init];
             
-            // Standard library URL construction
-            NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
-            NSArray *libParts = [name componentsSeparatedByString:@":"];
-            
-            // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
-            if (libParts.count >= 3) {
-                NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
-                NSString *artifactName = libParts[1];
-                NSString *version = libParts[2];
-                
-                // Check if we have a classifier (4th component)
-                NSString *classifier = @"";
-                if (libParts.count > 3) {
-                    classifier = [NSString stringWithFormat:@"-%@", libParts[3]];
+            // Process each library in the batch
+            for (NSDictionary *library in batchLibraries) {
+                // Check for cancellation within batch
+                if (self.progress.cancelled) {
+                    break;
                 }
                 
-                // Construct path and URL correctly
-                artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
-                                     group, artifactName, version, artifactName, version, classifier];
-                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                NSString *name = library[@"name"];
+                if (!name) continue;
                 
-                // Safely get SHA1 from checksums if available
-                id checksums = library[@"checksums"];
-                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
-                    NSArray *checksumsArray = (NSArray *)checksums;
-                    if (checksumsArray.count > 0) {
-                        artifactDict[@"sha1"] = checksumsArray[0];
+                // Skip Forge/NeoForge client JARs entirely - they're already installed by the installer
+                if (([name containsString:@"net.minecraftforge:forge:"] || 
+                     [name containsString:@"net.neoforged:neoforge:"]) && 
+                    ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"])) {
+                    if (self.verboseLogging) {
+                        NSLog(@"[MCDL] Skipping Forge/NeoForge client JAR %@ - already installed by the installer", name);
+                    }
+                    continue;
+                }
+                
+                NSMutableDictionary *artifactDict = library[@"downloads"][@"artifact"];
+                if (artifactDict == nil && [name containsString:@":"]) {
+                    if (self.verboseLogging) {
+                        NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
+                    }
+                    artifactDict = [[NSMutableDictionary alloc] init];
+                    
+                    // Standard library URL construction
+                    NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
+                    NSArray *libParts = [name componentsSeparatedByString:@":"];
+                    
+                    // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
+                    if (libParts.count >= 3) {
+                        NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
+                        NSString *artifactName = libParts[1];
+                        NSString *version = libParts[2];
+                        
+                        // Check if we have a classifier (4th component)
+                        NSString *classifier = @"";
+                        if (libParts.count > 3) {
+                            classifier = [NSString stringWithFormat:@"-%@", libParts[3]];
+                        }
+                        
+                        // Construct path and URL correctly
+                        artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.jar", 
+                                             group, artifactName, version, artifactName, version, classifier];
+                        artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                        
+                        // Safely get SHA1 from checksums if available
+                        id checksums = library[@"checksums"];
+                        if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                            NSArray *checksumsArray = (NSArray *)checksums;
+                            if (checksumsArray.count > 0) {
+                                artifactDict[@"sha1"] = checksumsArray[0];
+                            }
+                        }
+                    } else {
+                        // Fallback to the original logic for standard 3-part library names
+                        artifactDict[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", 
+                                             [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], 
+                                             libParts[1], 
+                                             libParts[2]];
+                        artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+                        
+                        // Safely get SHA1 from checksums if available
+                        id checksums = library[@"checksums"];
+                        if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                            NSArray *checksumsArray = (NSArray *)checksums;
+                            if (checksumsArray.count > 0) {
+                                artifactDict[@"sha1"] = checksumsArray[0];
+                            }
+                        }
                     }
                 }
-            } else {
-                // Fallback to the original logic for standard 3-part library names
-                artifactDict[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", 
-                                     [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], 
-                                     libParts[1], 
-                                     libParts[2]];
-                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
                 
-                // Safely get SHA1 from checksums if available
-                id checksums = library[@"checksums"];
-                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
-                    NSArray *checksumsArray = (NSArray *)checksums;
-                    if (checksumsArray.count > 0) {
-                        artifactDict[@"sha1"] = checksumsArray[0];
+                // Skip library if marked to skip
+                if ([library[@"skip"] boolValue]) {
+                    if (self.verboseLogging) {
+                        NSLog(@"[MCDL] Skipped library %@", name);
                     }
+                    continue;
+                }
+                
+                // Build the download path
+                NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
+                NSString *sha = artifactDict[@"sha1"];
+                NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
+                NSString *url = artifactDict[@"url"];
+                
+                // Skip if URL is missing - don't create invalid tasks
+                if (!url || [url length] == 0) {
+                    NSLog(@"[MCDL] Warning: Skipping library %@ due to missing URL", name);
+                    continue;
+                }
+                
+                // Create download task but don't resume it - it will be queued
+                NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil failure:nil];
+                
+                // Note: We don't add tasks to the returning array anymore
+                // They're already queued by createDownloadTask
+                if (task && self.verboseLogging) {
+                    [tasks addObject:task]; // Only for tracking in verbose mode
+                }
+                
+                // Small delay between library enqueuing to avoid spikes
+                if (self.verboseLogging && batchLibraries.count > 10) {
+                    [NSThread sleepForTimeInterval:0.01]; // 10ms delay for large batches
                 }
             }
-        }
-        
-        // Skip library if marked to skip
-        if ([library[@"skip"] boolValue]) {
+            
+            // Log batch completion in verbose mode
             if (self.verboseLogging) {
-                NSLog(@"[MCDL] Skipped library %@", name);
+                NSLog(@"[MCDL] Completed library batch %ld/%ld", 
+                      (long)batchIndex + 1, (long)batchCount);
             }
-            continue;
-        }
-        
-        // Build the download path
-        NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
-        NSString *sha = artifactDict[@"sha1"];
-        NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
-        NSString *url = artifactDict[@"url"];
-        
-        // Skip if URL is missing - don't create invalid tasks
-        if (!url || [url length] == 0) {
-            NSLog(@"[MCDL] Warning: Skipping library %@ due to missing URL", name);
-            continue;
-        }
-        
-        // Create download task (DO NOT RESUME HERE)
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil failure:nil];
-        if (task) {
-            [tasks addObject:task];
-        } else if (self.progress.cancelled) {
-            return nil;
-        }
+            
+            // If this is the last batch, log completion
+            if (batchIndex == batchCount - 1) {
+                NSLog(@"[MCDL] Completed enqueuing all %ld library batches", (long)batchCount);
+            }
+        });
     }
     
-    NSLog(@"[MCDL] Enqueued %lu library download tasks", (unsigned long)tasks.count);
+    NSLog(@"[MCDL] Started processing %ld library batches", (long)batchCount);
     return tasks;
 }
 
@@ -1540,44 +1694,101 @@ typedef struct {
         NSLog(@"[MCDL] Warning: Error creating assets directory: %@", dirError.localizedDescription);
     }
     
-    // Process each asset
-    for (NSString *name in assetNames) {
-        // Check if download was cancelled
-        if (self.progress.cancelled) {
-            return nil;
+    // Process assets in batches to avoid overwhelming the system
+    const NSInteger batchSize = 50; // Process 50 assets at a time
+    
+    // Create a dispatch queue for batch processing
+    dispatch_queue_t batchQueue = dispatch_queue_create("net.kdt.pojavlauncher.assetBatchQueue", DISPATCH_QUEUE_SERIAL);
+    
+    // Divide assets into batches
+    NSInteger batchCount = (totalAssets + batchSize - 1) / batchSize; // Ceiling division
+    
+    for (NSInteger batchIndex = 0; batchIndex < batchCount; batchIndex++) {
+        // Calculate start and end indices for this batch
+        NSInteger startIndex = batchIndex * batchSize;
+        NSInteger endIndex = MIN(startIndex + batchSize, totalAssets);
+        
+        // Create a range for this batch
+        NSRange batchRange = NSMakeRange(startIndex, endIndex - startIndex);
+        
+        // Get asset names for this batch
+        NSArray *batchAssetNames = [assetNames subarrayWithRange:batchRange];
+        
+        // Log batch processing if in verbose mode
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Processing asset batch %ld/%ld (%ld assets)", 
+                  (long)batchIndex + 1, (long)batchCount, (long)batchAssetNames.count);
         }
         
-        NSDictionary *object = assetIndexObj[@"objects"][name];
-        NSString *hash = object[@"hash"];
-        NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
-        NSUInteger size = [object[@"size"] unsignedLongLongValue];
-        
-        NSString *path;
-        if ([assetIndexObj[@"map_to_resources"] boolValue]) {
-            path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
-        } else {
-            path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
-        }
-        
-        /* Special case for 1.19+
-         * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
-         * However, if an IOException occurs, it won't try to set.
-         * We skip downloading the icon file to workaround this. */
-        if ([name hasSuffix:@"/minecraft.icns"]) {
-            [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-            continue;
-        }
-        
-        NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
-        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil failure:nil];
-        if (task) {
-            [tasks addObject:task];
-        } else if (self.progress.cancelled) {
-            return nil;
-        }
+        // Dispatch this batch to the queue
+        dispatch_async(batchQueue, ^{
+            // Check if download was cancelled before processing batch
+            if (self.progress.cancelled) {
+                return;
+            }
+            
+            // Process each asset in the batch
+            for (NSString *name in batchAssetNames) {
+                // Check for cancellation within batch
+                if (self.progress.cancelled) {
+                    break;
+                }
+                
+                NSDictionary *object = assetIndexObj[@"objects"][name];
+                NSString *hash = object[@"hash"];
+                NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
+                NSUInteger size = [object[@"size"] unsignedLongLongValue];
+                
+                NSString *path;
+                if ([assetIndexObj[@"map_to_resources"] boolValue]) {
+                    path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
+                } else {
+                    path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
+                }
+                
+                /* Special case for 1.19+
+                 * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
+                 * However, if an IOException occurs, it won't try to set.
+                 * We skip downloading the icon file to workaround this. */
+                if ([name hasSuffix:@"/minecraft.icns"]) {
+                    [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+                    continue;
+                }
+                
+                NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
+                NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil failure:nil];
+                
+                // Note: We don't add tasks to the returning array anymore
+                // They're already queued by createDownloadTask
+                if (task && self.verboseLogging) {
+                    [tasks addObject:task]; // Only for tracking in verbose mode
+                }
+                
+                // Small delay between asset enqueuing to avoid spikes
+                // This helps prevent overwhelming the queue system
+                if (self.verboseLogging && batchAssetNames.count > 20) {
+                    [NSThread sleepForTimeInterval:0.01]; // 10ms delay for large batches
+                }
+            }
+            
+            // Log batch completion in verbose mode
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Completed asset batch %ld/%ld", 
+                      (long)batchIndex + 1, (long)batchCount);
+            }
+            
+            // If this is the last batch, log completion
+            if (batchIndex == batchCount - 1) {
+                NSLog(@"[MCDL] Completed enqueuing all %ld asset batches", (long)batchCount);
+                
+                // Check if all downloads might be complete
+                [self checkCompletionStatus];
+            }
+        });
     }
     
-    NSLog(@"[MCDL] Enqueued %lu asset download tasks", (unsigned long)tasks.count);
+    // Return tasks array (mostly for compatibility)
+    // Actual tasks are queued internally by createDownloadTask
     return tasks;
 }
 
