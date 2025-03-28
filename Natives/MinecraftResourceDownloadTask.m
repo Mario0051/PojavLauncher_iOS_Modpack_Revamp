@@ -33,7 +33,6 @@ typedef struct {
 @property(nonatomic, assign) NSInteger activeDownloads; // Track active downloads
 @property(nonatomic, strong) NSTimer *uiUpdateTimer; // Timer for batched UI updates
 @property(nonatomic, assign) BOOL needsUIUpdate; // Flag for pending UI updates
-@property(nonatomic, assign) BOOL hasProcessedAssets;
 @end
 
 @implementation MinecraftResourceDownloadTask
