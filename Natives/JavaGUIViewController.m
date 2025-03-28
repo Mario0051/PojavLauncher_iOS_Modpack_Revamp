@@ -10,11 +10,7 @@
 #include "glfw_keycodes.h"
 #include "utils.h"
 
-#define SPECIALBTN_MOUSEMID:
-                    AWTInputBridge_nativeSendData(EVENT_TYPE_MOUSE_BUTTON, BUTTON2_DOWN_MASK, held, 0, 0);
-                    break;
-
-                case SPECIALBTN_LOGOUTPUT -100
+#define SPECIALBTN_LOGOUTPUT -100
 
 static BOOL shouldHitEnterAfterWindowShown;
 static SurfaceView* surfaceView;
