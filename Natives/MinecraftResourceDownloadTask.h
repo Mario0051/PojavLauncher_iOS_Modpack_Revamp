@@ -14,24 +14,20 @@
 @property(nonatomic, assign) BOOL verboseLogging;
 @property(nonatomic, strong) NSMutableArray *pendingVerificationList;
 @property(nonatomic, assign) BOOL deferSHAVerification;
-@property(nonatomic, assign) BOOL hasProcessedAssets; // Added property to track asset processing
+@property(nonatomic, assign) BOOL hasProcessedAssets;
 
-// Basic download task method without success callback
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path;
-
-// Extended download task method with success callback
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path 
-                                        success:(void (^)(void))success;
-
-// Extended download task method with success and failure callbacks for retry support
+/**
+ * Creates a download task with optional callbacks for success and failure handling.
+ *
+ * @param url The URL to download from
+ * @param size The expected size of the file (used for progress tracking)
+ * @param sha The SHA1 checksum for validation, or nil to skip validation
+ * @param altName An alternative name for display purposes, or nil to use the filename
+ * @param path The local path to save the file to
+ * @param success Optional callback to execute upon successful download
+ * @param failure Optional callback to execute if the download fails
+ * @return The created download task, or nil if the file already exists and passes validation
+ */
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
                                            size:(NSUInteger)size 
                                             sha:(NSString *)sha 
@@ -39,6 +35,25 @@
                                          toPath:(NSString *)path 
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure;
+
+/**
+ * @deprecated Use createDownloadTask:size:sha:altName:toPath:success:failure: instead
+ */
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path 
+                                        success:(void (^)(void))success DEPRECATED_MSG_ATTRIBUTE("Use createDownloadTask:size:sha:altName:toPath:success:failure: instead");
+
+/**
+ * @deprecated Use createDownloadTask:size:sha:altName:toPath:success:failure: instead
+ */
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
+                                           size:(NSUInteger)size 
+                                            sha:(NSString *)sha 
+                                        altName:(NSString *)altName 
+                                         toPath:(NSString *)path DEPRECATED_MSG_ATTRIBUTE("Use createDownloadTask:size:sha:altName:toPath:success:failure: instead");
 
 // Helper methods for progress tracking
 - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size;
@@ -54,12 +69,12 @@
 - (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess;
 - (BOOL)checkAccessWithDialog:(BOOL)show;
 
-// New methods for deferred SHA verification
+// Methods for deferred SHA verification
 - (void)addFileToVerificationList:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 - (BOOL)verifyPendingFiles;
 - (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 
-// New helper method to check completion status
+// Helper method to check completion status
 - (void)checkCompletionStatus;
 
 // Main download methods
