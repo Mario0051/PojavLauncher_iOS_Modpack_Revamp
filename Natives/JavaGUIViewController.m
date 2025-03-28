@@ -223,15 +223,6 @@ void AWTInputBridge_sendKey(int keycode) {
 
 @implementation JavaGUIViewController
 
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        // Initialize the required Java version to a default of 8 (will be overridden)
-        _requiredJavaVersion = 8;
-    }
-    return self;
-}
-
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
@@ -240,11 +231,6 @@ void AWTInputBridge_sendKey(int keycode) {
     [self setNeedsUpdateOfHomeIndicatorAutoHidden];
     virtualMouseEnabled = getPrefBool(@"control.virtmouse_enable");
 
-    // Determine the required Java version before launching the JVM
-    // Force evaluation of the requiredJavaVersion property
-    int javaVersion = [self requiredJavaVersion];
-    NSLog(@"[JavaGUI] Determined required Java version: %d", javaVersion);
-    
     CGRect screenBounds = self.view.bounds;
     CGFloat screenScale = UIScreen.mainScreen.scale * getPrefFloat(@"video.resolution") / 100.0;
     windowWidth = roundf(screenBounds.size.width * screenScale);
@@ -327,8 +313,8 @@ void AWTInputBridge_sendKey(int keycode) {
 
     
 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Use the instance variable directly to ensure we're using the calculated value
-        launchJVM(nil, self.filepath, windowWidth, windowHeight, self->_requiredJavaVersion);
+        launchJVM(nil, self.filepath, windowWidth, windowHeight, _requiredJavaVersion);
+        _requiredJavaVersion = 0;
     });
 }
 
@@ -374,177 +360,67 @@ dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 
 @synthesize requiredJavaVersion = _requiredJavaVersion;
 - (int)requiredJavaVersion {
-    // Return the cached value if already calculated
-    if (_requiredJavaVersion > 0) {
+    if (_requiredJavaVersion) {
         return _requiredJavaVersion;
     }
-    
-    // First, check if we have a filepath
-    if (!self.filepath) {
-        NSLog(@"[JavaGUI] No filepath provided, defaulting to Java 8");
-        return _requiredJavaVersion = 8;
-    }
-    
-    // Check if this is a JSON file - indicating a Forge/mod installation
-    if ([self.filepath hasSuffix:@".json"]) {
-        NSLog(@"[JavaGUI] Detected JSON file, determining Java version from JSON");
-        return [self getJavaVersionFromJSON];
-    }
-    
-    // Otherwise, proceed with JAR analysis
-    NSLog(@"[JavaGUI] Detected JAR file, determining Java version from JAR");
-    return [self getJavaVersionFromJar];
-}
 
-- (int)getJavaVersionFromJSON {
-    // Parse the JSON file
-    NSMutableDictionary *json = parseJSONFromFile(self.filepath);
-    if (!json || json[@"NSErrorObject"]) {
-        NSLog(@"[JavaGUI] Failed to parse JSON file: %@", self.filepath);
-        return _requiredJavaVersion = 8; // Default to Java 8 on error
-    }
-    
-    // Check if javaVersion is directly specified
-    if (json[@"javaVersion"] && json[@"javaVersion"][@"majorVersion"]) {
-        int javaVersion = [json[@"javaVersion"][@"majorVersion"] intValue];
-        NSLog(@"[JavaGUI] Found Java version in JSON: %d", javaVersion);
-        return _requiredJavaVersion = javaVersion;
-    }
-    
-    // Check if this JSON inherits from another version
-    if (json[@"inheritsFrom"]) {
-        NSString *baseVersionId = json[@"inheritsFrom"];
-        NSLog(@"[JavaGUI] JSON inherits from: %@", baseVersionId);
-        
-        // Construct path to the base version JSON
-        NSString *baseVersionPath = [NSString stringWithFormat:@"%s/versions/%@/%@.json", 
-                                    getenv("POJAV_GAME_DIR"), baseVersionId, baseVersionId];
-        
-        // Parse the base version JSON
-        NSMutableDictionary *baseJson = parseJSONFromFile(baseVersionPath);
-        if (!baseJson || baseJson[@"NSErrorObject"]) {
-            NSLog(@"[JavaGUI] Failed to parse base JSON: %@", baseVersionPath);
-        } else if (baseJson[@"javaVersion"] && baseJson[@"javaVersion"][@"majorVersion"]) {
-            int javaVersion = [baseJson[@"javaVersion"][@"majorVersion"] intValue];
-            NSLog(@"[JavaGUI] Found Java version in base JSON: %d", javaVersion);
-            return _requiredJavaVersion = javaVersion;
-        }
-    }
-    
-    // Special handling for known modloaders
-    NSString *id = json[@"id"];
-    if (id) {
-        // Modern Forge/NeoForge requires Java 17+
-        if (([id containsString:@"forge-"] && 
-            ([id hasPrefix:@"1.17"] || [id hasPrefix:@"1.18"] || 
-             [id hasPrefix:@"1.19"] || [id hasPrefix:@"1.20"] || [id hasPrefix:@"1.21"])) ||
-            [id containsString:@"neoforge"]) {
-            NSLog(@"[JavaGUI] Modern Forge/NeoForge detected, requiring Java 17");
-            return _requiredJavaVersion = 17;
-        }
-        
-        // Modern Fabric/Quilt requires Java 17+
-        if (([id containsString:@"fabric-loader"] || [id containsString:@"quilt-loader"]) && 
-            ([id containsString:@"1.17"] || [id containsString:@"1.18"] || 
-             [id containsString:@"1.19"] || [id containsString:@"1.20"] || [id containsString:@"1.21"])) {
-            NSLog(@"[JavaGUI] Modern Fabric/Quilt detected, requiring Java 17");
-            return _requiredJavaVersion = 17;
-        }
-    }
-    
-    // Default to Java 8 if we can't determine the version
-    NSLog(@"[JavaGUI] Could not determine Java version from JSON, defaulting to Java 8");
-    return _requiredJavaVersion = 8;
-}
-
-- (int)getJavaVersionFromJar {
-    if (!self.filepath || ![self.filepath hasSuffix:@".jar"]) {
-        NSLog(@"[JavaGUI] Invalid JAR filepath: %@", self.filepath);
-        return _requiredJavaVersion = 8; // Default to Java 8 on error
-    }
-    
     NSError *error;
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:self.filepath error:&error];
     if (error) {
-        NSLog(@"[JavaGUI] Error opening JAR file: %@", error.localizedDescription);
         [self showErrorMessage:error.localizedDescription];
-        return _requiredJavaVersion = 8; // Default to Java 8 on error
+        return _requiredJavaVersion = 0;
     }
 
     NSData *manifestData = [archive extractDataFromFile:@"META-INF/MANIFEST.MF" error:&error];
     if (error) {
-        NSLog(@"[JavaGUI] Error extracting manifest: %@", error.localizedDescription);
         [self showErrorMessage:error.localizedDescription];
-        return _requiredJavaVersion = 8; // Default to Java 8 on error
+        return _requiredJavaVersion = 0;
     }
 
     NSString *manifestStr = [[NSString alloc] initWithData:manifestData encoding:NSUTF8StringEncoding];
     NSArray *manifestLines = [manifestStr componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
-    NSString *mainClass = nil;
-    
+    NSString *mainClass;
     for (NSString *line in manifestLines) {
         if ([line hasPrefix:@"Main-Class: "]) {
             mainClass = [line substringFromIndex:12];
             break;
         }
     }
-    
     if (!mainClass) {
-        NSLog(@"[JavaGUI] No Main-Class found in manifest");
         [self showErrorMessage:[NSString stringWithFormat:
             localize(@"java.error.missing_main_class", nil), self.filepath.lastPathComponent]];
-        return _requiredJavaVersion = 8; // Default to Java 8 on error
+        return _requiredJavaVersion = 0;
     }
-    
     mainClass = [NSString stringWithFormat:@"%@.class",
         [mainClass stringByReplacingOccurrencesOfString:@"." withString:@"/"]];
-    NSLog(@"[JavaGUI] Main class: %@", mainClass);
 
     NSData *mainClassData = [archive extractDataFromFile:mainClass error:&error];
     if (error) {
-        NSLog(@"[JavaGUI] Error extracting main class: %@", error.localizedDescription);
         [self showErrorMessage:error.localizedDescription];
-        return _requiredJavaVersion = 8; // Default to Java 8 on error
-    }
-
-    // Check for minimum data size to avoid crashes
-    if (mainClassData.length < 8) {
-        NSLog(@"[JavaGUI] Main class data too short: %lu bytes", (unsigned long)mainClassData.length);
-        return _requiredJavaVersion = 8; // Default to Java 8 on error
+        return _requiredJavaVersion = 0;
     }
 
     uint32_t magic = OSSwapConstInt32(*(uint32_t*)mainClassData.bytes);
     if (magic != 0xCAFEBABE) {
-        NSLog(@"[JavaGUI] Invalid magic number: 0x%x", magic);
         [self showErrorMessage:[NSString stringWithFormat:@"Invalid magic number: 0x%x", magic]];
-        return _requiredJavaVersion = 8; // Default to Java 8 on error
+        return _requiredJavaVersion = 0;
     }
 
     uint16_t *version = (uint16_t *)(mainClassData.bytes+sizeof(magic));
     uint16_t minorVer = OSSwapConstInt16(version[0]);
     uint16_t majorVer = OSSwapConstInt16(version[1]);
-    NSLog(@"[JavaGUI] Main class version: %u.%u (major.minor)", majorVer, minorVer);
+    NSLog(@"[ModInstaller] Main class version: %u.%u", majorVer, minorVer);
 
-    // Calculate required Java version based on class file version
-    int javaVersion = MAX(2, majorVer - 44);
-    NSLog(@"[JavaGUI] Required Java version: %d", javaVersion);
-    
-    return _requiredJavaVersion = javaVersion;
+    return _requiredJavaVersion = MAX(2, majorVer - 44);
 }
 
 - (void)showErrorMessage:(NSString *)message {
-    NSLog(@"[JavaGUI] Error: %@", message);
     surfaceView = nil;
     showDialog(localize(@"Error", nil), message);
 }
 
 - (void)setHitEnterAfterWindowShown:(BOOL)hitEnter {
     shouldHitEnterAfterWindowShown = hitEnter;
-}
-
-- (void)setRequiredJavaVersion:(int)requiredJavaVersion {
-    _requiredJavaVersion = requiredJavaVersion;
-    NSLog(@"[JavaGUI] Required Java version explicitly set to: %d", _requiredJavaVersion);
 }
 
 - (void)executebtn:(ControlButton *)sender withAction:(int)action {
