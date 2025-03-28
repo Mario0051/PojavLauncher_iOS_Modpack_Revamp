@@ -14,6 +14,7 @@
 @property(nonatomic, assign) BOOL verboseLogging;
 @property(nonatomic, strong) NSMutableArray *pendingVerificationList;
 @property(nonatomic, assign) BOOL deferSHAVerification;
+@property(nonatomic, assign) BOOL hasProcessedAssets; // Added property to track asset processing
 
 // Basic download task method without success callback
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
@@ -54,7 +55,7 @@
 - (BOOL)checkAccessWithDialog:(BOOL)show;
 
 // New methods for deferred SHA verification
-- (void)addFileToVerificationList:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName;
+- (void)addFileToVerificationList:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 - (BOOL)verifyPendingFiles;
 - (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 
