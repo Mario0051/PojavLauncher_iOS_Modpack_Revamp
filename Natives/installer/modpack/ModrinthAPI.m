@@ -1025,6 +1025,26 @@ extern void showDialog(NSString *title, NSString *message);
         @"lastVersionId": depInfo[@"id"] ?: @"latest-release"
     } mutableCopy];
     
+    // Determine and set Java version for Forge/NeoForge modpacks
+    NSString *minecraftVersion = indexDict[@"dependencies"][@"minecraft"];
+    BOOL isNeoForge = (indexDict[@"dependencies"][@"neoforge"] != nil);
+    BOOL isForge = (indexDict[@"dependencies"][@"forge"] != nil);
+    
+    if ((isForge || isNeoForge) && minecraftVersion) {
+        // Set Java version based on Minecraft version
+        if ([self isMinecraftVersion:minecraftVersion greaterThanOrEqualTo:@"1.17"]) {
+            // For 1.17+, use Java 17
+            newProfile[@"javaVersion"] = @(17);
+            NSLog(@"[ModrinthAPI] Setting Java 17 for %@ modpack with Minecraft %@", 
+                  isNeoForge ? @"NeoForge" : @"Forge", minecraftVersion);
+        } else {
+            // For older versions, use Java 8
+            newProfile[@"javaVersion"] = @(8);
+            NSLog(@"[ModrinthAPI] Setting Java 8 for %@ modpack with Minecraft %@", 
+                  isNeoForge ? @"NeoForge" : @"Forge", minecraftVersion);
+        }
+    }
+    
     // Update setup progress
     setupProgress.completedUnitCount = 75; // 75% profile created
     
@@ -1073,6 +1093,33 @@ extern void showDialog(NSString *title, NSString *message);
     [self checkAndInstallForge:downloader 
              withDependencies:indexDict[@"dependencies"] 
                   profileName:profileName];
+}
+
+// Helper method to compare Minecraft versions
+- (BOOL)isMinecraftVersion:(NSString *)version greaterThanOrEqualTo:(NSString *)targetVersion {
+    // Split versions into components
+    NSArray *versionComponents = [version componentsSeparatedByString:@"."];
+    NSArray *targetComponents = [targetVersion componentsSeparatedByString:@"."];
+    
+    // Compare major version
+    NSInteger vMajor = versionComponents.count > 0 ? [versionComponents[0] integerValue] : 0;
+    NSInteger tMajor = targetComponents.count > 0 ? [targetComponents[0] integerValue] : 0;
+    
+    if (vMajor > tMajor) return YES;
+    if (vMajor < tMajor) return NO;
+    
+    // Compare minor version
+    NSInteger vMinor = versionComponents.count > 1 ? [versionComponents[1] integerValue] : 0;
+    NSInteger tMinor = targetComponents.count > 1 ? [targetComponents[1] integerValue] : 0;
+    
+    if (vMinor > tMinor) return YES;
+    if (vMinor < tMinor) return NO;
+    
+    // Compare patch version
+    NSInteger vPatch = versionComponents.count > 2 ? [versionComponents[2] integerValue] : 0;
+    NSInteger tPatch = targetComponents.count > 2 ? [targetComponents[2] integerValue] : 0;
+    
+    return vPatch >= tPatch;
 }
 
 - (void)checkAndInstallForge:(MinecraftResourceDownloadTask *)downloader 
