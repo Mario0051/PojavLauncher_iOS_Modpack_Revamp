@@ -11,7 +11,13 @@
 
 // Handle inheritsFrom
 + (void)processVersion:(NSMutableDictionary *)json inheritsFrom:(NSMutableDictionary *)inheritsFrom {
+    // Explicitly preserve the javaVersion field from the mod version
     NSDictionary *originalJavaVersion = [json[@"javaVersion"] copy];
+    
+    // Log the Java version for debugging
+    if (originalJavaVersion) {
+        NSLog(@"[MCDL] Found javaVersion in modded version %@: %@", json[@"id"], originalJavaVersion);
+    }
     
     [self insertSafety:inheritsFrom from:json arr:@[
         @"assetIndex", @"assets", @"id",
@@ -21,9 +27,25 @@
     ]];
     inheritsFrom[@"arguments"] = json[@"arguments"];
     
-    // Preserve the javaVersion field from the mod version if it exists
+    // Ensure we preserve the javaVersion field from the mod version if it exists
     if (originalJavaVersion) {
         inheritsFrom[@"javaVersion"] = originalJavaVersion;
+        NSLog(@"[MCDL] Applied javaVersion from mod version to final version");
+    } else if (!inheritsFrom[@"javaVersion"]) {
+        // If neither has a javaVersion field but it's a modern mod like Forge for 1.18+,
+        // we should explicitly set Java 17
+        if (([json[@"id"] containsString:@"forge-"] && 
+            ([json[@"id"] hasPrefix:@"1.18"] || 
+             [json[@"id"] hasPrefix:@"1.19"] || 
+             [json[@"id"] hasPrefix:@"1.20"])) ||
+            [json[@"id"] containsString:@"neoforge"]) {
+            
+            inheritsFrom[@"javaVersion"] = @{
+                @"component": @"java-runtime-gamma",
+                @"majorVersion": @17
+            };
+            NSLog(@"[MCDL] Added javaVersion explicitly for modern modloader %@", json[@"id"]);
+        }
     }
     
     for (NSMutableDictionary *lib in json[@"libraries"]) {
@@ -45,8 +67,14 @@
         }
     }
 
-    //inheritsFrom[@"inheritsFrom"] = nil;
+    // Print final Java version for debugging
+    if (inheritsFrom[@"javaVersion"]) {
+        NSLog(@"[MCDL] Final version will use Java %@", inheritsFrom[@"javaVersion"][@"majorVersion"]);
+    } else {
+        NSLog(@"[MCDL] Final version has no javaVersion field, will default to Java 8");
+    }
 }
+
 + (void)insertSafety:(NSMutableDictionary *)targetVer from:(NSDictionary *)fromVer arr:(NSArray *)arr {
     for (NSString *key in arr) {
         if (([fromVer[key] isKindOfClass:NSString.class] && [fromVer[key] length] > 0) || targetVer[key] == nil) {
