@@ -1196,150 +1196,26 @@ typedef struct {
             
             // Explicitly mark as NOT a modpack installation
             weakSelf.metadata[@"isModpackInstall"] = @NO;
-            
-            // Handle inheritsFrom for mod versions
+        }
+        
+        // Handle inheritsFrom for mod versions
+        @synchronized(weakSelf) {
             if (weakSelf.metadata[@"inheritsFrom"]) {
                 NSLog(@"[MCDL] Version inherits from: %@", weakSelf.metadata[@"inheritsFrom"]);
                 NSString *inheritsFromPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", 
-                                             getenv("POJAV_GAME_DIR"), 
-                                             weakSelf.metadata[@"inheritsFrom"]];
-                
-                // Save the original mod metadata completely, including javaVersion
-                NSMutableDictionary *originalModMetadata = [weakSelf.metadata mutableCopy];
-                
-                // Explicitly save the javaVersion for tracking - important!
-                NSDictionary *originalJavaVersion = [weakSelf.metadata[@"javaVersion"] copy];
-                
-                // Store modId at higher scope so it's available in all blocks
-                NSString *modId = weakSelf.metadata[@"id"];
-                BOOL needsJava17 = NO;
-                
-                if (originalJavaVersion) {
-                    NSLog(@"[MCDL] Found javaVersion in mod metadata: %@", originalJavaVersion);
-                } else {
-                    // For known modloaders, explicitly add Java version if missing
-                    // Check for both Forge and NeoForge for 1.17+, plus Fabric for 1.17+
-                    
-                    // Check for specific mod loaders that require Java 17
-                    if (([modId containsString:@"forge-"] && 
-                         ([modId hasPrefix:@"1.17"] || [modId hasPrefix:@"1.18"] || 
-                          [modId hasPrefix:@"1.19"] || [modId hasPrefix:@"1.20"])) ||
-                        [modId containsString:@"neoforge"] ||
-                        ([modId containsString:@"fabric-loader"] && 
-                         ([modId containsString:@"1.17"] || [modId containsString:@"1.18"] || 
-                          [modId containsString:@"1.19"] || [modId containsString:@"1.20"])) ||
-                        ([modId containsString:@"quilt-loader"] && 
-                         ([modId containsString:@"1.17"] || [modId containsString:@"1.18"] || 
-                          [modId containsString:@"1.19"] || [modId containsString:@"1.20"]))) {
-                        needsJava17 = YES;
-                    }
-                    
-                    if (needsJava17) {
-                        originalJavaVersion = @{
-                            @"component": @"java-runtime-gamma",
-                            @"majorVersion": @17
-                        };
-                        NSLog(@"[MCDL] Added javaVersion requirement for modern modloader: %@", modId);
-                    }
-                }
+                                            getenv("POJAV_GAME_DIR"), 
+                                            weakSelf.metadata[@"inheritsFrom"]];
                 
                 // Read parent version JSON
                 NSMutableDictionary *inheritsFromDict = parseJSONFromFile(inheritsFromPath);
                 if (inheritsFromDict) {
-                    // Process version with inheritance
-                    [MinecraftResourceUtils processVersion:originalModMetadata inheritsFrom:inheritsFromDict];
-                    
-                    // Use the merged metadata
+                    [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:inheritsFromDict];
                     weakSelf.metadata = inheritsFromDict;
-                    
-                    // CRITICAL: Double-check javaVersion after the merge and restoration
-                    if (originalJavaVersion) {
-                        // Restore the original javaVersion if it exists - ensure it overrides any inherited value
-                        weakSelf.metadata[@"javaVersion"] = originalJavaVersion;
-                        NSLog(@"[MCDL] Ensured javaVersion from mod is preserved: %@", originalJavaVersion);
-                    } else if (!weakSelf.metadata[@"javaVersion"] && needsJava17) {
-                        // If STILL no javaVersion after merge, add it for modern mods
-                        weakSelf.metadata[@"javaVersion"] = @{
-                            @"component": @"java-runtime-gamma",
-                            @"majorVersion": @17
-                        };
-                        NSLog(@"[MCDL] Added missing javaVersion for modern modloader: %@", modId);
-                    }
-                } else {
-                    // If parent not found, attempt to download it first
-                    NSLog(@"[MCDL] Parent version %@ not found, attempting to download...", weakSelf.metadata[@"inheritsFrom"]);
-                    
-                    // Get parent version info
-                    NSDictionary *parentVersion = (id)[MinecraftResourceUtils findVersion:weakSelf.metadata[@"inheritsFrom"] inList:remoteVersionList];
-                    
-                    if (parentVersion) {
-                        // Save original metadata and success callback
-                        NSMutableDictionary *modMetadata = originalModMetadata; // Use the saved copy
-                        void (^originalSuccess)(void) = [success copy];
-                        
-                        // Capture modId and needsJava17 for inner block
-                        NSString *capturedModId = modId; 
-                        BOOL capturedNeedsJava17 = needsJava17;
-                        NSDictionary *capturedJavaVersion = originalJavaVersion;
-                        
-                        // Download parent version first, then process the mod version
-                        [weakSelf downloadVersionMetadata:parentVersion success:^{
-                            NSString *parentPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", 
-                                                   getenv("POJAV_GAME_DIR"), 
-                                                   modMetadata[@"inheritsFrom"]];
-                            
-                            NSMutableDictionary *parentDict = parseJSONFromFile(parentPath);
-                            if (parentDict) {
-                                // Process version inheritance
-                                [MinecraftResourceUtils processVersion:modMetadata inheritsFrom:parentDict];
-                                weakSelf.metadata = parentDict;
-                                
-                                // CRITICAL: Ensure the correct Java version is restored/set after parent download
-                                if (capturedJavaVersion) {
-                                    // Always preserve the mod's original javaVersion if it was set
-                                    weakSelf.metadata[@"javaVersion"] = capturedJavaVersion;
-                                    NSLog(@"[MCDL] Restored original javaVersion after parent download: %@", capturedJavaVersion);
-                                } else if (!weakSelf.metadata[@"javaVersion"] && capturedNeedsJava17) {
-                                    // If STILL no javaVersion after merge, add it for modern mods
-                                    weakSelf.metadata[@"javaVersion"] = @{
-                                        @"component": @"java-runtime-gamma",
-                                        @"majorVersion": @17
-                                    };
-                                    NSLog(@"[MCDL] Added missing javaVersion after parent download for: %@", capturedModId);
-                                }
-                                
-                                // Final logging of what we ended up with
-                                if (weakSelf.metadata[@"javaVersion"]) {
-                                    NSLog(@"[MCDL] Final javaVersion after parent download: %@", weakSelf.metadata[@"javaVersion"]);
-                                } else {
-                                    NSLog(@"[MCDL] Warning: No javaVersion set after parent download, will default to Java 8");
-                                }
-                            }
-                            
-                            // Apply version tweaks
-                            [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
-                            
-                            // Call original success callback
-                            if (originalSuccess) {
-                                originalSuccess();
-                            }
-                        }];
-                        
-                        // Return early to avoid calling the second copy of success
-                        return;
-                    }
                 }
             }
             
             // Apply version tweaks
             [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
-            
-            // Final debugging output
-            if (weakSelf.metadata[@"javaVersion"]) {
-                NSLog(@"[MCDL] Final metadata javaVersion: %@", weakSelf.metadata[@"javaVersion"]);
-            } else {
-                NSLog(@"[MCDL] Warning: Final metadata has no javaVersion field, will default to Java 8");
-            }
         }
         
         // Call original success callback
@@ -1388,6 +1264,7 @@ typedef struct {
         }
     }
 }
+
 
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success {
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
