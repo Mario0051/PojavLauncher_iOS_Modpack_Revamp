@@ -1206,6 +1206,24 @@ typedef struct {
                 
                 // Save the original javaVersion before processing
                 NSDictionary *originalJavaVersion = [weakSelf.metadata[@"javaVersion"] copy];
+                if (originalJavaVersion) {
+                    NSLog(@"[MCDL] Found javaVersion in mod metadata: %@", originalJavaVersion);
+                } else {
+                    // For known modloaders, explicitly add Java version if missing
+                    if (([weakSelf.metadata[@"id"] containsString:@"forge-"] && 
+                        ([weakSelf.metadata[@"id"] hasPrefix:@"1.18"] || 
+                         [weakSelf.metadata[@"id"] hasPrefix:@"1.19"] ||
+                         [weakSelf.metadata[@"id"] hasPrefix:@"1.20"])) ||
+                        [weakSelf.metadata[@"id"] containsString:@"neoforge"]) {
+                        
+                        weakSelf.metadata[@"javaVersion"] = @{
+                            @"component": @"java-runtime-gamma",
+                            @"majorVersion": @17
+                        };
+                        NSLog(@"[MCDL] Added javaVersion requirement for mod loader: %@", weakSelf.metadata[@"javaVersion"]);
+                        originalJavaVersion = weakSelf.metadata[@"javaVersion"];
+                    }
+                }
                 
                 // Read parent version JSON
                 NSMutableDictionary *inheritsFromDict = parseJSONFromFile(inheritsFromPath);
@@ -1218,8 +1236,8 @@ typedef struct {
                     
                     // Restore the original javaVersion if it exists
                     if (originalJavaVersion) {
-                        NSLog(@"[MCDL] Restoring original javaVersion for %@: %@", weakSelf.metadata[@"id"], originalJavaVersion);
                         weakSelf.metadata[@"javaVersion"] = originalJavaVersion;
+                        NSLog(@"[MCDL] Restored javaVersion from mod to final metadata: %@", originalJavaVersion);
                     }
                 } else {
                     // If parent not found, attempt to download it first
@@ -1243,6 +1261,22 @@ typedef struct {
                             if (parentDict) {
                                 // Save the original javaVersion
                                 NSDictionary *originalJavaVersion = [modMetadata[@"javaVersion"] copy];
+                                if (!originalJavaVersion) {
+                                    // For known modloaders, explicitly add Java version if missing
+                                    if (([modMetadata[@"id"] containsString:@"forge-"] && 
+                                        ([modMetadata[@"id"] hasPrefix:@"1.18"] || 
+                                         [modMetadata[@"id"] hasPrefix:@"1.19"] ||
+                                         [modMetadata[@"id"] hasPrefix:@"1.20"])) ||
+                                        [modMetadata[@"id"] containsString:@"neoforge"]) {
+                                        
+                                        modMetadata[@"javaVersion"] = @{
+                                            @"component": @"java-runtime-gamma",
+                                            @"majorVersion": @17
+                                        };
+                                        NSLog(@"[MCDL] Added javaVersion requirement for mod loader: %@", modMetadata[@"javaVersion"]);
+                                        originalJavaVersion = modMetadata[@"javaVersion"];
+                                    }
+                                }
                                 
                                 // Process version inheritance
                                 [MinecraftResourceUtils processVersion:modMetadata inheritsFrom:parentDict];
@@ -1250,9 +1284,8 @@ typedef struct {
                                 
                                 // Restore the original javaVersion if it exists
                                 if (originalJavaVersion) {
-                                    NSLog(@"[MCDL] Restoring original javaVersion after parent download for %@: %@", 
-                                          weakSelf.metadata[@"id"], originalJavaVersion);
                                     weakSelf.metadata[@"javaVersion"] = originalJavaVersion;
+                                    NSLog(@"[MCDL] Restored javaVersion after parent download: %@", originalJavaVersion);
                                 }
                             }
                             
@@ -1273,6 +1306,13 @@ typedef struct {
             
             // Apply version tweaks
             [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
+            
+            // Final debugging output
+            if (weakSelf.metadata[@"javaVersion"]) {
+                NSLog(@"[MCDL] Final metadata javaVersion: %@", weakSelf.metadata[@"javaVersion"]);
+            } else {
+                NSLog(@"[MCDL] Warning: Final metadata has no javaVersion field");
+            }
         }
         
         // Call original success callback
@@ -1321,7 +1361,6 @@ typedef struct {
         }
     }
 }
-
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success {
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
     if (!assetIndex) {
