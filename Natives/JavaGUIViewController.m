@@ -313,12 +313,8 @@ void AWTInputBridge_sendKey(int keycode) {
 
     
 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Use self.requiredJavaVersion instead of _requiredJavaVersion
-        // This ensures the getter method is called to calculate the Java version
-        int javaVersion = self.requiredJavaVersion;
-        launchJVM(nil, self.filepath, windowWidth, windowHeight, javaVersion);
-        // Optional: reset the cached value if needed
-        // _requiredJavaVersion = 0;
+        launchJVM(nil, self.filepath, windowWidth, windowHeight, _requiredJavaVersion);
+        _requiredJavaVersion = 0;
     });
 }
 
