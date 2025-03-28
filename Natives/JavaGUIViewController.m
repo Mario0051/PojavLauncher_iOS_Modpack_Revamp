@@ -363,7 +363,78 @@ dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
     if (_requiredJavaVersion) {
         return _requiredJavaVersion;
     }
+    
+    // First, check if this is a JSON file - indicating a Forge/mod installation
+    if ([self.filepath hasSuffix:@".json"]) {
+        return [self getJavaVersionFromJSON];
+    }
+    
+    // Otherwise, proceed with JAR analysis
+    return [self getJavaVersionFromJar];
+}
 
+- (int)getJavaVersionFromJSON {
+    // Parse the JSON file
+    NSMutableDictionary *json = parseJSONFromFile(self.filepath);
+    if (!json || json[@"NSErrorObject"]) {
+        NSLog(@"[ModInstaller] Failed to parse JSON file: %@", self.filepath);
+        return _requiredJavaVersion = 0;
+    }
+    
+    // Check if javaVersion is directly specified
+    if (json[@"javaVersion"] && json[@"javaVersion"][@"majorVersion"]) {
+        int javaVersion = [json[@"javaVersion"][@"majorVersion"] intValue];
+        NSLog(@"[ModInstaller] Found Java version in JSON: %d", javaVersion);
+        return _requiredJavaVersion = javaVersion;
+    }
+    
+    // Check if this JSON inherits from another version
+    if (json[@"inheritsFrom"]) {
+        NSString *baseVersionId = json[@"inheritsFrom"];
+        NSLog(@"[ModInstaller] JSON inherits from: %@", baseVersionId);
+        
+        // Construct path to the base version JSON
+        NSString *baseVersionPath = [NSString stringWithFormat:@"%s/versions/%@/%@.json", 
+                                    getenv("POJAV_GAME_DIR"), baseVersionId, baseVersionId];
+        
+        // Parse the base version JSON
+        NSMutableDictionary *baseJson = parseJSONFromFile(baseVersionPath);
+        if (!baseJson || baseJson[@"NSErrorObject"]) {
+            NSLog(@"[ModInstaller] Failed to parse base JSON: %@", baseVersionPath);
+        } else if (baseJson[@"javaVersion"] && baseJson[@"javaVersion"][@"majorVersion"]) {
+            int javaVersion = [baseJson[@"javaVersion"][@"majorVersion"] intValue];
+            NSLog(@"[ModInstaller] Found Java version in base JSON: %d", javaVersion);
+            return _requiredJavaVersion = javaVersion;
+        }
+    }
+    
+    // Special handling for known modloaders
+    NSString *id = json[@"id"];
+    if (id) {
+        // Modern Forge/NeoForge requires Java 17+
+        if (([id containsString:@"forge-"] && 
+            ([id hasPrefix:@"1.17"] || [id hasPrefix:@"1.18"] || 
+             [id hasPrefix:@"1.19"] || [id hasPrefix:@"1.20"] || [id hasPrefix:@"1.21"])) ||
+            [id containsString:@"neoforge"]) {
+            NSLog(@"[ModInstaller] Modern Forge/NeoForge detected, requiring Java 17");
+            return _requiredJavaVersion = 17;
+        }
+        
+        // Modern Fabric/Quilt requires Java 17+
+        if (([id containsString:@"fabric-loader"] || [id containsString:@"quilt-loader"]) && 
+            ([id containsString:@"1.17"] || [id containsString:@"1.18"] || 
+             [id containsString:@"1.19"] || [id containsString:@"1.20"] || [id containsString:@"1.21"])) {
+            NSLog(@"[ModInstaller] Modern Fabric/Quilt detected, requiring Java 17");
+            return _requiredJavaVersion = 17;
+        }
+    }
+    
+    // Default to Java 8 if we can't determine the version
+    NSLog(@"[ModInstaller] Could not determine Java version from JSON, defaulting to Java 8");
+    return _requiredJavaVersion = 8;
+}
+
+- (int)getJavaVersionFromJar {
     NSError *error;
     UZKArchive *archive = [[UZKArchive alloc] initWithPath:self.filepath error:&error];
     if (error) {
