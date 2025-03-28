@@ -1034,8 +1034,8 @@ extern void showDialog(NSString *title, NSString *message);
         // Set Java version based on Minecraft version
         if ([self isMinecraftVersion:minecraftVersion greaterThanOrEqualTo:@"1.17"]) {
             // For 1.17+, use Java 17
-            newProfile[@"javaVersion"] = @(17);
-            NSLog(@"[ModrinthAPI] Setting Java 17 for %@ modpack with Minecraft %@", 
+            newProfile[@"javaVersion"] = @(21);
+            NSLog(@"[ModrinthAPI] Setting Java 21 for %@ modpack with Minecraft %@", 
                   isNeoForge ? @"NeoForge" : @"Forge", minecraftVersion);
         } else {
             // For older versions, use Java 8
