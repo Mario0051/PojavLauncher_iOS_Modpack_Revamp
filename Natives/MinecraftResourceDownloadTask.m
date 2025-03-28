@@ -757,22 +757,24 @@ typedef struct {
     }
 }
 
-// This is the backward compatibility version without the failure parameter
+// Simplified compatibility method with just success callback
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
                                            size:(NSUInteger)size 
                                             sha:(NSString *)sha 
                                         altName:(NSString *)altName 
                                          toPath:(NSString *)path 
                                         success:(void (^)(void))success {
+    // Simply forward to the comprehensive method with nil for failure
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:success failure:nil];
 }
 
-// Compatibility method for older code
+// Basic compatibility method with no callbacks
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
                                           size:(NSUInteger)size 
                                            sha:(NSString *)sha 
                                        altName:(NSString *)altName 
                                         toPath:(NSString *)path {
+    // Forward to the comprehensive method with nil for both callbacks
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
 }
 
