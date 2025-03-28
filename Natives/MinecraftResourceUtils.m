@@ -11,6 +11,14 @@
 
 // Handle inheritsFrom
 + (void)processVersion:(NSMutableDictionary *)json inheritsFrom:(NSMutableDictionary *)inheritsFrom {
+    // Explicitly preserve the javaVersion field from the mod version
+    NSDictionary *originalJavaVersion = [json[@"javaVersion"] copy];
+    
+    // Log the Java version for debugging
+    if (originalJavaVersion) {
+        NSLog(@"[MCDL] Found javaVersion in modded version %@: %@", json[@"id"], originalJavaVersion);
+    }
+    
     [self insertSafety:inheritsFrom from:json arr:@[
         @"assetIndex", @"assets", @"id",
         @"inheritsFrom",
@@ -18,7 +26,28 @@
         @"optifineLib", @"releaseTime", @"time", @"type"
     ]];
     inheritsFrom[@"arguments"] = json[@"arguments"];
-
+    
+    // Ensure we preserve the javaVersion field from the mod version if it exists
+    if (originalJavaVersion) {
+        inheritsFrom[@"javaVersion"] = originalJavaVersion;
+        NSLog(@"[MCDL] Applied javaVersion from mod version to final version");
+    } else if (!inheritsFrom[@"javaVersion"]) {
+        // If neither has a javaVersion field but it's a modern mod like Forge for 1.18+,
+        // we should explicitly set Java 17
+        if (([json[@"id"] containsString:@"forge-"] && 
+            ([json[@"id"] hasPrefix:@"1.18"] || 
+             [json[@"id"] hasPrefix:@"1.19"] || 
+             [json[@"id"] hasPrefix:@"1.20"])) ||
+            [json[@"id"] containsString:@"neoforge"]) {
+            
+            inheritsFrom[@"javaVersion"] = @{
+                @"component": @"java-runtime-gamma",
+                @"majorVersion": @17
+            };
+            NSLog(@"[MCDL] Added javaVersion explicitly for modern modloader %@", json[@"id"]);
+        }
+    }
+    
     for (NSMutableDictionary *lib in json[@"libraries"]) {
         NSString *libName = [lib[@"name"] substringToIndex:[lib[@"name"] rangeOfString:@":" options:NSBackwardsSearch].location];
         int i;
@@ -38,7 +67,12 @@
         }
     }
 
-    //inheritsFrom[@"inheritsFrom"] = nil;
+    // Print final Java version for debugging
+    if (inheritsFrom[@"javaVersion"]) {
+        NSLog(@"[MCDL] Final version will use Java %@", inheritsFrom[@"javaVersion"][@"majorVersion"]);
+    } else {
+        NSLog(@"[MCDL] Final version has no javaVersion field, will default to Java 8");
+    }
 }
 
 + (void)insertSafety:(NSMutableDictionary *)targetVer from:(NSDictionary *)fromVer arr:(NSArray *)arr {
@@ -122,25 +156,56 @@
     if (json[@"inheritsFrom"] == nil || json[@"arguments"][@"jvm"] == nil) {
         return;
     }
-    json[@"arguments"][@"jvm_processed"] = [[NSMutableArray alloc] init];
+    
+    // Create jvm_processed array only if it doesn't already exist
+    if (json[@"arguments"][@"jvm_processed"] == nil) {
+        json[@"arguments"][@"jvm_processed"] = [[NSMutableArray alloc] init];
+    } else {
+        // If it already exists, ensure it's mutable
+        if (![json[@"arguments"][@"jvm_processed"] isKindOfClass:[NSMutableArray class]]) {
+            json[@"arguments"][@"jvm_processed"] = [json[@"arguments"][@"jvm_processed"] mutableCopy];
+        }
+        // Clear existing items to avoid duplicates
+        [json[@"arguments"][@"jvm_processed"] removeAllObjects];
+    }
+    
     NSDictionary *varArgMap = @{
         @"${classpath_separator}": @":",
         @"${library_directory}": [NSString stringWithFormat:@"%s/libraries", getenv("POJAV_GAME_DIR")],
         @"${version_name}": json[@"id"]
     };
+    
     int argsToSkip = 0;
-    for (NSString *arg in json[@"arguments"][@"jvm"]) {
-        if (argsToSkip == 0) {
-            argsToSkip = [self numberOfArgsToSkipForArg:arg];
+    
+    // Properly process each JVM argument
+    for (id arg in json[@"arguments"][@"jvm"]) {
+        // Skip non-string items or rule-based items
+        if (![arg isKindOfClass:[NSString class]]) {
+            // Check if it's a dictionary with rules
+            if ([arg isKindOfClass:[NSDictionary class]] && arg[@"value"]) {
+                // Handle rule-based arguments (typically OS-specific)
+                // For now, we skip these as they need special handling
+                continue;
+            }
+            continue; // Skip any other non-string args
         }
+        
+        NSString *argStr = (NSString *)arg;
+        
+        if (argsToSkip > 0) {
+            argsToSkip--;
+            continue;
+        }
+        
+        // Check if we need to skip this and subsequent args
+        argsToSkip = [self numberOfArgsToSkipForArg:argStr];
+        
         if (argsToSkip == 0) {
-            NSString *argStr = arg;
+            // Replace variables in argument string
             for (NSString *key in varArgMap.allKeys) {
                 argStr = [argStr stringByReplacingOccurrencesOfString:key withString:varArgMap[key]];
-            }
+            }        
             [json[@"arguments"][@"jvm_processed"] addObject:argStr];
-        } else {
-            argsToSkip--;
         }
     }
 }
