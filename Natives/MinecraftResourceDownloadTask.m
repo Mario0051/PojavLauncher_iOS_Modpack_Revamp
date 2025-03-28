@@ -280,6 +280,32 @@ typedef struct {
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure {
     @autoreleasepool {
+        // Enhanced logging to track who's enqueueing tasks
+        NSArray *callStackSymbols = [NSThread callStackSymbols];
+        NSString *caller = @"Unknown";
+        
+        // Extract calling method from call stack - usually index 1 or 2 is the caller
+        if (callStackSymbols.count > 2) {
+            NSString *callerFrame = callStackSymbols[2]; // Index 2 is usually the caller
+            
+            // Extract the method name using regex pattern matching
+            NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"\\s+([\\w\\+\\-\\[\\]\\s:]+)\\s+" options:0 error:nil];
+            NSTextCheckingResult *match = [regex firstMatchInString:callerFrame options:0 range:NSMakeRange(0, callerFrame.length)];
+            
+            if (match && match.range.location != NSNotFound) {
+                caller = [callerFrame substringWithRange:[match rangeAtIndex:1]];
+            }
+        }
+        
+        NSLog(@"[MCDL] TASK ENQUEUED by %@", caller);
+        NSLog(@"[MCDL] File: %@", altName ?: path.lastPathComponent);
+        NSLog(@"[MCDL] URL: %@", url);
+        
+        // For debug builds only, log full callstack for more detailed investigation
+        #ifdef DEBUG
+        NSLog(@"[MCDL] Callstack:\n%@", [callStackSymbols componentsJoinedByString:@"\n"]);
+        #endif
+
         // Safety check for invalid URL with enhanced logging
         if (!url || url.length == 0) {
             NSLog(@"[MCDL] Error: Invalid or empty download URL");
