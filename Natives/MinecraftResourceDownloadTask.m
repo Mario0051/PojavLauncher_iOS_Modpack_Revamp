@@ -583,6 +583,14 @@ typedef struct {
                 if (activeDownloadUrls) {
                     [activeDownloadUrls removeObject:fileIdentifier];
                 }
+                
+                // Decrement active downloads count and process next item in queue
+                weakSelf.activeDownloads--;
+                
+                // Schedule processing of next download task
+                dispatch_async(weakSelf.downloadQueue, ^{
+                    [weakSelf processNextDownloadInQueue];
+                });
             }
             
             // Safely check if progress is cancelled to avoid potential crashes
@@ -703,8 +711,15 @@ typedef struct {
             [weakSelf checkCompletionStatus];
         }];
         
-        // Start the task immediately
-        [task resume];
+        // CRITICAL FIX: Don't resume the task immediately, queue it for controlled execution
+        @synchronized(self.pendingDownloads) {
+            [self.pendingDownloads addObject:task];
+        }
+        
+        // Process the download queue
+        dispatch_async(self.downloadQueue, ^{
+            [self processNextDownloadInQueue];
+        });
         
         return task;
     }
@@ -1332,21 +1347,15 @@ typedef struct {
     }
 
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:nil toPath:path success:wrappedSuccess];
-    if (task) {
-        [task resume];
-    } else {
-        // If no task was created, still call success if file exists and the download wasn't cancelled
-        if (!self.progress.cancelled && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            wrappedSuccess();
-        } else if (self.progress.cancelled) {
-            // If cancelled, do nothing - the cancellation handler will clean up
-        } else {
-            // If file doesn't exist and no download task was created, report error
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create download task for version %@", versionStr]];
-        }
+    
+    // If no task was created but file exists and download wasn't cancelled, still call success
+    if (!task && !self.progress.cancelled && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        wrappedSuccess();
+    } else if (!task && !self.progress.cancelled) {
+        // If file doesn't exist and no download task was created, report error
+        [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create download task for version %@", versionStr]];
     }
 }
-
 
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success {
     NSDictionary *assetIndex = self.metadata[@"assetIndex"];
@@ -1423,18 +1432,13 @@ typedef struct {
     }
     
     NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:wrappedSuccess];
-    if (task) {
-        [task resume];
-    } else {
-        // If no task was created, still call success if file exists and the download wasn't cancelled
-        if (!self.progress.cancelled && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            wrappedSuccess();
-        } else if (self.progress.cancelled) {
-            // If cancelled, do nothing - the cancellation handler will clean up
-        } else {
-            // If file doesn't exist and no download task was created, report error
-            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create download task for asset index %@", assetIndex[@"id"]]];
-        }
+    
+    // If no task was created but file exists, still call success if download wasn't cancelled
+    if (!task && !self.progress.cancelled && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        wrappedSuccess();
+    } else if (!task && !self.progress.cancelled) {
+        // If file doesn't exist and no download task was created, report error
+        [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create download task for asset index %@", assetIndex[@"id"]]];
     }
 }
 
@@ -1720,13 +1724,6 @@ typedef struct {
             // If retry also fails, show error
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to download modpack after retry: %@", retryError.localizedDescription]];
         }];
-        
-        if (retryTask) {
-            // Resume task immediately
-            [retryTask resume];
-        } else {
-            [weakSelf finishDownloadWithErrorString:@"Failed to create retry download task for modpack"];
-        }
     };
 
     // Create initial download task
@@ -1737,9 +1734,5 @@ typedef struct {
                                                       toPath:packagePath 
                                                      success:modpackSuccess
                                                      failure:modpackFailure];
-
-    if (task) {
-        [task resume];
-    }
 }
 @end
