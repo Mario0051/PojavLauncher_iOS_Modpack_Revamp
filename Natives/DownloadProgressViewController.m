@@ -50,12 +50,16 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
                                                     name:@"DownloadProgressUpdated"
                                                   object:nil];
     
+    // Remove overall progress observer
     @try {
-        [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+        if (self.task && self.task.textProgress) {
+            [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+        }
     } @catch (NSException *exception) {
         NSLog(@"[ProgressView] Warning: Failed to remove textProgress observer: %@", exception);
     }
     
+    // Remove all cell progress observers
     [self removeAllProgressObservers];
 }
 
@@ -191,7 +195,9 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     
     // Stop observing progress
     @try {
-        [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+        if (self.task && self.task.textProgress) {
+            [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+        }
     } @catch (NSException *exception) {
         NSLog(@"[ProgressView] Warning: Failed to remove textProgress observer: %@", exception);
     }
@@ -206,6 +212,7 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     // Clear observed progress to avoid dangling references
     self.overallProgressView.observedProgress = nil;
 }
+
 
 - (void)downloadProgressUpdated:(NSNotification *)notification {
     // Schedule a UI refresh on next timer cycle
@@ -576,7 +583,11 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         NSArray *keys = [self.cellProgressMap allKeys];
         for (id key in keys) {
             NSProgress *progress = [self.cellProgressMap objectForKey:key];
-            [self removeProgressObserver:progress];
+            
+            // Only attempt to remove if the progress object is valid
+            if (progress && [progress isKindOfClass:[NSProgress class]]) {
+                [self removeProgressObserver:progress];
+            }
         }
         [self.cellProgressMap removeAllObjects];
     }
@@ -586,15 +597,25 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     if (!progress) return;
     
     @synchronized(self) {
-        @try {
-            [progress removeObserver:self forKeyPath:@"fractionCompleted"];
-        } @catch (NSException *exception) {
-            // Ignore if not observing
-            NSLog(@"[ProgressView] Warning: Failed to remove observer: %@", exception);
-        }
+        // Check if this progress is actually in our tracking map
+        NSString *progressIdentifier = [NSString stringWithFormat:@"%p", progress];
+        NSProgress *trackedProgress = [self.cellProgressMap objectForKey:progressIdentifier];
         
-        // Also clear the association to avoid dangling references
-        objc_setAssociatedObject(progress, @"cell", nil, OBJC_ASSOCIATION_ASSIGN);
+        // Only attempt to remove if we're actually tracking this exact progress instance
+        if (trackedProgress == progress) {
+            @try {
+                [progress removeObserver:self forKeyPath:@"fractionCompleted"];
+                
+                // Remove from tracking map after successful removal
+                [self.cellProgressMap removeObjectForKey:progressIdentifier];
+            } @catch (NSException *exception) {
+                // Just log the exception but don't crash
+                NSLog(@"[ProgressView] Warning: Failed to remove observer: %@", exception);
+            }
+            
+            // Also clear the association to avoid dangling references
+            objc_setAssociatedObject(progress, @"cell", nil, OBJC_ASSOCIATION_ASSIGN);
+        }
     }
 }
 
@@ -834,7 +855,15 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         
         // Add observer with proper identifier tracking to avoid duplicates
         NSString *progressIdentifier = [NSString stringWithFormat:@"%p", progress];
-        if (![self.cellProgressMap objectForKey:progressIdentifier]) {
+        NSProgress *trackedProgress = [self.cellProgressMap objectForKey:progressIdentifier];
+        
+        // Only add observer if not already tracking this exact progress instance
+        if (trackedProgress != progress) {
+            // If we're tracking a different progress with the same address, remove it first
+            if (trackedProgress) {
+                [self removeProgressObserver:trackedProgress];
+            }
+            
             @try {
                 [progress addObserver:self
                           forKeyPath:@"fractionCompleted"
