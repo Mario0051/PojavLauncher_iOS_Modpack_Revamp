@@ -1184,38 +1184,6 @@ typedef struct {
     });
 }
 
-- (void)checkCompletionStatus {
-    @synchronized(self) {
-        // Check if total downloads match successful downloads and queue is empty
-        if (self.totalDownloads > 0 &&
-            self.successfulDownloads >= self.totalDownloads &&
-            self.pendingDownloads.count == 0 &&
-            self.activeDownloads == 0) {
-            
-            NSLog(@"[MCDL] All items seem complete or cached immediately.");
-            
-            // Ensure progress reflects completion
-            if (self.progress.totalUnitCount == 0) {
-                // If we have nothing to track (all cached), add a dummy unit
-                self.progress.totalUnitCount = 1;
-                self.textProgress.totalUnitCount = 1;
-            }
-            
-            self.progress.completedUnitCount = self.progress.totalUnitCount;
-            self.textProgress.completedUnitCount = self.textProgress.totalUnitCount;
-            
-            // Add completion marker for UI
-            if (![self.fileList containsObject:@"Complete"]) {
-                @synchronized(self.fileList) {
-                    [self.fileList addObject:@"Complete"];
-                }
-                // Trigger UI update
-                self.needsUIUpdate = YES;
-            }
-        }
-    }
-}
-
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success {
     // Download base json
     NSString *versionStr = version[@"id"];
