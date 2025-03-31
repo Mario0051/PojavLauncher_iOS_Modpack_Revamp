@@ -35,9 +35,6 @@ typedef struct {
 @property(nonatomic, assign) BOOL needsUIUpdate; // Flag for pending UI updates
 @property (nonatomic, strong) dispatch_group_t downloadCompletionGroup; // Group to track all download tasks
 @property (nonatomic, readwrite) BOOL isDownloadPhaseComplete; // Flag to indicate true completion
-@property (nonatomic, assign) NSInteger totalTasksEnqueued; // Counter for all tasks added to the group
-@property (nonatomic, assign) NSInteger tasksLeftGroup; // Counter for tasks leaving the group
-@property (nonatomic, strong) NSLock *completionLock; // Lock for completion status checks
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -64,7 +61,6 @@ typedef struct {
         // Initialize lock objects for thread safety
         self.progressLock = [[NSLock alloc] init];
         self.fileListLock = [[NSLock alloc] init];
-        self.completionLock = [[NSLock alloc] init]; // Initialize completion lock
 
         // Create serial queue for managing downloads
         self.downloadQueue = dispatch_queue_create("net.kdt.pojavlauncher.downloadQueue", DISPATCH_QUEUE_SERIAL);
@@ -106,8 +102,6 @@ typedef struct {
         // Initialize download completion group
         self.downloadCompletionGroup = dispatch_group_create();
         self.isDownloadPhaseComplete = NO; // Initialize completion flag
-        self.totalTasksEnqueued = 0; // Initialize enqueue counter
-        self.tasksLeftGroup = 0; // Initialize leave counter
     }
     return self;
 }
@@ -118,26 +112,19 @@ typedef struct {
     // No need to release dispatch_group_t in ARC
 }
 
-// Helper to safely leave the dispatch group and check completion
-- (void)safelyLeaveDispatchGroupAndCheckCompletion:(NSString *)reason {
-    [self.completionLock lock];
-    self.tasksLeftGroup++;
+// Helper to safely leave the dispatch group
+- (void)safelyLeaveDispatchGroup:(NSString *)reason {
     if (self.verboseLogging) {
-        NSLog(@"[MCDL_DEBUG] Task left group (%@). Total Left: %ld, Total Enqueued: %ld", reason, (long)self.tasksLeftGroup, (long)self.totalTasksEnqueued);
+        // Optionally log why the group was left
+        // NSLog(@"[MCDL_DEBUG] Task left group (%@)", reason);
     }
-    BOOL shouldCheckCompletion = (self.tasksLeftGroup >= self.totalTasksEnqueued && self.totalTasksEnqueued > 0);
-    [self.completionLock unlock];
-
     dispatch_group_leave(self.downloadCompletionGroup);
-
-    if (shouldCheckCompletion) {
-        [self checkFinalCompletion];
-    }
 }
 
-// Final completion check, called only when all enqueued tasks have left the group
+
+// Final completion check, now triggered by dispatch_group_notify
 - (void)checkFinalCompletion {
-     NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
+     NSLog(@"[MCDL] Download group finished. Proceeding to final checks.");
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (!weakSelf) return; // Check if self is still valid
@@ -147,7 +134,7 @@ typedef struct {
             NSLog(@"[MCDL] Verifying deferred files...");
             verificationSuccess = [weakSelf verifyPendingFiles];
              // If verification fails, verifyPendingFiles queues redownloads which re-enter the group,
-             // so the final completion will be triggered again later.
+             // so the final completion will be triggered again later via the group notify.
              if (!verificationSuccess) {
                  NSLog(@"[MCDL] Deferred verification failed, redownload initiated. Completion delayed.");
                  return; // Don't mark as complete yet
@@ -188,35 +175,6 @@ typedef struct {
         }
     });
 }
-
-
-- (void)checkCompletionStatus {
-    // This method is now less critical for final completion,
-    // but can be used for intermediate checks or logging if needed.
-    // The main completion logic relies on safelyLeaveDispatchGroupAndCheckCompletion
-    // triggering checkFinalCompletion.
-    // We can keep a simplified check here for logging or early detection if desired.
-    [self.completionLock lock];
-    BOOL potentiallyComplete = (self.totalDownloads > 0 &&
-                                self.successfulDownloads >= self.totalDownloads &&
-                                self.pendingDownloads.count == 0 &&
-                                self.activeDownloads == 0);
-    BOOL groupCheckNeeded = (self.tasksLeftGroup >= self.totalTasksEnqueued && self.totalTasksEnqueued > 0);
-    [self.completionLock unlock];
-
-    if (potentiallyComplete && groupCheckNeeded) {
-        if (self.verboseLogging) {
-            NSLog(@"[MCDL_DEBUG] checkCompletionStatus indicates potential completion, final check pending group.");
-        }
-        // Trigger final check if counters align, handles edge cases where notify might be missed
-        [self checkFinalCompletion];
-    } else if (self.verboseLogging) {
-         //NSLog(@"[MCDL_DEBUG] checkCompletionStatus: TotalD:%ld, SuccessD:%ld, PendingQ:%lu, ActiveD:%ld, LeftG:%ld, EnqueuedG:%ld",
-         //      (long)self.totalDownloads, (long)self.successfulDownloads, (unsigned long)self.pendingDownloads.count,
-         //      (long)self.activeDownloads, (long)self.tasksLeftGroup, (long)self.totalTasksEnqueued);
-    }
-}
-
 
 - (void)downloadClientJar:(NSDictionary *)versionMetadata {
     NSDictionary *downloads = versionMetadata[@"downloads"];
@@ -284,8 +242,8 @@ typedef struct {
         // Reset counters
         self.successfulDownloads = 0;
         self.totalDownloads = 0;
-        self.totalTasksEnqueued = 0; // Reset enqueue counter
-        self.tasksLeftGroup = 0; // Reset leave counter
+        // self.totalTasksEnqueued = 0; // Reset in init
+        // self.tasksLeftGroup = 0; // Reset in init
 
         // Reset the asset processing flag
         self.hasProcessedAssets = NO;
@@ -348,7 +306,7 @@ typedef struct {
             self.activeDownloads = 0;
             // Leave the group for any tasks that were entered but not started
             for (NSInteger i = 0; i < countToLeave; i++) {
-                 [self safelyLeaveDispatchGroupAndCheckCompletion:@"CancelledPendingQueue"];
+                 [self safelyLeaveDispatchGroup:@"CancelledPendingQueue"];
             }
             return;
         }
@@ -374,8 +332,8 @@ typedef struct {
                  @synchronized(self) {
                      self.activeDownloads--; // Decrement active count
                  }
-                 // Use the helper to leave the group and check completion
-                 [self safelyLeaveDispatchGroupAndCheckCompletion:@"CancelledBeforeResume"];
+                 // Use the helper to leave the group
+                 [self safelyLeaveDispatchGroup:@"CancelledBeforeResume"];
 
                  // Process next if possible
                  dispatch_async(self.downloadQueue, ^{
@@ -430,19 +388,9 @@ typedef struct {
 
         // Enter the group *before* checking cache or existence
         dispatch_group_enter(self.downloadCompletionGroup);
-         // Increment the total enqueued count atomically or within a lock
-         [self.completionLock lock];
-         self.totalTasksEnqueued++;
-         if (self.verboseLogging && self.totalTasksEnqueued % 100 == 0) {
-             NSLog(@"[MCDL_DEBUG] Total Tasks Enqueued: %ld", (long)self.totalTasksEnqueued);
-         }
-         [self.completionLock unlock];
-
 
         // Track total downloads early
-         // Use atomic increment for thread safety if accessed from multiple threads later
-         // For now, assuming single-threaded enqueueing or external synchronization
-         self.totalDownloads++;
+        self.totalDownloads++;
 
 
         // Check if file already exists and has valid SHA
@@ -494,8 +442,8 @@ typedef struct {
                     success();
                 });
             }
-             // Use helper to leave group and check completion status
-             [self safelyLeaveDispatchGroupAndCheckCompletion:@"CachedFile"];
+             // Use helper to leave group
+             [self safelyLeaveDispatchGroup:@"CachedFile"];
             return nil;
         } else if (fileExists && self.deferSHAVerification && sha && sha.length > 0) {
             // File exists, but we're deferring SHA verification
@@ -519,12 +467,12 @@ typedef struct {
                     success();
                 });
             }
-             // Use helper to leave group and check completion status
-             [self safelyLeaveDispatchGroupAndCheckCompletion:@"DeferredVerification"];
+             // Use helper to leave group
+             [self safelyLeaveDispatchGroup:@"DeferredVerification"];
             return nil;
         } else if (![self checkAccessWithDialog:YES]) {
-             // Use helper to leave group and check completion status
-             [self safelyLeaveDispatchGroupAndCheckCompletion:@"AccessDenied"];
+             // Use helper to leave group
+             [self safelyLeaveDispatchGroup:@"AccessDenied"];
              self.totalDownloads--; // Decrement total count as this wasn't a real task
              return nil;
         }
@@ -547,8 +495,8 @@ typedef struct {
             } else {
                 [self finishDownloadWithErrorString:@"Invalid download URL format"];
             }
-             // Use helper to leave group and check completion status
-             [self safelyLeaveDispatchGroupAndCheckCompletion:@"InvalidURL"];
+             // Use helper to leave group
+             [self safelyLeaveDispatchGroup:@"InvalidURL"];
              self.totalDownloads--; // Decrement total count
              return nil;
         }
@@ -605,8 +553,8 @@ typedef struct {
                       }
                  }
                  self.totalDownloads--; // Decrement total count
-                  // Use helper to leave group and check completion status
-                  [self safelyLeaveDispatchGroupAndCheckCompletion:@"ProgressAddFail"];
+                  // Use helper to leave group
+                  [self safelyLeaveDispatchGroup:@"ProgressAddFail"];
                  return nil; // Cannot proceed without progress tracking
              }
         }
@@ -614,8 +562,8 @@ typedef struct {
 
         if (!progressAdded) {
             NSLog(@"[MCDL] Failed to add progress for %@", name);
-            // Use helper to leave group and check completion status
-            [self safelyLeaveDispatchGroupAndCheckCompletion:@"ProgressAddFail2"];
+            // Use helper to leave group
+            [self safelyLeaveDispatchGroup:@"ProgressAddFail2"];
              self.totalDownloads--; // Decrement total count
              return nil;
         }
@@ -736,8 +684,8 @@ typedef struct {
 
             if (isCancelled) {
                 NSLog(@"[MCDL] Download cancelled for %@", name);
-                 // Use helper to leave group and check completion status
-                 [weakSelf safelyLeaveDispatchGroupAndCheckCompletion:@"Cancelled"];
+                 // Use helper to leave group
+                 [weakSelf safelyLeaveDispatchGroup:@"Cancelled"];
                 return;
             }
 
@@ -749,14 +697,14 @@ typedef struct {
                      // Call failure callback on background thread
                      dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                           failure(error);
-                           // Use helper to leave group and check completion status
-                           [weakSelf safelyLeaveDispatchGroupAndCheckCompletion:@"DownloadError"];
+                           // Use helper to leave group
+                           [weakSelf safelyLeaveDispatchGroup:@"DownloadError"];
                      });
                 } else {
                      [weakSelf finishDownloadWithError:error file:name];
                       // finishDownloadWithError cancels progress, which might implicitly leave group.
-                      // For safety, explicitly leave here too.
-                      [weakSelf safelyLeaveDispatchGroupAndCheckCompletion:@"DownloadErrorFinish"];
+                      // Use helper to leave group
+                      [weakSelf safelyLeaveDispatchGroup:@"DownloadErrorFinish"];
                 }
                 return;
             }
@@ -796,13 +744,13 @@ typedef struct {
                         if (failure) {
                             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                                 failure(shaError);
-                                 // Use helper to leave group and check completion status
-                                 [weakSelf safelyLeaveDispatchGroupAndCheckCompletion:@"SHAFailure"];
+                                 // Use helper to leave group
+                                 [weakSelf safelyLeaveDispatchGroup:@"SHAFailure"];
                             });
                         } else {
                             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
-                             // Use helper to leave group and check completion status
-                             [weakSelf safelyLeaveDispatchGroupAndCheckCompletion:@"SHAFailureFinish"];
+                             // Use helper to leave group
+                             [weakSelf safelyLeaveDispatchGroup:@"SHAFailureFinish"];
                         }
                         return;
                     }
@@ -840,7 +788,7 @@ typedef struct {
              }
 
             // Use helper to leave the dispatch group for this completed task
-            [weakSelf safelyLeaveDispatchGroupAndCheckCompletion:@"Success"];
+            [weakSelf safelyLeaveDispatchGroup:@"Success"];
 
             // Process next in queue if needed
              dispatch_async(weakSelf.downloadQueue, ^{
@@ -1026,7 +974,7 @@ typedef struct {
         self.activeDownloads = 0;
         // Leave the group for any cancelled pending tasks
          for (NSInteger i = 0; i < countToLeave; i++) {
-              [self safelyLeaveDispatchGroupAndCheckCompletion:@"CancelledPendingOnError"];
+              [self safelyLeaveDispatchGroup:@"CancelledPendingOnError"];
          }
     }
 
@@ -1199,81 +1147,76 @@ typedef struct {
 
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
 
-    // --- Stage 1: Download Version Metadata ---
-    // Enter group for this stage
-    dispatch_group_enter(self.downloadCompletionGroup);
-    [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
+    // --- Setup Final Completion Notification ---
+     // This is set up ONCE at the beginning. It will trigger checkFinalCompletion
+     // only when ALL tasks added to downloadCompletionGroup have left.
+     __weak typeof(self) weakSelf = self;
+     dispatch_group_notify(self.downloadCompletionGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+         [weakSelf checkFinalCompletion];
+     });
 
-    [self downloadVersionMetadata:version success:^{
-         // This block executes *after* version JSON is downloaded and parsed successfully
-         @synchronized(self) {
-             if (self.progress.cancelled) {
-                  [self safelyLeaveDispatchGroupAndCheckCompletion:@"VersionMetaCancelled"];
-                  return;
-             }
-             // Metadata is now available
-         }
-         // Leave group for successful metadata download
-         [self safelyLeaveDispatchGroupAndCheckCompletion:@"VersionMetaSuccess"];
+     // --- Start the download chain ---
+     // Enter the group for the overall process. This ensures notify waits even if early steps fail fast.
+     dispatch_group_enter(self.downloadCompletionGroup);
+     [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
 
-         // --- Stage 2: Process Libraries, Client Jar, and Assets (triggered by metadata success) ---
-         [self processPostMetadataDownloads]; // Start the next phase
-    }];
+     // Stage 1: Download Version Metadata
+     [self downloadVersionMetadata:version success:^{
+         // Stage 2: Process Libraries, Client Jar, and Assets (triggered by metadata success)
+         [self processPostMetadataDownloads];
+         // Leave the group for the initial stage completion
+         [weakSelf safelyLeaveDispatchGroup:@"OverallProcessStart"];
+     }];
 }
 
+
 - (void)processPostMetadataDownloads {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // This block runs only after version metadata is successfully downloaded and processed
-        @synchronized(self) {
-            BOOL isCancelled = NO;
-            @try { isCancelled = self.progress.cancelled; } @catch(NSException *e){}
-            if (isCancelled) return;
+    // This now runs sequentially after metadata success
+    @synchronized(self) {
+        if (!self || self.progress.cancelled) return;
 
-            NSDictionary *localMetadata = [self.metadata copy]; // Use a local copy
+        NSDictionary *localMetadata = [self.metadata copy]; // Use a local copy
 
-            // --- Enqueue Libraries and Client JAR ---
-             if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing libraries...");
-             [self downloadClientLibraries:localMetadata];
-             if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing client JAR...");
-             [self downloadClientJar:localMetadata];
-             // ---------------------------------------
+        // --- Enqueue Libraries and Client JAR ---
+         if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing libraries...");
+         [self downloadClientLibraries:localMetadata];
+         if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing client JAR...");
+         [self downloadClientJar:localMetadata];
+         // ---------------------------------------
 
-            // --- Handle Assets ---
-            NSDictionary *assetIndexInfo = localMetadata[@"assetIndex"];
-            if (assetIndexInfo) {
-                 // Enter group for asset index download
-                 dispatch_group_enter(self.downloadCompletionGroup);
-                 [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
+        // --- Handle Assets ---
+        NSDictionary *assetIndexInfo = localMetadata[@"assetIndex"];
+        if (assetIndexInfo) {
+             // Enter group for asset index download
+             dispatch_group_enter(self.downloadCompletionGroup);
+             [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
 
-                 if (self.verboseLogging) NSLog(@"[MCDL] Downloading Asset Metadata...");
-                 [self downloadAssetMetadataWithSuccess:^{
-                      @synchronized(self) {
-                           BOOL isCancelled = NO;
-                           @try { isCancelled = self.progress.cancelled; } @catch(NSException *e){}
-                           if (isCancelled) {
-                               [self safelyLeaveDispatchGroupAndCheckCompletion:@"AssetIndexCancelled"];
-                               return;
-                           }
-                           // Asset index metadata is now in self.metadata[@"assetIndexObj"]
-                           NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
-                           if (assetIndexObj && assetIndexObj[@"objects"]) {
-                                if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing assets...");
-                                [self downloadClientAssets:assetIndexObj]; // This enqueues asset downloads
-                                [self.metadata removeObjectForKey:@"assetIndexObj"]; // Clean up
-                           } else {
-                                NSLog(@"[MCDL] No assets found in index or index missing.");
-                           }
-                           // Leave group after processing assets based on this index
-                           [self safelyLeaveDispatchGroupAndCheckCompletion:@"AssetIndexSuccess"];
-                      }
-                 }];
-            } else {
-                 NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
-                  // If no assets, we still need to check if the overall download is complete
-                  [self checkCompletionStatus]; // Call this to potentially trigger final check
-            }
+             if (self.verboseLogging) NSLog(@"[MCDL] Downloading Asset Metadata...");
+             [self downloadAssetMetadataWithSuccess:^{
+                  @synchronized(self) {
+                       if (!self || self.progress.cancelled) {
+                           [self safelyLeaveDispatchGroup:@"AssetIndexCancelled"];
+                           return;
+                       }
+                       // Asset index metadata is now in self.metadata[@"assetIndexObj"]
+                       NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
+                       if (assetIndexObj && assetIndexObj[@"objects"]) {
+                            if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing assets...");
+                            [self downloadClientAssets:assetIndexObj]; // This enqueues asset downloads
+                            [self.metadata removeObjectForKey:@"assetIndexObj"]; // Clean up
+                       } else {
+                            NSLog(@"[MCDL] No assets found in index or index missing.");
+                       }
+                       // Leave group after processing assets based on this index
+                       [self safelyLeaveDispatchGroup:@"AssetIndexSuccess"];
+                  }
+             }];
+        } else {
+             NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
+              // If no assets, check completion status (as libs/jar might be all)
+              [self checkCompletionStatus]; // This might trigger final check if group is empty now
         }
-    });
+    }
 }
 
 
@@ -1808,7 +1751,6 @@ typedef struct {
     NSLog(@"[MCDL] Enqueued %ld asset downloads", (long)tasks.count);
     return tasks;
 }
-
 
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     [self prepareForDownload];
