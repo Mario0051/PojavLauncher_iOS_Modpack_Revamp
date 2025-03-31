@@ -626,45 +626,62 @@ static NSLock *versionListLock;
              return; // Ignore updates from old tasks
          }
 
-         // Calculate download speed and ETA - Use textProgress for UI text
-         NSProgress *textProgress = observedTask.textProgress;
-         if (textProgress) {
-             static CGFloat lastMsTime;
-             static NSUInteger lastSecTime, lastCompletedUnitCount;
-             struct timeval tv;
-             gettimeofday(&tv, NULL);
-             // Use the main progress's completed count for calculations
-             NSInteger completedUnitCount = (NSInteger)(observedProgress.totalUnitCount * observedProgress.fractionCompleted);
-             // Update textProgress completed count safely
-             @try { textProgress.completedUnitCount = completedUnitCount; } @catch(NSException* e){}
+         // Only update UI if progress is still valid
+         if (observedProgress) {
+             // Calculate download speed and ETA - Use textProgress for UI text
+             NSProgress *textProgress = observedTask.textProgress;
+             if (textProgress) {
+                 static CGFloat lastMsTime;
+                 static NSUInteger lastSecTime, lastCompletedUnitCount;
+                 struct timeval tv;
+                 gettimeofday(&tv, NULL);
+                 
+                 // Get completed unit count safely
+                 NSInteger completedUnitCount = 0;
+                 BOOL validProgress = NO;
+                 @try {
+                     if (observedProgress && observedProgress.totalUnitCount > 0) {
+                         completedUnitCount = (NSInteger)(observedProgress.totalUnitCount * observedProgress.fractionCompleted);
+                         validProgress = YES;
+                     }
+                 } @catch (NSException *e) {
+                     NSLog(@"[MCDL] Exception getting progress value: %@", e);
+                 }
+                 
+                 // Only proceed if we got valid progress values
+                 if (validProgress) {
+                     // Update textProgress completed count safely
+                     @try { textProgress.completedUnitCount = completedUnitCount; } @catch(NSException* e){}
 
-
-             // Calculate throughput only if time has passed
-             CGFloat currentTime = tv.tv_sec + tv.tv_usec / 1000000.0;
-             if (lastSecTime < tv.tv_sec && currentTime > lastMsTime) { // Prevent division by zero or negative time diff
-                 NSInteger throughput = (completedUnitCount - lastCompletedUnitCount) / (currentTime - lastMsTime);
-                 @try { textProgress.throughput = @(throughput); } @catch(NSException* e){}
-                 // Avoid division by zero for ETA
-                  @try { textProgress.estimatedTimeRemaining = (throughput > 0) ? @((textProgress.totalUnitCount - completedUnitCount) / throughput) : @(DBL_MAX); } @catch(NSException* e){}
-                 lastCompletedUnitCount = completedUnitCount;
-                 lastSecTime = tv.tv_sec;
-                 lastMsTime = currentTime;
-             } else if (lastSecTime == 0) { // Initialize times on first update
-                  lastCompletedUnitCount = completedUnitCount;
-                  lastSecTime = tv.tv_sec;
-                  lastMsTime = currentTime;
+                     // Calculate throughput only if time has passed
+                     CGFloat currentTime = tv.tv_sec + tv.tv_usec / 1000000.0;
+                     if (lastSecTime < tv.tv_sec && currentTime > lastMsTime) { // Prevent division by zero or negative time diff
+                         NSInteger throughput = (completedUnitCount - lastCompletedUnitCount) / (currentTime - lastMsTime);
+                         @try { textProgress.throughput = @(throughput); } @catch(NSException* e){}
+                         // Avoid division by zero for ETA
+                          @try { 
+                              textProgress.estimatedTimeRemaining = (throughput > 0) ? 
+                                  @((textProgress.totalUnitCount - completedUnitCount) / throughput) : @(DBL_MAX); 
+                          } @catch(NSException* e){}
+                         lastCompletedUnitCount = completedUnitCount;
+                         lastSecTime = tv.tv_sec;
+                         lastMsTime = currentTime;
+                     } else if (lastSecTime == 0) { // Initialize times on first update
+                          lastCompletedUnitCount = completedUnitCount;
+                          lastSecTime = tv.tv_sec;
+                          lastMsTime = currentTime;
+                     }
+                     // Update progress text display
+                     weakSelf.progressText.text = textProgress.localizedAdditionalDescription;
+                 }
              }
-             // Update progress text display
-             weakSelf.progressText.text = textProgress.localizedAdditionalDescription;
          }
-
 
         // Check if download has finished using the more reliable flag
         BOOL isTrulyFinished = NO;
          @synchronized(observedTask) {
-             isTrulyFinished = observedTask.isDownloadPhaseComplete; // Use the new flag
+             isTrulyFinished = observedTask.isDownloadPhaseComplete; // Use the completion flag
          }
-
 
         // If not finished, exit early
         if (!isTrulyFinished) return;
@@ -679,13 +696,21 @@ static NSLock *versionListLock;
              });
         }
 
-
         // Clear progress observation
          dispatch_async(dispatch_get_main_queue(), ^{
+             // Remove observer safely before nullifying the observed progress
+             @try {
+                 if (observedProgress) {
+                     [observedProgress removeObserver:weakSelf forKeyPath:@"fractionCompleted"];
+                 }
+             } @catch (NSException *exception) {
+                 NSLog(@"[MCDL] Exception removing progress observer: %@", exception);
+             }
+             
+             // Now clear the observed progress
              weakSelf.progressViewMain.observedProgress = nil;
              weakSelf.progressViewSub.observedProgress = nil;
          });
-
 
         // Critical: Check if this was a modpack installation
         BOOL isModpackInstall = NO;
@@ -699,7 +724,6 @@ static NSLock *versionListLock;
              metadataCopy = [observedTask.metadata copy];
          }
 
-
         NSLog(@"[MCDL] isModpackInstall: %d, has metadata: %@",
               isModpackInstall, metadataCopy ? @"YES" : @"NO");
 
@@ -711,23 +735,22 @@ static NSLock *versionListLock;
              weakSelf.progressVC = nil;
          }
 
-
-        // Remove observer safely using the completedTask reference
-        @try {
-            if (completedTask && completedTask.progress) {
-                [completedTask.progress removeObserver:weakSelf forKeyPath:@"fractionCompleted"];
-            }
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Exception removing progress observer: %@", exception);
-        }
-
         // Launch the game if it's not a modpack installation and we have metadata
         if (metadataCopy && !isModpackInstall) {
              // Ensure we have metadata before launching
              if (metadataCopy[@"id"]) { // Check for a key expected in Minecraft metadata
-                 [weakSelf invokeAfterJITEnabled:^{
-                      UIKit_launchMinecraftSurfaceVC(weakSelf.view.window, metadataCopy);
-                 }];
+                 // Make the game launch happen after a short delay to ensure cleanup completes
+                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                     [weakSelf invokeAfterJITEnabled:^{
+                          // Extra safety check before launch
+                          if (weakSelf && weakSelf.view.window) {
+                              UIKit_launchMinecraftSurfaceVC(weakSelf.view.window, metadataCopy);
+                          } else {
+                              NSLog(@"[MCDL] Error: View hierarchy invalid for launch");
+                              [weakSelf setInteractionEnabled:YES forDownloading:YES]; // Re-enable UI
+                          }
+                     }];
+                 });
              } else {
                  NSLog(@"[MCDL] Error: Metadata missing required information for launch.");
                  [weakSelf setInteractionEnabled:YES forDownloading:YES]; // Re-enable UI
@@ -740,8 +763,6 @@ static NSLock *versionListLock;
         }
     });
 }
-
-
 
 - (void)receiveNotification:(NSNotification *)notification {
     if (![notification.name isEqualToString:@"InstallModpack"]) {
