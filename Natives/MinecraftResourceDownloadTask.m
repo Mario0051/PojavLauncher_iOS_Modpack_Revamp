@@ -307,7 +307,7 @@ typedef struct {
         @try {
             // Access progress safely within a synchronized block if necessary,
             // but reading `cancelled` is usually atomic.
-             isCancelled = self.progress.cancelled;
+            isCancelled = self.progress.cancelled;
         } @catch (NSException *exception) {
             NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
             isCancelled = NO;
@@ -320,11 +320,10 @@ typedef struct {
             self.activeDownloads = 0;
             // Leave the group for any tasks that were entered but not started
             for (NSInteger i = 0; i < countToLeave; i++) {
-                 [self safelyLeaveDispatchGroup:@"CancelledPendingQueue"];
+                [self safelyLeaveDispatchGroup:@"CancelledPendingQueue"];
             }
             return;
         }
-
 
         // Get next download task and start it
         NSURLSessionDownloadTask *nextTask = self.pendingDownloads[0];
@@ -333,27 +332,29 @@ typedef struct {
 
         // Resume task on a background queue to avoid blocking
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-             // Check again for cancellation right before resuming
-             BOOL isCancelledBeforeResume = NO;
-             @try {
-                 isCancelledBeforeResume = self.progress.cancelled;
-             } @catch (NSException *exception) {}
+            // Check again for cancellation right before resuming
+            BOOL isCancelledBeforeResume = NO;
+            @try {
+                isCancelledBeforeResume = self.progress.cancelled;
+            } @catch (NSException *exception) {}
 
-             if (!isCancelledBeforeResume) {
-                 [nextTask resume];
-             } else {
-                 // If cancelled before resume, ensure we leave the group
-                 @synchronized(self) {
-                     self.activeDownloads--; // Decrement active count
-                 }
-                 // Use the helper to leave the group
-                 [self safelyLeaveDispatchGroup:@"CancelledBeforeResume"];
+            if (!isCancelledBeforeResume) {
+                // CRITICAL FIX: Actually start the download task
+                NSLog(@"[MCDL] Starting download task");
+                [nextTask resume];
+            } else {
+                // If cancelled before resume, ensure we leave the group
+                @synchronized(self) {
+                    self.activeDownloads--; // Decrement active count
+                }
+                // Use the helper to leave the group
+                [self safelyLeaveDispatchGroup:@"CancelledBeforeResume"];
 
-                 // Process next if possible
-                 dispatch_async(self.downloadQueue, ^{
-                     [self processNextDownloadInQueue];
-                 });
-             }
+                // Process next if possible
+                dispatch_async(self.downloadQueue, ^{
+                    [self processNextDownloadInQueue];
+                });
+            }
         });
 
         // If we're still below the concurrent limit and have more tasks, process another one
@@ -364,6 +365,7 @@ typedef struct {
         }
     }
 }
+
 
 // This should match the declaration in the header file
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url
@@ -377,7 +379,6 @@ typedef struct {
         // Enhanced logging to track who's enqueueing tasks
         if (self.verboseLogging) {
             NSLog(@"[MCDL] TASK ENQUEUED for: %@", altName ?: path.lastPathComponent);
-            //NSLog(@"[MCDL] URL: %@", url); // URL can be long, log only if needed
         }
 
         // Safety check for invalid URL with enhanced logging
@@ -389,33 +390,25 @@ typedef struct {
                                                    code:1001
                                                userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL"}];
             if (failure) {
-                 // Ensure failure callback is executed asynchronously on a background thread
-                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                      failure(urlError);
-                      // Don't leave group here, as we didn't enter for this invalid task
-                 });
+                failure(urlError);
             } else {
-                 [self finishDownloadWithErrorString:@"Invalid download URL"];
+                [self finishDownloadWithErrorString:@"Invalid download URL"];
             }
             return nil;
         }
 
         // Enter the group *before* checking cache or existence
         dispatch_group_enter(self.downloadCompletionGroup);
-         // Increment the total enqueued count atomically or within a lock
-         [self.completionLock lock];
-         self.totalTasksEnqueued++;
-         if (self.verboseLogging && self.totalTasksEnqueued % 100 == 0) {
-             NSLog(@"[MCDL_DEBUG] Total Tasks Enqueued: %ld", (long)self.totalTasksEnqueued);
-         }
-         [self.completionLock unlock];
-
+        // Increment the total enqueued count
+        [self.completionLock lock];
+        self.totalTasksEnqueued++;
+        if (self.verboseLogging && self.totalTasksEnqueued % 100 == 0) {
+            NSLog(@"[MCDL_DEBUG] Total Tasks Enqueued: %ld", (long)self.totalTasksEnqueued);
+        }
+        [self.completionLock unlock];
 
         // Track total downloads early
-         // Use atomic increment for thread safety if accessed from multiple threads later
-         // For now, assuming single-threaded enqueueing or external synchronization
-         self.totalDownloads++;
-
+        self.totalDownloads++;
 
         // Check if file already exists and has valid SHA
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
@@ -432,20 +425,18 @@ typedef struct {
         // Determine if we should verify SHA now or defer it
         BOOL shouldVerifyNow = !self.deferSHAVerification || isVersionFile || isLatestVersionFile;
 
-
         if (shouldVerifyNow && fileExists && sha && sha.length > 0 &&
             [self checkSHA:sha forFile:path altName:altName]) {
 
-             // Use estimated size if actual size is 0
-             NSUInteger itemSize = size > 0 ? size : 100000; // Use 100KB estimate if size unknown
-             @synchronized(self) {
-                 // Only add to total if it wasn't already counted (tricky without tracking individuals)
-                 // A safer approach is to always add to total when enqueueing, and always complete here.
-                 self.progress.totalUnitCount += itemSize;
-                 self.progress.completedUnitCount += itemSize; // Mark as complete
-                 self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-                 self.textProgress.completedUnitCount = self.progress.completedUnitCount;
-             }
+            // Use estimated size if actual size is 0
+            NSUInteger itemSize = size > 0 ? size : 100000; // Use 100KB estimate if size unknown
+            @synchronized(self) {
+                // Add to total and mark as complete
+                self.progress.totalUnitCount += itemSize;
+                self.progress.completedUnitCount += itemSize;
+                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+            }
 
             // Increment successful downloads counter
             self.successfulDownloads++;
@@ -466,8 +457,8 @@ typedef struct {
                     success();
                 });
             }
-             // Use helper to leave group
-             [self safelyLeaveDispatchGroup:@"CachedFile"];
+            // Leave group for cached file
+            [self safelyLeaveDispatchGroup:@"CachedFile"];
             return nil;
         } else if (fileExists && self.deferSHAVerification && sha && sha.length > 0) {
             // File exists, but we're deferring SHA verification
@@ -477,10 +468,10 @@ typedef struct {
             // Update overall progress
             NSUInteger itemSize = size > 0 ? size : 100000; // Use 100KB estimate if size unknown
             @synchronized(self) {
-                 self.progress.totalUnitCount += itemSize;
-                 self.progress.completedUnitCount += itemSize; // Mark as complete
-                 self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-                 self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+                self.progress.totalUnitCount += itemSize;
+                self.progress.completedUnitCount += itemSize; // Mark as complete
+                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                self.textProgress.completedUnitCount = self.progress.completedUnitCount;
             }
 
             // Count as successful for UI purposes (will be verified later)
@@ -491,16 +482,15 @@ typedef struct {
                     success();
                 });
             }
-             // Use helper to leave group
-             [self safelyLeaveDispatchGroup:@"DeferredVerification"];
+            // Leave group for deferred verification
+            [self safelyLeaveDispatchGroup:@"DeferredVerification"];
             return nil;
         } else if (![self checkAccessWithDialog:YES]) {
-             // Use helper to leave group
-             [self safelyLeaveDispatchGroup:@"AccessDenied"];
-             self.totalDownloads--; // Decrement total count as this wasn't a real task
-             return nil;
+            // Leave group for access denied
+            [self safelyLeaveDispatchGroup:@"AccessDenied"];
+            self.totalDownloads--; // Decrement total count as this wasn't a real task
+            return nil;
         }
-
 
         // Use filename as display name if no alternate name provided
         NSString *name = altName ?: path.lastPathComponent;
@@ -519,12 +509,11 @@ typedef struct {
             } else {
                 [self finishDownloadWithErrorString:@"Invalid download URL format"];
             }
-             // Use helper to leave group
-             [self safelyLeaveDispatchGroup:@"InvalidURL"];
-             self.totalDownloads--; // Decrement total count
-             return nil;
+            // Leave group for invalid URL
+            [self safelyLeaveDispatchGroup:@"InvalidURL"];
+            self.totalDownloads--; // Decrement total count
+            return nil;
         }
-
 
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:requestURL];
         request.timeoutInterval = 60; // Set a reasonable timeout
@@ -532,15 +521,14 @@ typedef struct {
 
         // Add to file list for UI tracking (before creating the task to avoid race conditions)
         @synchronized(self.fileList) {
-            // Fix: Check if name is already in the fileList to avoid duplicates
+            // Check if name is already in the fileList to avoid duplicates
             if (![self.fileList containsObject:name]) {
                 [self.fileList addObject:name];
-                 self.needsUIUpdate = YES; // Flag UI update needed
+                self.needsUIUpdate = YES; // Flag UI update needed
             } else if (self.verboseLogging) {
                 NSLog(@"[MCDL] File %@ already in tracking list, not adding duplicate", name);
             }
         }
-
 
         // Estimate size if 0, necessary for adding to totalUnitCount early
         NSUInteger estimatedSize = size > 0 ? size : 100000; // 100KB estimate
@@ -551,165 +539,165 @@ typedef struct {
         BOOL progressAdded = NO;
 
         @synchronized(self) {
-             @try {
-                 @synchronized(self.progressList) {
-                      [self.progressList addObject:downloadProgress];
-                 }
+            @try {
+                @synchronized(self.progressList) {
+                    [self.progressList addObject:downloadProgress];
+                }
 
-                 // Increment total BEFORE adding child
-                 self.progress.totalUnitCount += downloadProgress.totalUnitCount;
-                 self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+                // Increment total BEFORE adding child
+                self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
 
-                 // Add child progress
-                 [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
+                // Add child progress
+                [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
 
-                 // Mark progress as tracked
-                 objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                 progressAdded = YES;
-             } @catch (NSException *exception) {
-                 NSLog(@"[MCDL] Exception adding progress: %@", exception);
+                // Mark progress as tracked
+                objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+                progressAdded = YES;
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Exception adding progress: %@", exception);
 
-                 // If adding progress fails, remove from fileList to maintain consistency
-                 @synchronized(self.fileList) {
-                      // Fix: Only remove if this file was actually the last added
-                      if ([self.fileList.lastObject isEqual:name]) {
-                           [self.fileList removeLastObject];
-                      }
-                 }
-                 self.totalDownloads--; // Decrement total count
-                  // Use helper to leave group
-                  [self safelyLeaveDispatchGroup:@"ProgressAddFail"];
-                 return nil; // Cannot proceed without progress tracking
-             }
+                // If adding progress fails, remove from fileList to maintain consistency
+                @synchronized(self.fileList) {
+                    // Only remove if this file was actually the last added
+                    if ([self.fileList.lastObject isEqual:name]) {
+                        [self.fileList removeLastObject];
+                    }
+                }
+                self.totalDownloads--; // Decrement total count
+                // Leave group for progress add failure
+                [self safelyLeaveDispatchGroup:@"ProgressAddFail"];
+                return nil; // Cannot proceed without progress tracking
+            }
         }
-
 
         if (!progressAdded) {
             NSLog(@"[MCDL] Failed to add progress for %@", name);
-            // Use helper to leave group
+            // Leave group for progress add failure
             [self safelyLeaveDispatchGroup:@"ProgressAddFail2"];
-             self.totalDownloads--; // Decrement total count
-             return nil;
+            self.totalDownloads--; // Decrement total count
+            return nil;
         }
-
 
         // Create weak reference to self to avoid retain cycles
         __weak typeof(self) weakSelf = self;
 
         // Create download task with proper completion handling
         __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull taskProgress) {
-             // Only update progress every 10% to reduce overhead
-             static NSInteger lastReportedPercent = -1;
-             NSInteger currentPercent = (NSInteger)(taskProgress.fractionCompleted * 100);
+            // Only update progress every 10% to reduce overhead
+            static NSInteger lastReportedPercent = -1;
+            NSInteger currentPercent = (NSInteger)(taskProgress.fractionCompleted * 100);
 
-             // Use a higher frequency for UI updates if needed, e.g., every 5%
-             if (currentPercent != lastReportedPercent && currentPercent % 5 == 0) {
-                 lastReportedPercent = currentPercent;
+            // Use a higher frequency for UI updates if needed, e.g., every 5%
+            if (currentPercent != lastReportedPercent && currentPercent % 5 == 0) {
+                lastReportedPercent = currentPercent;
 
-                 // Safely update progress
-                 @synchronized(weakSelf) {
-                     if (!weakSelf) return; // Check weakSelf validity
-                      @try {
-                           // Update completion amount with safeguards
-                           CGFloat fraction = taskProgress.fractionCompleted;
-                           if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
-                               // Update the child progress's completed count
-                               downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
-                                // We rely on the timer for batched UI updates now
-                                // weakSelf.needsUIUpdate = YES;
-                           }
-                      } @catch (NSException *exception) {
-                           // Just log and continue
-                           NSLog(@"[MCDL] Exception in progress update: %@", exception);
-                      }
-                 }
-             }
+                // Safely update progress
+                @synchronized(weakSelf) {
+                    if (!weakSelf) return; // Check weakSelf validity
+                    @try {
+                        // Update completion amount with safeguards
+                        CGFloat fraction = taskProgress.fractionCompleted;
+                        if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
+                            // Update the child progress's completed count
+                            downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
+                        }
+                    } @catch (NSException *exception) {
+                        // Just log and continue
+                        NSLog(@"[MCDL] Exception in progress update: %@", exception);
+                    }
+                }
+            }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-             // FIX: Corrected return type and logic
-             if (!weakSelf) return nil; // Check weakSelf validity and return nil if invalid
+            // Check weakSelf validity and return nil if invalid
+            if (!weakSelf) return nil;
 
-             if (weakSelf.verboseLogging) {
-                 NSLog(@"[MCDL] Downloading %@", name);
-             }
+            // Log download start
+            if (weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Downloading %@", name);
+            } else {
+                // Log less frequently in non-verbose mode
+                static int logCounter = 0;
+                if (++logCounter % 100 == 0) {
+                    NSLog(@"[MCDL] Downloading file %d: %@", logCounter, name);
+                }
+            }
 
-             // Update progress size if response has size info and size was initially 0
-             if (size == 0 && response.expectedContentLength > 0) {
-                 NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
+            // Update progress size if response has size info and size was initially 0
+            if (size == 0 && response.expectedContentLength > 0) {
+                NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
 
-                 @synchronized(weakSelf) {
-                      if (!weakSelf) return nil; // Re-check weakSelf
-                      @try {
-                           // Update progress size and overall progress total
-                           NSUInteger oldSize = downloadProgress.totalUnitCount;
-                           downloadProgress.totalUnitCount = actualSize;
+                @synchronized(weakSelf) {
+                    if (!weakSelf) return nil; // Re-check weakSelf
+                    @try {
+                        // Update progress size and overall progress total
+                        NSUInteger oldSize = downloadProgress.totalUnitCount;
+                        downloadProgress.totalUnitCount = actualSize;
 
-                           // Update parent progress total only if the task wasn't cancelled
-                           if (weakSelf.progress && !weakSelf.progress.cancelled) {
-                                weakSelf.progress.totalUnitCount = MAX(0, weakSelf.progress.totalUnitCount - oldSize + actualSize);
-                           }
+                        // Update parent progress total only if the task wasn't cancelled
+                        if (weakSelf.progress && !weakSelf.progress.cancelled) {
+                            weakSelf.progress.totalUnitCount = MAX(0, weakSelf.progress.totalUnitCount - oldSize + actualSize);
+                        }
 
-                           if (weakSelf.textProgress && !weakSelf.textProgress.cancelled) {
-                                weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
-                           }
-                      } @catch (NSException *exception) {
-                           NSLog(@"[MCDL] Exception updating progress size: %@", exception);
-                      }
-                 }
-             }
+                        if (weakSelf.textProgress && !weakSelf.textProgress.cancelled) {
+                            weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
+                        }
+                    } @catch (NSException *exception) {
+                        NSLog(@"[MCDL] Exception updating progress size: %@", exception);
+                    }
+                }
+            }
 
-
-             // Create directory structure if needed
-             NSString *dirPath = [path stringByDeletingLastPathComponent];
-             NSError *dirError = nil;
-             BOOL dirCreated = [[NSFileManager defaultManager] createDirectoryAtPath:dirPath
+            // Create directory structure if needed
+            NSString *dirPath = [path stringByDeletingLastPathComponent];
+            NSError *dirError = nil;
+            BOOL dirCreated = [[NSFileManager defaultManager] createDirectoryAtPath:dirPath
                                               withIntermediateDirectories:YES
                                                                attributes:nil
                                                                     error:&dirError];
 
-             if (!dirCreated && dirError.code != NSFileWriteFileExistsError) { // Ignore "already exists" error
-                 NSLog(@"[MCDL] Warning: Could not create directory at %@: %@",
-                       dirPath, dirError ? dirError.localizedDescription : @"Unknown error");
-                 // Don't fail the whole download for a directory creation issue if it might exist
-             }
+            if (!dirCreated && dirError.code != NSFileWriteFileExistsError) { // Ignore "already exists" error
+                NSLog(@"[MCDL] Warning: Could not create directory at %@: %@",
+                      dirPath, dirError ? dirError.localizedDescription : @"Unknown error");
+                // Don't fail the whole download for a directory creation issue if it might exist
+            }
 
+            // Remove existing file if it exists to avoid write errors
+            if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
+                NSError *removeError = nil;
+                BOOL removed = [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
 
-             // Remove existing file if it exists to avoid write errors
-             if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
-                 NSError *removeError = nil;
-                 BOOL removed = [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
+                if (!removed) {
+                    NSLog(@"[MCDL] Warning: Could not remove existing file at %@: %@",
+                          path, removeError ? removeError.localizedDescription : @"Unknown error");
+                }
+            }
 
-                 if (!removed) {
-                     NSLog(@"[MCDL] Warning: Could not remove existing file at %@: %@",
-                           path, removeError ? removeError.localizedDescription : @"Unknown error");
-                 }
-             }
-
-             return [NSURL fileURLWithPath:path];
+            return [NSURL fileURLWithPath:path];
         } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
             if (!weakSelf) return; // Check weakSelf validity
 
             // Decrement active downloads count first
             @synchronized(weakSelf.pendingDownloads) {
-                 weakSelf.activeDownloads--;
+                weakSelf.activeDownloads--;
             }
 
-
-             // Safely check if progress is cancelled to avoid potential crashes
-             BOOL isCancelled = NO;
-             @synchronized(weakSelf) {
-                 if (!weakSelf) return;
-                 @try {
-                     isCancelled = weakSelf.progress.cancelled;
-                 } @catch (NSException *exception) {
-                     NSLog(@"[MCDL] Exception checking if cancelled: %@", exception);
-                     isCancelled = NO;
-                 }
-             }
+            // Safely check if progress is cancelled to avoid potential crashes
+            BOOL isCancelled = NO;
+            @synchronized(weakSelf) {
+                if (!weakSelf) return;
+                @try {
+                    isCancelled = weakSelf.progress.cancelled;
+                } @catch (NSException *exception) {
+                    NSLog(@"[MCDL] Exception checking if cancelled: %@", exception);
+                    isCancelled = NO;
+                }
+            }
 
             if (isCancelled) {
                 NSLog(@"[MCDL] Download cancelled for %@", name);
-                 // Use helper to leave group
-                 [weakSelf safelyLeaveDispatchGroup:@"Cancelled"];
+                // Leave group
+                [weakSelf safelyLeaveDispatchGroup:@"Cancelled"];
                 return;
             }
 
@@ -718,24 +706,22 @@ typedef struct {
                 NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
 
                 if (failure) {
-                     // Call failure callback on background thread
-                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                          failure(error);
-                           // Use helper to leave group
-                           [weakSelf safelyLeaveDispatchGroup:@"DownloadError"];
-                     });
+                    // Call failure callback on background thread
+                    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                        failure(error);
+                        // Leave group
+                        [weakSelf safelyLeaveDispatchGroup:@"DownloadError"];
+                    });
                 } else {
-                     [weakSelf finishDownloadWithError:error file:name];
-                      // finishDownloadWithError cancels progress, which might implicitly leave group.
-                      // Use helper to leave group
-                      [weakSelf safelyLeaveDispatchGroup:@"DownloadErrorFinish"];
+                    [weakSelf finishDownloadWithError:error file:name];
+                    // Leave group
+                    [weakSelf safelyLeaveDispatchGroup:@"DownloadErrorFinish"];
                 }
                 return;
             }
 
             // Increment successful download counter
-             weakSelf.successfulDownloads++;
-
+            weakSelf.successfulDownloads++;
 
             // Log progress summary periodically instead of every file
             if (weakSelf.verboseLogging) {
@@ -768,13 +754,13 @@ typedef struct {
                         if (failure) {
                             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                                 failure(shaError);
-                                 // Use helper to leave group
-                                 [weakSelf safelyLeaveDispatchGroup:@"SHAFailure"];
+                                // Leave group
+                                [weakSelf safelyLeaveDispatchGroup:@"SHAFailure"];
                             });
                         } else {
                             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
-                             // Use helper to leave group
-                             [weakSelf safelyLeaveDispatchGroup:@"SHAFailureFinish"];
+                            // Leave group
+                            [weakSelf safelyLeaveDispatchGroup:@"SHAFailureFinish"];
                         }
                         return;
                     }
@@ -786,44 +772,43 @@ typedef struct {
 
             // Ensure progress is marked as complete
             @synchronized(weakSelf) {
-                 if (!weakSelf) return;
-                 @try {
-                     // Mark the individual progress complete
-                     if (downloadProgress.totalUnitCount > 0) {
-                          downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
-                     } else {
-                          // If totalUnitCount was 0 (or unknown), ensure completed is at least 1 if successful
-                          downloadProgress.completedUnitCount = 1;
-                          downloadProgress.totalUnitCount = 1; // Set total to 1 to reflect completion
-                     }
-                      // Trigger UI update after completion
-                      weakSelf.needsUIUpdate = YES;
-                 } @catch (NSException *exception) {
-                     NSLog(@"[MCDL] Exception marking progress complete: %@", exception);
-                 }
+                if (!weakSelf) return;
+                @try {
+                    // Mark the individual progress complete
+                    if (downloadProgress.totalUnitCount > 0) {
+                        downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
+                    } else {
+                        // If totalUnitCount was 0 (or unknown), ensure completed is at least 1 if successful
+                        downloadProgress.completedUnitCount = 1;
+                        downloadProgress.totalUnitCount = 1; // Set total to 1 to reflect completion
+                    }
+                    // Trigger UI update after completion
+                    weakSelf.needsUIUpdate = YES;
+                } @catch (NSException *exception) {
+                    NSLog(@"[MCDL] Exception marking progress complete: %@", exception);
+                }
             }
 
+            // Call success callback on background thread if SHA is valid
+            if (success && shaValid) {
+                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                    success();
+                });
+            }
 
-             // Call success callback on background thread if SHA is valid
-             if (success && shaValid) {
-                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                     success();
-                 });
-             }
-
-            // Use helper to leave the dispatch group for this completed task
+            // Leave the dispatch group for this completed task
             [weakSelf safelyLeaveDispatchGroup:@"Success"];
 
             // Process next in queue if needed
-             dispatch_async(weakSelf.downloadQueue, ^{
-                 [weakSelf processNextDownloadInQueue];
-             });
+            dispatch_async(weakSelf.downloadQueue, ^{
+                [weakSelf processNextDownloadInQueue];
+            });
         }];
 
         // Add the task to the pending queue
-         @synchronized(self.pendingDownloads) {
-             [self.pendingDownloads addObject:task];
-         }
+        @synchronized(self.pendingDownloads) {
+            [self.pendingDownloads addObject:task];
+        }
 
         // Trigger processing of the queue
         dispatch_async(self.downloadQueue, ^{
@@ -833,7 +818,6 @@ typedef struct {
         return task;
     }
 }
-
 
 // Simplified compatibility method with just success callback
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url
@@ -1158,41 +1142,38 @@ typedef struct {
 
     // Reset metadata and explicitly mark as NOT a modpack
     @synchronized(self) {
-         if (!self.metadata) {
-              self.metadata = [NSMutableDictionary dictionary];
-         } else {
-              [self.metadata removeAllObjects];
-         }
-         // Critical: Mark this as NOT a modpack installation
-         self.metadata[@"isModpackInstall"] = @NO;
-         self.isDownloadPhaseComplete = NO; // Reset completion flag
+        if (!self.metadata) {
+            self.metadata = [NSMutableDictionary dictionary];
+        } else {
+            [self.metadata removeAllObjects];
+        }
+        // Critical: Mark this as NOT a modpack installation
+        self.metadata[@"isModpackInstall"] = @NO;
+        self.isDownloadPhaseComplete = NO; // Reset completion flag
     }
-
 
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
 
     // --- Setup Final Completion Notification ---
-     // This is set up ONCE at the beginning. It will trigger checkFinalCompletion
-     // only when ALL tasks added to downloadCompletionGroup have left.
-     __weak typeof(self) weakSelf = self;
-     dispatch_group_notify(self.downloadCompletionGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-         [weakSelf checkFinalCompletion];
-     });
+    // This is set up ONCE at the beginning. It will trigger checkFinalCompletion
+    // only when ALL tasks added to downloadCompletionGroup have left.
+    __weak typeof(self) weakSelf = self;
+    dispatch_group_notify(self.downloadCompletionGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [weakSelf checkFinalCompletion];
+    });
 
+    // --- Start the download chain ---
+    // Enter the group for the overall process. This ensures notify waits even if early steps fail fast.
+    dispatch_group_enter(self.downloadCompletionGroup);
+    [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
 
-     // --- Start the download chain ---
-     // Enter the group for the overall process. This ensures notify waits even if early steps fail fast.
-     dispatch_group_enter(self.downloadCompletionGroup);
-     [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
-
-
-     // Stage 1: Download Version Metadata
-     [self downloadVersionMetadata:version success:^{
-         // Stage 2: Process Libraries, Client Jar, and Assets (triggered by metadata success)
-         [self processPostMetadataDownloads];
-         // Leave the group for the initial stage completion
-         [weakSelf safelyLeaveDispatchGroup:@"OverallProcessStart"];
-     }];
+    // Stage 1: Download Version Metadata
+    [self downloadVersionMetadata:version success:^{
+        // Stage 2: Process Libraries, Client Jar, and Assets (triggered by metadata success)
+        [self processPostMetadataDownloads];
+        // Leave the group for the initial stage completion
+        [weakSelf safelyLeaveDispatchGroup:@"OverallProcessStart"];
+    }];
 }
 
 - (void)processPostMetadataDownloads {
