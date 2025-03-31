@@ -1145,81 +1145,75 @@ typedef struct {
         @synchronized(self) {
             if (self.progress.cancelled) return;
             
-            // Metadata is now in self.metadata
-            NSDictionary *localMetadata = self.metadata; // Use a local ref inside block
-            
-            // Step 2: Enqueue libraries based on version JSON - limit the library processing
-            // to avoid creating too many tasks at once
-            NSLog(@"[MCDL] Enqueuing libraries...");
-            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                [self downloadClientLibraries:localMetadata];
-                
-                // Step 3: Enqueue client JAR based on version JSON
-                NSLog(@"[MCDL] Enqueuing client JAR...");
-                [self downloadClientJar:localMetadata];
-                
-                // Step 4: Check if Asset Index needs download
-                NSDictionary *assetIndexInfo = localMetadata[@"assetIndex"];
-                if (assetIndexInfo) {
-                    // Create another dispatch group for asset index
-                    dispatch_group_t assetGroup = dispatch_group_create();
-                    dispatch_group_enter(assetGroup);
+            // Step 2: Download Asset Metadata
+            [self downloadAssetMetadataWithSuccess:^{
+                @synchronized(self) {
+                    if (self.progress.cancelled) return;
                     
-                    NSLog(@"[MCDL] Downloading Asset Metadata...");
-                    // Step 4a: Download Asset Metadata
-                    [self downloadAssetMetadataWithSuccess:^{
-                        @synchronized(self) {
-                            if (self.progress.cancelled) {
-                                dispatch_group_leave(assetGroup);
-                                return;
-                            }
-                            
-                            dispatch_group_leave(assetGroup);
-                        }
-                    }];
+                    // Step 3: Download libraries
+                    NSArray *libTasks = [self downloadClientLibraries];
                     
-                    // Process assets only after asset index is complete
-                    dispatch_group_notify(assetGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                        @synchronized(self) {
-                            if (self.progress.cancelled) return;
-                            
-                            // Asset index metadata is now in self.metadata[@"assetIndexObj"]
-                            NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
-                            
-                            // Step 4b: Process assets in batches to prevent queue overload
-                            if (assetIndexObj && assetIndexObj[@"objects"]) {
-                                NSLog(@"[MCDL] Enqueuing assets...");
-                                
-                                // Process assets in the background
-                                dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                    // This runs in a background thread and will process assets in batches
-                                    [self downloadClientAssets:assetIndexObj];
-                                    
-                                    // Clean up large metadata after processing is complete
-                                    @synchronized(self) {
-                                        [self.metadata removeObjectForKey:@"assetIndexObj"];
-                                    }
-                                    
-                                    NSLog(@"[MCDL] All asset tasks enqueued.");
-                                    // Check if all downloads might already be complete
-                                    [self checkCompletionStatus];
-                                });
-                            } else {
-                                NSLog(@"[MCDL] No assets found in index or index missing. Skipping asset downloads.");
-                                // Check if all downloads might already be complete
-                                [self checkCompletionStatus];
-                            }
-                        }
-                    });
-                } else {
-                    // No assets to download for this version
-                    NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
-                    // Check if all downloads might already be complete
-                    [self checkCompletionStatus];
+                    // Step 4: Download assets
+                    NSArray *assetTasks = [self downloadClientAssets];
+                    
+                    // Drop the 1 byte we set initially to avoid premature completion
+                    if (self.progress.totalUnitCount > 0) {
+                        self.progress.totalUnitCount--;
+                        self.textProgress.totalUnitCount--;
+                    }
+                    
+                    // Check if we have nothing to download
+                    if (self.progress.totalUnitCount == 0) {
+                        // We have nothing to download, invoke completion observer
+                        self.progress.totalUnitCount = 1;
+                        self.progress.completedUnitCount = 1;
+                        self.textProgress.totalUnitCount = 1;
+                        self.textProgress.completedUnitCount = 1;
+                        return;
+                    }
+                    
+                    // Start downloads
+                    [libTasks makeObjectsPerformSelector:@selector(resume)];
+                    [assetTasks makeObjectsPerformSelector:@selector(resume)];
+                    
+                    // Remove large asset index data from metadata to reduce memory usage
+                    [self.metadata removeObjectForKey:@"assetIndexObj"];
                 }
-            });
+            }];
         }
     });
+}
+
+- (void)checkCompletionStatus {
+    @synchronized(self) {
+        // Check if total downloads match successful downloads and queue is empty
+        if (self.totalDownloads > 0 &&
+            self.successfulDownloads >= self.totalDownloads &&
+            self.pendingDownloads.count == 0 &&
+            self.activeDownloads == 0) {
+            
+            NSLog(@"[MCDL] All items seem complete or cached immediately.");
+            
+            // Ensure progress reflects completion
+            if (self.progress.totalUnitCount == 0) {
+                // If we have nothing to track (all cached), add a dummy unit
+                self.progress.totalUnitCount = 1;
+                self.textProgress.totalUnitCount = 1;
+            }
+            
+            self.progress.completedUnitCount = self.progress.totalUnitCount;
+            self.textProgress.completedUnitCount = self.textProgress.totalUnitCount;
+            
+            // Add completion marker for UI
+            if (![self.fileList containsObject:@"Complete"]) {
+                @synchronized(self.fileList) {
+                    [self.fileList addObject:@"Complete"];
+                }
+                // Trigger UI update
+                self.needsUIUpdate = YES;
+            }
+        }
+    }
 }
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success {
