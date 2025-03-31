@@ -127,8 +127,6 @@ typedef struct {
         [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
         self.manager = nil;
     }
-    
-    NSLog(@"[MCDL] MinecraftResourceDownloadTask deallocated");
 }
 
 // Helper to safely leave the dispatch group and check completion
@@ -155,9 +153,11 @@ typedef struct {
     
     // Only log state changes to avoid spam
     if (oldValue != complete) {
-        NSLog(@"[MCDL] Download phase completion state changed: %@ -> %@", 
-              oldValue ? @"YES" : @"NO", 
-              complete ? @"YES" : @"NO");
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Download phase completion state changed: %@ -> %@", 
+                oldValue ? @"YES" : @"NO", 
+                complete ? @"YES" : @"NO");
+        }
         
         // Add completion marker to fileList
         if (complete) {
@@ -183,11 +183,12 @@ typedef struct {
     [self.completionLock unlock];
 }
 
-
-
 // Final completion check, called only when all enqueued tasks have left the group
 - (void)checkFinalCompletion {
-    NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
+    }
+    
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (!weakSelf) return; // Check if self is still valid
@@ -199,7 +200,9 @@ typedef struct {
         }
         
         if (hasActiveDownloads) {
-            NSLog(@"[MCDL] Warning: Tasks left dispatch group but downloads are still active. Delaying completion.");
+            if (weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Warning: Tasks left dispatch group but downloads are still active. Delaying completion.");
+            }
             return; // Don't proceed with completion yet
         }
 
@@ -210,18 +213,22 @@ typedef struct {
             hasPendingVerifications = (weakSelf.pendingVerificationList.count > 0);
         }
         
-        if (hasPendingVerifications) {
+        if (hasPendingVerifications && weakSelf.verboseLogging) {
             NSLog(@"[MCDL] Found pending verifications (%lu files). Starting verification process...", 
                  (unsigned long)weakSelf.pendingVerificationList.count);
         }
         
         if (weakSelf.deferSHAVerification || hasPendingVerifications) {
-            NSLog(@"[MCDL] Verifying deferred files...");
+            if (weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Verifying deferred files...");
+            }
             verificationSuccess = [weakSelf verifyPendingFiles];
             // If verification fails, verifyPendingFiles queues redownloads which re-enter the group,
             // so the final completion will be triggered again later.
             if (!verificationSuccess) {
-                NSLog(@"[MCDL] Deferred verification failed, redownload initiated. Completion delayed.");
+                if (weakSelf.verboseLogging) {
+                    NSLog(@"[MCDL] Deferred verification failed, redownload initiated. Completion delayed.");
+                }
                 return; // Don't mark as complete yet
             }
         }
@@ -232,7 +239,9 @@ typedef struct {
                 if (!weakSelf) return;
                 alreadyComplete = weakSelf.isDownloadPhaseComplete;
                 if (!alreadyComplete) {
-                    NSLog(@"[MCDL] All tasks truly complete and verified.");
+                    if (weakSelf.verboseLogging) {
+                        NSLog(@"[MCDL] All tasks truly complete and verified.");
+                    }
                     // Ensure progress reflects completion if not already set
                     if (weakSelf.progress.totalUnitCount <= 0) { // Use <= 0 for safety
                         weakSelf.progress.totalUnitCount = 1;
@@ -254,10 +263,7 @@ typedef struct {
                     [weakSelf processBatchedUIUpdates]; // Process immediately for completion
                 }
             }
-            if (alreadyComplete && weakSelf.verboseLogging) {
-                NSLog(@"[MCDL] Download phase was already marked complete.");
-            }
-        } else {
+        } else if (weakSelf.verboseLogging) {
             NSLog(@"[MCDL] Warning: Completion check found verification unsuccessful. Completion delayed.");
         }
     });
@@ -412,8 +418,6 @@ typedef struct {
             } @catch (NSException *exception) {}
 
             if (!isCancelledBeforeResume) {
-                // CRITICAL FIX: Actually start the download task
-                NSLog(@"[MCDL] Starting download task");
                 [nextTask resume];
             } else {
                 // If cancelled before resume, ensure we leave the group
@@ -449,11 +453,6 @@ typedef struct {
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure {
     @autoreleasepool {
-        // Enhanced logging to track who's enqueueing tasks
-        if (self.verboseLogging) {
-            NSLog(@"[MCDL] TASK ENQUEUED for: %@", altName ?: path.lastPathComponent);
-        }
-
         // Safety check for invalid URL with enhanced logging
         if (!url || url.length == 0) {
             NSLog(@"[MCDL] Error: Invalid or empty download URL");
@@ -475,9 +474,6 @@ typedef struct {
         // Increment the total enqueued count
         [self.completionLock lock];
         self.totalTasksEnqueued++;
-        if (self.verboseLogging && self.totalTasksEnqueued % 100 == 0) {
-            NSLog(@"[MCDL_DEBUG] Total Tasks Enqueued: %ld", (long)self.totalTasksEnqueued);
-        }
         [self.completionLock unlock];
 
         // Track total downloads early
@@ -514,12 +510,8 @@ typedef struct {
             // Increment successful downloads counter
             self.successfulDownloads++;
 
-            // Only log skipped files in verbose mode
-            if (self.verboseLogging) {
-                NSLog(@"[MCDL] Skipping download - file exists and SHA1 matched: %@",
-                      altName ?: path.lastPathComponent);
-            } else if (self.successfulDownloads % 50 == 0) {
-                // Log periodic summaries if not in verbose mode
+            // Periodic summary logging instead of per-file
+            if (self.successfulDownloads % 50 == 0) {
                 NSLog(@"[MCDL] Progress: %ld of %ld files verified/downloaded",
                       (long)self.successfulDownloads, (long)self.totalDownloads);
             }
@@ -598,8 +590,6 @@ typedef struct {
             if (![self.fileList containsObject:name]) {
                 [self.fileList addObject:name];
                 self.needsUIUpdate = YES; // Flag UI update needed
-            } else if (self.verboseLogging) {
-                NSLog(@"[MCDL] File %@ already in tracking list, not adding duplicate", name);
             }
         }
 
@@ -685,17 +675,6 @@ typedef struct {
             // Check weakSelf validity and return nil if invalid
             if (!weakSelf) return nil;
 
-            // Log download start
-            if (weakSelf.verboseLogging) {
-                NSLog(@"[MCDL] Downloading %@", name);
-            } else {
-                // Log less frequently in non-verbose mode
-                static int logCounter = 0;
-                if (++logCounter % 100 == 0) {
-                    NSLog(@"[MCDL] Downloading file %d: %@", logCounter, name);
-                }
-            }
-
             // Update progress size if response has size info and size was initially 0
             if (size == 0 && response.expectedContentLength > 0) {
                 NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
@@ -768,7 +747,6 @@ typedef struct {
             }
 
             if (isCancelled) {
-                NSLog(@"[MCDL] Download cancelled for %@", name);
                 // Leave group
                 [weakSelf safelyLeaveDispatchGroup:@"Cancelled"];
                 return;
@@ -796,10 +774,8 @@ typedef struct {
             // Increment successful download counter
             weakSelf.successfulDownloads++;
 
-            // Log progress summary periodically instead of every file
-            if (weakSelf.verboseLogging) {
-                NSLog(@"[MCDL] Successfully downloaded %@", name);
-            } else if (weakSelf.successfulDownloads % 50 == 0) {
+            // Periodic progress logging
+            if (weakSelf.successfulDownloads % 50 == 0) {
                 NSLog(@"[MCDL] Progress: %ld of %ld files downloaded",
                       (long)weakSelf.successfulDownloads, (long)weakSelf.totalDownloads);
             }
@@ -807,7 +783,7 @@ typedef struct {
             // Verify the downloaded file if checksum is provided and we're not deferring verification
             BOOL shaValid = YES;
             if (sha.length > 0 && !weakSelf.deferSHAVerification) {
-                shaValid = [weakSelf checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:YES];
+                shaValid = [weakSelf checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:NO];
 
                 if (!shaValid) {
                     NSLog(@"[MCDL] SHA1 verification failed for %@", path.lastPathComponent);
@@ -939,7 +915,6 @@ typedef struct {
         pendingCount = self.pendingVerificationList.count;
         // Return true if no files to verify
         if (pendingCount == 0) {
-            NSLog(@"[MCDL] No files to verify");
             return YES;
         }
         
@@ -947,7 +922,9 @@ typedef struct {
         [self.pendingVerificationList removeAllObjects]; // Clear original list after copying
     }
 
-    NSLog(@"[MCDL] Starting verification of %lu files", (unsigned long)verificationItems.count);
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Starting verification of %lu files", (unsigned long)verificationItems.count);
+    }
 
     // Track failed files
     NSMutableArray *failedItems = [NSMutableArray array];
@@ -961,7 +938,7 @@ typedef struct {
 
         // Check if file exists and SHA matches
         if (![NSFileManager.defaultManager fileExistsAtPath:path] ||
-            ![self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:YES]) {
+            ![self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:NO]) {
             [failedItems addObject:item];
         } else {
             verifiedCount++;
@@ -1011,9 +988,10 @@ typedef struct {
         return NO; // Indicate verification failed and redownload is in progress
     }
 
-    // All files verified successfully - log the actual count
-    NSLog(@"[MCDL] All %lu files verified successfully (%lu total were pending)", 
-          (unsigned long)verifiedCount, (unsigned long)verificationItems.count);
+    // All files verified successfully
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] All %lu files verified successfully", (unsigned long)verifiedCount);
+    }
 
     return YES; // Indicate all files verified successfully
 }
@@ -1021,18 +999,18 @@ typedef struct {
 
 // Method to redownload a specific file
 - (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size {
-    NSLog(@"[MCDL] Redownloading file: %@", altName ?: path.lastPathComponent);
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Redownloading file: %@", altName ?: path.lastPathComponent);
+    }
 
     // Create a download task for this file - this will re-enter the group and queue
-    // Note: Success/failure callbacks are handled by the main completion handler now.
     [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
-
 }
 
 
 - (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
     NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
-    NSLog(@"[MCDL] Error: %@ %@", errorStr, NSThread.callStackSymbols);
+    NSLog(@"[MCDL] Error: %@", errorStr);
     [self finishDownloadWithErrorString:errorStr];
 }
 
@@ -1119,7 +1097,6 @@ typedef struct {
     
     // Final completion marker
     self.isDownloadPhaseComplete = YES;
-    NSLog(@"[MCDL] Progress observers cleaned up");
 }
 
 // Check if the account has permission to download
@@ -1153,9 +1130,6 @@ typedef struct {
     if (sha.length == 0) {
         // When sha = skip, only check for file existence
         BOOL existence = [NSFileManager.defaultManager fileExistsAtPath:path];
-        if (existence && self.verboseLogging) {
-             NSLog(@"[MCDL] SHA1 checker: file exists, skipping SHA check as none provided for %@", altName ?: path.lastPathComponent);
-        }
         return existence;
     }
 
@@ -1164,9 +1138,6 @@ typedef struct {
     NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:&attributesError];
 
     if (attributesError || !fileAttributes) {
-        if (self.verboseLogging) {
-             NSLog(@"[MCDL] SHA1 checker: couldn't get file attributes for %@: %@", altName ?: path.lastPathComponent, attributesError ? attributesError.localizedDescription : @"Unknown error");
-        }
         return NO;
     }
 
@@ -1194,14 +1165,12 @@ typedef struct {
 
     BOOL check = [sha isEqualToString:localSHA];
 
-    // Always log detailed information for SHA1 failures to help diagnose issues
+    // Only log SHA1 failures, not successes unless verbose is enabled
     if (!check) {
         NSLog(@"[MCDL] SHA1 failed for %@", altName ? altName : path.lastPathComponent);
         NSLog(@"[MCDL] Expected: %@", sha);
         NSLog(@"[MCDL]Got:      %@", localSHA);
         NSLog(@"[MCDL] File size: %llu bytes", fileSize);
-    } else if (self.verboseLogging && logSuccess) {
-        NSLog(@"[MCDL] SHA1 passed for %@", altName ? altName : path.lastPathComponent);
     }
 
     return check;
@@ -1239,7 +1208,7 @@ typedef struct {
     }
 
     // For other files or existing version files, perform the SHA check based on preference
-    return [self checkSHA:sha forFile:path altName:altName logSuccess:altName==nil];
+    return [self checkSHA:sha forFile:path altName:altName logSuccess:NO];
 }
 
 
@@ -1331,15 +1300,19 @@ typedef struct {
         
         if (hasActiveDownloads || hasPendingVerifications) {
             // Downloads are still in progress or files need verification, set up monitoring
-            NSLog(@"[MCDL] Setup complete but downloads/verifications still in progress. Starting download monitor.");
-            NSLog(@"[MCDL] Pending downloads: %ld, Active downloads: %ld, Pending verifications: %ld", 
-                  (long)self.pendingDownloads.count, (long)self.activeDownloads, (long)self.pendingVerificationList.count);
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Setup complete but downloads/verifications still in progress. Starting download monitor.");
+                NSLog(@"[MCDL] Pending downloads: %ld, Active downloads: %ld, Pending verifications: %ld", 
+                    (long)self.pendingDownloads.count, (long)self.activeDownloads, (long)self.pendingVerificationList.count);
+            }
             
             // Start a monitor to check download progress
             [self startDownloadMonitor];
         } else {
             // No active downloads, we can remove the gate
-            NSLog(@"[MCDL] Setup complete and no downloads in progress. Removing gate.");
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Setup complete and no downloads in progress. Removing gate.");
+            }
             [self safelyLeaveDispatchGroup:@"GateRemoval"];
         }
     }
@@ -1369,13 +1342,15 @@ typedef struct {
             
             // If everything is done, we can leave the group
             if (!downloadsPending && !verificationsPending) {
-                NSLog(@"[MCDL] All downloads and verifications completed. Removing gate.");
+                if (weakSelf.verboseLogging) {
+                    NSLog(@"[MCDL] All downloads and verifications completed. Removing gate.");
+                }
                 [weakSelf safelyLeaveDispatchGroup:@"GateRemoval"];
                 return;
             }
             
-            // Every 10 seconds, log progress
-            if (i % 10 == 0) {
+            // Every 10 seconds, log progress if verbose
+            if (weakSelf.verboseLogging && i % 10 == 0) {
                 NSInteger pendingDownloads;
                 NSInteger activeDownloads;
                 NSInteger pendingVerifications;
@@ -1599,7 +1574,9 @@ typedef struct {
     if (!versionInfoToDownload) {
         // This is likely a local version, check if json exists
          if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-             NSLog(@"[MCDL] Using existing local/custom version JSON: %@", path.lastPathComponent);
+             if (self.verboseLogging) {
+                 NSLog(@"[MCDL] Using existing local/custom version JSON: %@", path.lastPathComponent);
+             }
              wrappedSuccess(); // Process existing file
          } else {
              // If JSON doesn't exist locally and wasn't in remote list, it's an error
@@ -1638,7 +1615,9 @@ typedef struct {
               [self finishDownloadWithErrorString:[NSString stringWithFormat:@"File %@ missing and download task not created.", path.lastPathComponent]];
          }
     } else if (!task && self.progress.cancelled) {
-         NSLog(@"[MCDL] Version JSON download cancelled before task creation.");
+         if (self.verboseLogging) {
+             NSLog(@"[MCDL] Version JSON download cancelled before task creation.");
+         }
     }
 }
 
@@ -1736,7 +1715,9 @@ typedef struct {
               [self finishDownloadWithErrorString:[NSString stringWithFormat:@"File %@ missing and download task not created.", path.lastPathComponent]];
          }
     } else if (!task && self.progress.cancelled) {
-         NSLog(@"[MCDL] Asset index download cancelled before task creation.");
+         if (self.verboseLogging) {
+             NSLog(@"[MCDL] Asset index download cancelled before task creation.");
+         }
     }
 }
 
@@ -1902,7 +1883,9 @@ typedef struct {
         }
     }
 
-    NSLog(@"[MCDL] Enqueued %ld library downloads", (long)tasks.count);
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Enqueued %ld library downloads", (long)tasks.count);
+    }
     return tasks;
 }
 
@@ -1912,7 +1895,9 @@ typedef struct {
     @synchronized(self) {
         // If we've already processed assets for this download session, return an empty array
         if (self.hasProcessedAssets) {
-            NSLog(@"[MCDL] Assets already processed for this session, skipping");
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Assets already processed for this session, skipping");
+            }
             return @[];
         }
 
@@ -1930,7 +1915,9 @@ typedef struct {
     NSArray *assetNames = objectsDict.allKeys;
     NSInteger totalAssets = assetNames.count;
 
-    NSLog(@"[MCDL] Processing %ld assets for download", (long)totalAssets);
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Processing %ld assets for download", (long)totalAssets);
+    }
 
     // Set up asset directories
     NSString *assetsDir = [NSString stringWithFormat:@"%s/assets/objects", getenv("POJAV_GAME_DIR")];
@@ -1991,10 +1978,11 @@ typedef struct {
         }
     }
 
-    NSLog(@"[MCDL] Enqueued %ld asset downloads", (long)tasks.count);
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Enqueued %ld asset downloads", (long)tasks.count);
+    }
     return tasks;
 }
-
 
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
     [self prepareForDownload];
