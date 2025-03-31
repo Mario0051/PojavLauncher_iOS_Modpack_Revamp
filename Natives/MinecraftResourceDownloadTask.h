@@ -15,6 +15,7 @@
 @property(nonatomic, strong) NSMutableArray *pendingVerificationList;
 @property(nonatomic, assign) BOOL deferSHAVerification;
 @property(nonatomic, assign) BOOL hasProcessedAssets;
+@property (nonatomic, readonly) BOOL isDownloadPhaseComplete;
 
 /**
  * Creates a download task with optional callbacks for success and failure handling.
@@ -28,31 +29,31 @@
  * @param failure Optional callback to execute if the download fails
  * @return The created download task, or nil if the file already exists and passes validation
  */
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path 
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url
+                                           size:(NSUInteger)size
+                                            sha:(NSString *)sha
+                                        altName:(NSString *)altName
+                                         toPath:(NSString *)path
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure;
 
 /**
  * @deprecated Use createDownloadTask:size:sha:altName:toPath:success:failure: instead
  */
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
-                                         toPath:(NSString *)path 
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url
+                                           size:(NSUInteger)size
+                                            sha:(NSString *)sha
+                                        altName:(NSString *)altName
+                                         toPath:(NSString *)path
                                         success:(void (^)(void))success DEPRECATED_MSG_ATTRIBUTE("Use createDownloadTask:size:sha:altName:toPath:success:failure: instead");
 
 /**
  * @deprecated Use createDownloadTask:size:sha:altName:toPath:success:failure: instead
  */
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url 
-                                           size:(NSUInteger)size 
-                                            sha:(NSString *)sha 
-                                        altName:(NSString *)altName 
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url
+                                           size:(NSUInteger)size
+                                            sha:(NSString *)sha
+                                        altName:(NSString *)altName
                                          toPath:(NSString *)path DEPRECATED_MSG_ATTRIBUTE("Use createDownloadTask:size:sha:altName:toPath:success:failure: instead");
 
 // Helper methods for progress tracking
@@ -83,7 +84,6 @@
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success;
 - (NSArray *)downloadClientLibraries:(NSDictionary *)versionMetadata;
 - (NSArray *)downloadClientAssets:(NSDictionary *)assetIndexObj;
-- (void)downloadClientJar:(NSDictionary *)versionMetadata;
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
 
 @end
