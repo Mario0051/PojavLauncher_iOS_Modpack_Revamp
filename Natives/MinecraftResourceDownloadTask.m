@@ -172,6 +172,7 @@ typedef struct {
 
                      // Add completion marker for UI
                      @synchronized(weakSelf.fileList) {
+                         if (!weakSelf) return; // Re-check self
                           if (![weakSelf.fileList containsObject:@"Complete"]) {
                                [weakSelf.fileList addObject:@"Complete"];
                           }
@@ -652,7 +653,9 @@ typedef struct {
                  }
              }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-             if (!weakSelf) return nil; // Check weakSelf validity
+             // FIX: Corrected return type and logic
+             if (!weakSelf) return nil; // Check weakSelf validity and return nil if invalid
+
              if (weakSelf.verboseLogging) {
                  NSLog(@"[MCDL] Downloading %@", name);
              }
@@ -662,7 +665,7 @@ typedef struct {
                  NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
 
                  @synchronized(weakSelf) {
-                      if (!weakSelf) return;
+                      if (!weakSelf) return nil; // Re-check weakSelf
                       @try {
                            // Update progress size and overall progress total
                            NSUInteger oldSize = downloadProgress.totalUnitCount;
@@ -811,7 +814,7 @@ typedef struct {
 
             // Ensure progress is marked as complete
             @synchronized(weakSelf) {
-                if (!weakSelf) return;
+                 if (!weakSelf) return;
                  @try {
                      // Mark the individual progress complete
                      if (downloadProgress.totalUnitCount > 0) {
@@ -1440,6 +1443,7 @@ typedef struct {
          }
     }];
 
+
     // If no task was created (e.g., file exists and SHA matches), still call success
     if (!task && !self.progress.cancelled) {
          if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
@@ -1550,6 +1554,260 @@ typedef struct {
     }
 }
 
+
+// Reintegrated implementation
+- (NSArray *)downloadClientLibraries:(NSDictionary *)versionMetadata {
+    NSMutableArray *tasks = [NSMutableArray new];
+
+    // Skip if no libraries defined
+    if (!versionMetadata[@"libraries"] || ![versionMetadata[@"libraries"] isKindOfClass:[NSArray class]]) {
+        return tasks;
+    }
+
+    NSArray *libraries = versionMetadata[@"libraries"];
+    NSInteger libraryCount = libraries.count;
+
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Processing %ld libraries for download", (long)libraryCount);
+    }
+
+    // Process each library directly without batching
+    for (NSDictionary *library in libraries) {
+         BOOL isCancelled = NO;
+         @synchronized(self) {
+             @try { isCancelled = self.progress.cancelled; } @catch(NSException* e){}
+         }
+        if (isCancelled) break;
+
+
+        NSString *name = library[@"name"];
+        if (!name) continue;
+
+        // Skip Forge/NeoForge client JARs entirely - they're already installed by the installer
+        if (([name containsString:@"net.minecraftforge:forge:"] ||
+             [name containsString:@"net.neoforged:neoforge:"] ||
+             [name containsString:@"net.neoforged.forge:forge:"]) && // Handle older NeoForge naming
+            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"] || [name containsString:@"-installer"])) { // Also skip installers
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Skipping Forge/NeoForge JAR %@ - installed separately", name);
+            }
+            continue;
+        }
+
+
+        NSMutableDictionary *artifactDict = [library[@"downloads"][@"artifact"] mutableCopy]; // Make mutable
+        if (artifactDict == nil && [name containsString:@":"]) {
+             if (self.verboseLogging) {
+                 NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
+             }
+             artifactDict = [[NSMutableDictionary alloc] init];
+
+            // Standard library URL construction
+             NSString *prefix = library[@"url"] ?: @"https://libraries.minecraft.net/"; // Default to Minecraft libs
+             prefix = [prefix stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"]; // Ensure HTTPS
+             if (![prefix hasSuffix:@"/"]) {
+                 prefix = [prefix stringByAppendingString:@"/"];
+             }
+
+            NSArray *libParts = [name componentsSeparatedByString:@":"];
+
+            // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
+            if (libParts.count >= 3) {
+                NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
+                NSString *artifactName = libParts[1];
+                NSString *version = libParts[2];
+
+                // Check if we have a classifier (4th component) or extension (if specified after version)
+                NSString *classifier = @"";
+                NSString *extension = @"jar"; // Default extension
+
+                if (libParts.count > 3) {
+                     // Check if the 4th part contains '@' indicating an extension
+                     NSRange extRange = [libParts[3] rangeOfString:@"@"];
+                     if (extRange.location != NSNotFound) {
+                          classifier = [libParts[3] substringToIndex:extRange.location];
+                          extension = [libParts[3] substringFromIndex:extRange.location + 1];
+                     } else {
+                          classifier = libParts[3];
+                     }
+                     // Append classifier with a hyphen if it exists
+                     if (classifier.length > 0) {
+                          classifier = [NSString stringWithFormat:@"-%@", classifier];
+                     }
+                }
+
+                // Construct path and URL correctly
+                artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.%@",
+                                     group, artifactName, version, artifactName, version, classifier, extension];
+                artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
+
+                // Safely get SHA1 from checksums if available
+                id checksums = library[@"checksums"];
+                if (checksums && [checksums isKindOfClass:[NSArray class]]) {
+                    NSArray *checksumsArray = (NSArray *)checksums;
+                    if (checksumsArray.count > 0 && [checksumsArray[0] isKindOfClass:[NSString class]]) {
+                        artifactDict[@"sha1"] = checksumsArray[0];
+                    }
+                } else if (library[@"sha1"] && [library[@"sha1"] isKindOfClass:[NSString class]]) { // Handle direct sha1 property
+                     artifactDict[@"sha1"] = library[@"sha1"];
+                }
+            } else {
+                 // Fallback for potential malformed names
+                 NSLog(@"[MCDL] Warning: Malformed library name encountered: %@", name);
+                 continue; // Skip this library
+            }
+        }
+
+        // Skip library if marked to skip
+         if ([library[@"skip"] boolValue]) {
+             if (self.verboseLogging) {
+                 NSLog(@"[MCDL] Skipped library %@", name);
+             }
+             continue;
+         }
+
+         // Skip if rules block it (basic OS check for now)
+         NSArray* rules = library[@"rules"];
+         if (rules) {
+             BOOL allow = YES; // Default to allow if no rules match
+             for (NSDictionary* rule in rules) {
+                 NSString* action = rule[@"action"]; // "allow" or "disallow"
+                 NSDictionary* os = rule[@"os"];
+                 if (os) {
+                      NSString* osName = os[@"name"];
+                      // We only care about disallowing non-mac/non-ios or allowing only mac/ios
+                      if ([action isEqualToString:@"disallow"] && ![osName isEqualToString:@"osx"] && ![osName isEqualToString:@"ios"]) {
+                           allow = NO; break; // Disallow if rule is for other OS
+                      } else if ([action isEqualToString:@"allow"] && ![osName isEqualToString:@"osx"] && ![osName isEqualToString:@"ios"]) {
+                           allow = NO; break; // Disallow if allow rule is not for mac/ios
+                      } else if ([action isEqualToString:@"allow"] && ([osName isEqualToString:@"osx"] || [osName isEqualToString:@"ios"])) {
+                           allow = YES; break; // Explicitly allow for mac/ios
+                      }
+                 } else {
+                      // If no OS specified, action applies universally based on the last rule
+                      allow = [action isEqualToString:@"allow"];
+                 }
+             }
+             if (!allow) {
+                  if (self.verboseLogging) {
+                      NSLog(@"[MCDL] Skipped library due to rules: %@", name);
+                  }
+                  continue;
+             }
+         }
+
+
+        // Build the download path
+        NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
+        NSString *sha = artifactDict[@"sha1"];
+        NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
+        NSString *url = artifactDict[@"url"];
+
+        // Skip if URL is missing - don't create invalid tasks
+        if (!url || [url length] == 0) {
+            NSLog(@"[MCDL] Warning: Skipping library %@ due to missing URL", name);
+            continue;
+        }
+
+        // Create download task and add to tasks list
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil failure:nil];
+        if (task) {
+            [tasks addObject:task];
+        }
+    }
+
+    NSLog(@"[MCDL] Enqueued %ld library downloads", (long)tasks.count);
+    return tasks;
+}
+
+// Reintegrated implementation
+- (NSArray *)downloadClientAssets:(NSDictionary *)assetIndexObj {
+    // Use a synchronized block to ensure we only process assets once per session
+    @synchronized(self) {
+        // If we've already processed assets for this download session, return an empty array
+        if (self.hasProcessedAssets) {
+            NSLog(@"[MCDL] Assets already processed for this session, skipping");
+            return @[];
+        }
+
+        // Mark that we've processed assets
+        self.hasProcessedAssets = YES;
+    }
+
+    NSMutableArray *tasks = [NSMutableArray new];
+
+    if (!assetIndexObj || !assetIndexObj[@"objects"] || ![assetIndexObj[@"objects"] isKindOfClass:[NSDictionary class]]) {
+        return tasks;
+    }
+
+    NSDictionary *objectsDict = assetIndexObj[@"objects"];
+    NSArray *assetNames = objectsDict.allKeys;
+    NSInteger totalAssets = assetNames.count;
+
+    NSLog(@"[MCDL] Processing %ld assets for download", (long)totalAssets);
+
+    // Set up asset directories
+    NSString *assetsDir = [NSString stringWithFormat:@"%s/assets/objects", getenv("POJAV_GAME_DIR")];
+    NSString *resourcesDir = [NSString stringWithFormat:@"%s/resources", getenv("POJAV_GAME_DIR")];
+    NSError *dirError = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:assetsDir
+                             withIntermediateDirectories:YES
+                                              attributes:nil
+                                                   error:&dirError];
+    if (dirError) NSLog(@"[MCDL] Warning: Error creating assets directory: %@", dirError.localizedDescription);
+    dirError = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:resourcesDir
+                             withIntermediateDirectories:YES
+                                              attributes:nil
+                                                   error:&dirError];
+    if (dirError) NSLog(@"[MCDL] Warning: Error creating resources directory: %@", dirError.localizedDescription);
+
+
+    // Process all assets without batching
+    for (NSString *name in assetNames) {
+         BOOL isCancelled = NO;
+         @synchronized(self) {
+             @try { isCancelled = self.progress.cancelled; } @catch(NSException *e){}
+         }
+        if (isCancelled) break;
+
+
+        NSDictionary *object = assetIndexObj[@"objects"][name];
+        NSString *hash = object[@"hash"];
+         if (!hash || hash.length < 2) { // Need at least 2 chars for subdir
+              NSLog(@"[MCDL] Warning: Skipping asset %@ due to missing or short hash", name);
+              continue;
+         }
+        NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
+        NSUInteger size = [object[@"size"] unsignedLongLongValue];
+
+        NSString *path;
+        if ([assetIndexObj[@"map_to_resources"] boolValue]) {
+            path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
+        } else {
+            path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
+        }
+
+        /* Special case for 1.19+
+         * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
+         * However, if an IOException occurs, it won't try to set.
+         * We skip downloading the icon file to workaround this. */
+        if ([name hasSuffix:@"/minecraft.icns"]) {
+            [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+            continue;
+        }
+
+        NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
+        NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil failure:nil];
+
+        if (task) {
+            [tasks addObject:task];
+        }
+    }
+
+    NSLog(@"[MCDL] Enqueued %ld asset downloads", (long)tasks.count);
+    return tasks;
+}
 
 
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
