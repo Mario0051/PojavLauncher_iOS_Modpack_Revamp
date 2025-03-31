@@ -1122,66 +1122,36 @@ typedef struct {
     
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
     
-    // Create single dispatch group to track completion of the metadata step
-    dispatch_group_t metadataGroup = dispatch_group_create();
-    dispatch_group_enter(metadataGroup);
-    
-    // Step 1: Download Version Metadata
     [self downloadVersionMetadata:version success:^{
-        // This block executes *after* version JSON is downloaded and parsed
-        @synchronized(self) {
-            if (self.progress.cancelled) {
-                dispatch_group_leave(metadataGroup);
+        [self downloadAssetMetadataWithSuccess:^{
+            // No parameters needed for these methods
+            NSArray *libTasks = [self downloadClientLibraries];
+            NSArray *assetTasks = [self downloadClientAssets];
+            
+            // Drop the 1 byte we set initially to avoid premature completion
+            if (self.progress.totalUnitCount > 0) {
+                self.progress.totalUnitCount--;
+                self.textProgress.totalUnitCount--;
+            }
+            
+            // Check if we have nothing to download
+            if (self.progress.totalUnitCount == 0) {
+                // We have nothing to download, invoke completion observer
+                self.progress.totalUnitCount = 1;
+                self.progress.completedUnitCount = 1;
+                self.textProgress.totalUnitCount = 1;
+                self.textProgress.completedUnitCount = 1;
                 return;
             }
             
-            // Metadata is now in self.metadata
-            dispatch_group_leave(metadataGroup);
-        }
-    }];
-    
-    // Wait for metadata to complete before proceeding
-    dispatch_group_notify(metadataGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        @synchronized(self) {
-            if (self.progress.cancelled) return;
+            // Start downloads
+            [libTasks makeObjectsPerformSelector:@selector(resume)];
+            [assetTasks makeObjectsPerformSelector:@selector(resume)];
             
-            // Step 2: Download Asset Metadata
-            [self downloadAssetMetadataWithSuccess:^{
-                @synchronized(self) {
-                    if (self.progress.cancelled) return;
-                    
-                    // Step 3: Download libraries
-                    NSArray *libTasks = [self downloadClientLibraries];
-                    
-                    // Step 4: Download assets
-                    NSArray *assetTasks = [self downloadClientAssets];
-                    
-                    // Drop the 1 byte we set initially to avoid premature completion
-                    if (self.progress.totalUnitCount > 0) {
-                        self.progress.totalUnitCount--;
-                        self.textProgress.totalUnitCount--;
-                    }
-                    
-                    // Check if we have nothing to download
-                    if (self.progress.totalUnitCount == 0) {
-                        // We have nothing to download, invoke completion observer
-                        self.progress.totalUnitCount = 1;
-                        self.progress.completedUnitCount = 1;
-                        self.textProgress.totalUnitCount = 1;
-                        self.textProgress.completedUnitCount = 1;
-                        return;
-                    }
-                    
-                    // Start downloads
-                    [libTasks makeObjectsPerformSelector:@selector(resume)];
-                    [assetTasks makeObjectsPerformSelector:@selector(resume)];
-                    
-                    // Remove large asset index data from metadata to reduce memory usage
-                    [self.metadata removeObjectForKey:@"assetIndexObj"];
-                }
-            }];
-        }
-    });
+            // Remove large asset index data from metadata to reduce memory usage
+            [self.metadata removeObjectForKey:@"assetIndexObj"];
+        }];
+    }];
 }
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success {
