@@ -114,9 +114,21 @@ typedef struct {
 }
 
 - (void)dealloc {
-    [self.uiUpdateTimer invalidate];
-    self.uiUpdateTimer = nil;
-    // No need to release dispatch_group_t in ARC
+    [self cleanupProgressObservers];
+    
+    // Clear any pending downloads
+    @synchronized(self.pendingDownloads) {
+        [self.pendingDownloads removeAllObjects];
+        self.activeDownloads = 0;
+    }
+    
+    // Invalidate the session manager
+    if (self.manager) {
+        [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
+        self.manager = nil;
+    }
+    
+    NSLog(@"[MCDL] MinecraftResourceDownloadTask deallocated");
 }
 
 // Helper to safely leave the dispatch group and check completion
@@ -1028,6 +1040,54 @@ typedef struct {
         });
     }
 }
+
+- (void)cleanupProgressObservers {
+    // First cleanup the main progress
+    if (self.progress) {
+        // Mark as cancelled to prevent further updates
+        @try {
+            [self.progress cancel];
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Exception cancelling progress: %@", exception);
+        }
+        
+        // Detach all child progress objects
+        @try {
+            for (NSProgress *childProgress in [self.progressList copy]) {
+                if ([childProgress isKindOfClass:[NSProgress class]]) {
+                    [self.progress removeChild:childProgress];
+                }
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Exception removing child progresses: %@", exception);
+        }
+    }
+    
+    // Clear the progress lists with proper synchronization
+    @synchronized(self.progressList) {
+        [self.progressList removeAllObjects];
+    }
+    
+    // Reset textProgress
+    if (self.textProgress) {
+        @try {
+            [self.textProgress cancel];
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Exception cancelling text progress: %@", exception);
+        }
+    }
+    
+    // Invalidate timer if active
+    if (self.uiUpdateTimer) {
+        [self.uiUpdateTimer invalidate];
+        self.uiUpdateTimer = nil;
+    }
+    
+    // Final completion marker
+    self.isDownloadPhaseComplete = YES;
+    NSLog(@"[MCDL] Progress observers cleaned up");
+}
+
 
 
 // Check if the account has permission to download
