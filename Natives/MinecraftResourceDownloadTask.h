@@ -57,7 +57,7 @@
                                          toPath:(NSString *)path DEPRECATED_MSG_ATTRIBUTE("Use createDownloadTask:size:sha:altName:toPath:success:failure: instead");
 
 // Helper methods for progress tracking
-- (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size;
+// - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size; // REMOVED
 - (void)prepareForDownload;
 
 // Error handling methods
@@ -76,7 +76,7 @@
 - (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 
 // Helper method to check completion status
-- (void)checkCompletionStatus; // Keep for internal logic if needed, but rely on group/flag externally
+// - (void)checkCompletionStatus; // Keep for internal logic if needed, but rely on group/flag externally // No longer needed externally
 
 // Main download methods
 - (void)downloadVersion:(NSDictionary *)version;
