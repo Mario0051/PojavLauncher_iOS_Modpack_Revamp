@@ -148,6 +148,43 @@ typedef struct {
     }
 }
 
+- (void)markDownloadPhaseComplete:(BOOL)complete {
+    [self.completionLock lock];
+    BOOL oldValue = self.isDownloadPhaseComplete;
+    self.isDownloadPhaseComplete = complete;
+    
+    // Only log state changes to avoid spam
+    if (oldValue != complete) {
+        NSLog(@"[MCDL] Download phase completion state changed: %@ -> %@", 
+              oldValue ? @"YES" : @"NO", 
+              complete ? @"YES" : @"NO");
+        
+        // Add completion marker to fileList
+        if (complete) {
+            @synchronized(self.fileList) {
+                if (![self.fileList containsObject:@"Complete"]) {
+                    [self.fileList addObject:@"Complete"];
+                    self.needsUIUpdate = YES;
+                }
+            }
+        }
+    }
+    [self.completionLock unlock];
+}
+
+// Override the setter for KVO compliance
+- (void)setIsDownloadPhaseComplete:(BOOL)isDownloadPhaseComplete {
+    [self.completionLock lock];
+    if (_isDownloadPhaseComplete != isDownloadPhaseComplete) {
+        [self willChangeValueForKey:@"isDownloadPhaseComplete"];
+        _isDownloadPhaseComplete = isDownloadPhaseComplete;
+        [self didChangeValueForKey:@"isDownloadPhaseComplete"];
+    }
+    [self.completionLock unlock];
+}
+
+
+
 // Final completion check, called only when all enqueued tasks have left the group
 - (void)checkFinalCompletion {
     NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
@@ -1008,7 +1045,7 @@ typedef struct {
         } @catch (NSException *exception) {
             NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
         }
-        self.isDownloadPhaseComplete = YES; // Mark as complete even on error to unblock UI
+        [self markDownloadPhaseComplete:YES];
     }
 
     // Cancel all active downloads and reset session
@@ -1025,12 +1062,10 @@ typedef struct {
          }
     }
 
-
     // Show error dialog on the main thread
      dispatch_async(dispatch_get_main_queue(), ^{
          showDialog(localize(@"Error", nil), error);
      });
-
 
     // Call error handler if set
     if (self.handleError) {
