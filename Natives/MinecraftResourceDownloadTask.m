@@ -330,11 +330,46 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                 weakSelf.textProgress.completedUnitCount = weakSelf.textProgress.totalUnitCount;
                 [weakSelf.progressLock unlock];
                 
-                [weakSelf markDownloadPhaseComplete:YES];
+                // Validate metadata before signaling completion
+                BOOL metadataValid = NO;
+                @synchronized(weakSelf) {
+                    // Check if this is a modpack installation
+                    BOOL isModpackInstall = NO;
+                    if (weakSelf.metadata && weakSelf.metadata[@"isModpackInstall"]) {
+                        isModpackInstall = [weakSelf.metadata[@"isModpackInstall"] boolValue];
+                    }
+                    
+                    // For regular Minecraft installations, ensure we have valid metadata with an ID
+                    if (!isModpackInstall) {
+                        metadataValid = (weakSelf.metadata != nil && weakSelf.metadata[@"id"] != nil);
+                        
+                        if (!metadataValid && !weakSelf.progress.cancelled) {
+                            NSLog(@"[MCDL] Warning: Download completed but metadata is incomplete or missing required keys. Delaying completion.");
+                            
+                            // Schedule a retry after a short delay
+                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                [weakSelf checkFinalCompletion];
+                            });
+                            return;
+                        }
+                        
+                        if (weakSelf.verboseLogging) {
+                            NSLog(@"[MCDL] Metadata validation passed. ID: %@", weakSelf.metadata[@"id"]);
+                        }
+                    } else {
+                        // For modpacks, we don't need to validate the same way
+                        metadataValid = YES;
+                    }
+                }
                 
-                // Final UI update
-                weakSelf.needsUIUpdate = YES;
-                [weakSelf processBatchedUIUpdates];
+                // Only mark complete if metadata is valid
+                if (metadataValid) {
+                    [weakSelf markDownloadPhaseComplete:YES];
+                    
+                    // Final UI update
+                    weakSelf.needsUIUpdate = YES;
+                    [weakSelf processBatchedUIUpdates];
+                }
             }
         }
     });
