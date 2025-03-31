@@ -417,7 +417,7 @@ static NSLock *versionListLock;
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
         return;
     }
-    
+
     // Calculate download speed and ETA
     static CGFloat lastMsTime;
     static NSUInteger lastSecTime, lastCompletedUnitCount;
@@ -437,68 +437,35 @@ static NSLock *versionListLock;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Update progress text display
         self.progressText.text = progress.localizedAdditionalDescription;
 
-        // Check if download has finished
-        BOOL isFinished = NO;
-        @try {
-            isFinished = progress.finished || progress.fractionCompleted >= 1.0;
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Exception checking progress status: %@", exception);
-            isFinished = NO;
-        }
-        
-        // If not finished, exit early
-        if (!isFinished) return;
-        
-        NSLog(@"[MCDL] Download completed");
-        
-        // Dismiss progress view controller if it's open
-        if (self.progressVC) {
-            [self.progressVC dismissViewControllerAnimated:NO completion:nil];
-        }
+        if (!progress.finished) return;
+        [self.progressVC dismissModalViewControllerAnimated:NO];
 
-        // Clear progress observation
         self.progressViewMain.observedProgress = nil;
         
-        // Critical: Check if this was a modpack installation
-        BOOL isModpackInstall = NO;
-        if (self.task.metadata && self.task.metadata[@"isModpackInstall"]) {
-            isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
-        }
-        
-        NSLog(@"[MCDL] isModpackInstall: %d, has metadata: %@", 
-              isModpackInstall, self.task.metadata ? @"YES" : @"NO");
-        
-        // Make a copy of the metadata before clearing the task
+        // Create a copy of metadata before clearing the task
         NSDictionary *metadata = nil;
         if (self.task.metadata) {
             metadata = [self.task.metadata copy];
         }
         
-        // Get a reference to the progress before clearing the task
-        NSProgress *taskProgress = self.task.progress;
+        // Check if this was a modpack installation
+        BOOL isModpackInstall = NO;
+        if (metadata && metadata[@"isModpackInstall"]) {
+            isModpackInstall = [metadata[@"isModpackInstall"] boolValue];
+        }
         
-        // Clear task reference
+        // Get task reference before clearing it
         MinecraftResourceDownloadTask *completedTask = self.task;
         self.task = nil;
         self.progressVC = nil;
         
-        // Remove observer safely
-        @try {
-            [taskProgress removeObserver:self forKeyPath:@"fractionCompleted"];
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Exception removing progress observer: %@", exception);
-        }
-        
-        // Launch the game if it's not a modpack installation and we have metadata
         if (metadata && !isModpackInstall) {
             [self invokeAfterJITEnabled:^{
                 UIKit_launchMinecraftSurfaceVC(self.view.window, metadata);
             }];
         } else {
-            // Otherwise just re-enable UI
             [self setInteractionEnabled:YES forDownloading:YES];
             [self reloadProfileList];
         }
