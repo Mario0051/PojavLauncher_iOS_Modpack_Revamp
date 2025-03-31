@@ -138,54 +138,78 @@ typedef struct {
 
 // Final completion check, called only when all enqueued tasks have left the group
 - (void)checkFinalCompletion {
-     NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
+    NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         if (!weakSelf) return; // Check if self is still valid
 
+        // Check for any pending downloads first
+        BOOL hasActiveDownloads = NO;
+        @synchronized(weakSelf.pendingDownloads) {
+            hasActiveDownloads = (weakSelf.pendingDownloads.count > 0 || weakSelf.activeDownloads > 0);
+        }
+        
+        if (hasActiveDownloads) {
+            NSLog(@"[MCDL] Warning: Tasks left dispatch group but downloads are still active. Delaying completion.");
+            return; // Don't proceed with completion yet
+        }
+
         BOOL verificationSuccess = YES;
-        if (weakSelf.deferSHAVerification) {
+        BOOL hasPendingVerifications = NO;
+        
+        @synchronized(weakSelf.pendingVerificationList) {
+            hasPendingVerifications = (weakSelf.pendingVerificationList.count > 0);
+        }
+        
+        if (hasPendingVerifications) {
+            NSLog(@"[MCDL] Found pending verifications (%lu files). Starting verification process...", 
+                 (unsigned long)weakSelf.pendingVerificationList.count);
+        }
+        
+        if (weakSelf.deferSHAVerification || hasPendingVerifications) {
             NSLog(@"[MCDL] Verifying deferred files...");
             verificationSuccess = [weakSelf verifyPendingFiles];
-             // If verification fails, verifyPendingFiles queues redownloads which re-enter the group,
-             // so the final completion will be triggered again later.
-             if (!verificationSuccess) {
-                 NSLog(@"[MCDL] Deferred verification failed, redownload initiated. Completion delayed.");
-                 return; // Don't mark as complete yet
-             }
+            // If verification fails, verifyPendingFiles queues redownloads which re-enter the group,
+            // so the final completion will be triggered again later.
+            if (!verificationSuccess) {
+                NSLog(@"[MCDL] Deferred verification failed, redownload initiated. Completion delayed.");
+                return; // Don't mark as complete yet
+            }
         }
 
         if (verificationSuccess) {
-             BOOL alreadyComplete = NO;
-             @synchronized(weakSelf) {
-                 if (!weakSelf) return;
-                 alreadyComplete = weakSelf.isDownloadPhaseComplete;
-                 if (!alreadyComplete) {
-                     NSLog(@"[MCDL] All tasks truly complete and verified.");
-                     // Ensure progress reflects completion if not already set
-                     if (weakSelf.progress.totalUnitCount <= 0) { // Use <= 0 for safety
-                          weakSelf.progress.totalUnitCount = 1;
-                          weakSelf.textProgress.totalUnitCount = 1;
-                     }
-                     weakSelf.progress.completedUnitCount = weakSelf.progress.totalUnitCount;
-                     weakSelf.textProgress.completedUnitCount = weakSelf.textProgress.totalUnitCount;
-                     weakSelf.isDownloadPhaseComplete = YES; // Set the final completion flag
+            BOOL alreadyComplete = NO;
+            @synchronized(weakSelf) {
+                if (!weakSelf) return;
+                alreadyComplete = weakSelf.isDownloadPhaseComplete;
+                if (!alreadyComplete) {
+                    NSLog(@"[MCDL] All tasks truly complete and verified.");
+                    // Ensure progress reflects completion if not already set
+                    if (weakSelf.progress.totalUnitCount <= 0) { // Use <= 0 for safety
+                        weakSelf.progress.totalUnitCount = 1;
+                        weakSelf.textProgress.totalUnitCount = 1;
+                    }
+                    weakSelf.progress.completedUnitCount = weakSelf.progress.totalUnitCount;
+                    weakSelf.textProgress.completedUnitCount = weakSelf.textProgress.totalUnitCount;
+                    weakSelf.isDownloadPhaseComplete = YES; // Set the final completion flag
 
-                     // Add completion marker for UI
-                     @synchronized(weakSelf.fileList) {
-                         if (!weakSelf) return; // Re-check self
-                          if (![weakSelf.fileList containsObject:@"Complete"]) {
-                               [weakSelf.fileList addObject:@"Complete"];
-                          }
-                     }
-                     // Trigger UI update
-                     weakSelf.needsUIUpdate = YES;
-                     [weakSelf processBatchedUIUpdates]; // Process immediately for completion
-                 }
-             }
-             if (alreadyComplete && weakSelf.verboseLogging) {
-                 NSLog(@"[MCDL] Download phase was already marked complete.");
-             }
+                    // Add completion marker for UI
+                    @synchronized(weakSelf.fileList) {
+                        if (!weakSelf) return; // Re-check self
+                        if (![weakSelf.fileList containsObject:@"Complete"]) {
+                            [weakSelf.fileList addObject:@"Complete"];
+                        }
+                    }
+                    // Trigger UI update
+                    weakSelf.needsUIUpdate = YES;
+                    [weakSelf processBatchedUIUpdates]; // Process immediately for completion
+                }
+            }
+            if (alreadyComplete && weakSelf.verboseLogging) {
+                NSLog(@"[MCDL] Download phase was already marked complete.");
+            }
+        } else {
+            NSLog(@"[MCDL] Warning: Completion check found verification unsuccessful. Completion delayed.");
         }
     });
 }
@@ -857,28 +881,30 @@ typedef struct {
     }
 }
 
-// New method to verify all pending files
 - (BOOL)verifyPendingFiles {
-    // Return true if no files to verify
-     if (self.pendingVerificationList.count == 0) {
-         return YES;
-     }
-
-
-    NSLog(@"[MCDL] Starting verification of %lu files", (unsigned long)self.pendingVerificationList.count);
-
-    // Make a copy of the verification list to work with
+    // Make a thread-safe copy of the verification list
     NSArray *verificationItems = nil;
+    NSUInteger pendingCount = 0;
+    
     @synchronized(self.pendingVerificationList) {
+        pendingCount = self.pendingVerificationList.count;
+        // Return true if no files to verify
+        if (pendingCount == 0) {
+            NSLog(@"[MCDL] No files to verify");
+            return YES;
+        }
+        
         verificationItems = [NSArray arrayWithArray:self.pendingVerificationList];
-         [self.pendingVerificationList removeAllObjects]; // Clear original list after copying
+        [self.pendingVerificationList removeAllObjects]; // Clear original list after copying
     }
 
+    NSLog(@"[MCDL] Starting verification of %lu files", (unsigned long)verificationItems.count);
 
     // Track failed files
     NSMutableArray *failedItems = [NSMutableArray array];
 
-    // Verify each file
+    // Verify each file with proper logging
+    NSUInteger verifiedCount = 0;
     for (NSDictionary *item in verificationItems) {
         NSString *path = item[@"path"];
         NSString *sha = item[@"sha"];
@@ -888,6 +914,8 @@ typedef struct {
         if (![NSFileManager.defaultManager fileExistsAtPath:path] ||
             ![self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:YES]) {
             [failedItems addObject:item];
+        } else {
+            verifiedCount++;
         }
     }
 
@@ -895,28 +923,26 @@ typedef struct {
     if (failedItems.count > 0) {
         NSLog(@"[MCDL] %lu files failed verification and will be redownloaded", (unsigned long)failedItems.count);
 
-        // Prepare for redownload phase (reset counters, but keep overall progress total)
-         @synchronized(self) {
-             // Adjust progress - subtract estimated size of failed files
-             NSUInteger sizeToSubtract = 0;
-             for (NSDictionary *item in failedItems) {
-                 sizeToSubtract += [item[@"size"] unsignedIntegerValue] > 0 ? [item[@"size"] unsignedIntegerValue] : 100000;
-             }
-             self.progress.completedUnitCount = MAX(0, self.progress.completedUnitCount - sizeToSubtract);
+        // Reset counters and adjust progress for redownloads
+        @synchronized(self) {
+            // Adjust progress - subtract estimated size of failed files
+            NSUInteger sizeToSubtract = 0;
+            for (NSDictionary *item in failedItems) {
+                sizeToSubtract += [item[@"size"] unsignedIntegerValue] > 0 ? [item[@"size"] unsignedIntegerValue] : 100000;
+            }
+            self.progress.completedUnitCount = MAX(0, self.progress.completedUnitCount - sizeToSubtract);
 
-             // Adjust total downloads and success counts
-             self.successfulDownloads -= failedItems.count; // Adjust success count
-             self.totalDownloads = failedItems.count; // Reset total to only the failed items
+            // Adjust total downloads and success counts
+            self.successfulDownloads -= failedItems.count; // Adjust success count
+            self.totalDownloads = failedItems.count; // Reset total to only the failed items
 
-             // Reset group counters for the redownload phase
-             [self.completionLock lock];
-             self.totalTasksEnqueued = 0; // Reset enqueue count for redownload phase
-             self.tasksLeftGroup = 0; // Reset leave count for redownload phase
-             [self.completionLock unlock];
-             self.isDownloadPhaseComplete = NO; // Mark as not complete again
-         }
-
-
+            // Reset group counters for the redownload phase
+            [self.completionLock lock];
+            self.totalTasksEnqueued = 0; // Reset enqueue count for redownload phase
+            self.tasksLeftGroup = 0; // Reset leave count for redownload phase
+            [self.completionLock unlock];
+            self.isDownloadPhaseComplete = NO; // Mark as not complete again
+        }
 
         // Set deferSHAVerification to false to force immediate verification for redownloads
         self.deferSHAVerification = NO;
@@ -936,8 +962,9 @@ typedef struct {
         return NO; // Indicate verification failed and redownload is in progress
     }
 
-    // All files verified successfully
-    NSLog(@"[MCDL] All %lu files verified successfully", (unsigned long)verificationItems.count);
+    // All files verified successfully - log the actual count
+    NSLog(@"[MCDL] All %lu files verified successfully (%lu total were pending)", 
+          (unsigned long)verifiedCount, (unsigned long)verificationItems.count);
 
     return YES; // Indicate all files verified successfully
 }
@@ -1204,9 +1231,17 @@ typedef struct {
             hasActiveDownloads = (self.pendingDownloads.count > 0 || self.activeDownloads > 0);
         }
         
-        if (hasActiveDownloads) {
-            // Downloads are still in progress, set up monitoring
-            NSLog(@"[MCDL] Setup complete but downloads still in progress. Starting download monitor.");
+        // Also check if we have pending verifications
+        BOOL hasPendingVerifications = NO;
+        @synchronized(self.pendingVerificationList) {
+            hasPendingVerifications = (self.pendingVerificationList.count > 0);
+        }
+        
+        if (hasActiveDownloads || hasPendingVerifications) {
+            // Downloads are still in progress or files need verification, set up monitoring
+            NSLog(@"[MCDL] Setup complete but downloads/verifications still in progress. Starting download monitor.");
+            NSLog(@"[MCDL] Pending downloads: %ld, Active downloads: %ld, Pending verifications: %ld", 
+                  (long)self.pendingDownloads.count, (long)self.activeDownloads, (long)self.pendingVerificationList.count);
             
             // Start a monitor to check download progress
             [self startDownloadMonitor];
@@ -1223,33 +1258,52 @@ typedef struct {
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // Monitor loop - check every second until downloads complete
-        for (int i = 0; i < 60; i++) {  // Maximum 60 second wait
+        for (int i = 0; i < 120; i++) {  // Maximum 2 minute wait (increased from 60s)
             sleep(1);
             
             if (!weakSelf) return;  // Safety check
             
+            // Check for pending downloads
             BOOL downloadsPending = NO;
             @synchronized(weakSelf.pendingDownloads) {
                 downloadsPending = (weakSelf.pendingDownloads.count > 0 || weakSelf.activeDownloads > 0);
             }
             
-            if (!downloadsPending) {
-                NSLog(@"[MCDL] All downloads completed. Removing gate.");
+            // Check for pending verifications
+            BOOL verificationsPending = NO;
+            @synchronized(weakSelf.pendingVerificationList) {
+                verificationsPending = (weakSelf.pendingVerificationList.count > 0);
+            }
+            
+            // If everything is done, we can leave the group
+            if (!downloadsPending && !verificationsPending) {
+                NSLog(@"[MCDL] All downloads and verifications completed. Removing gate.");
                 [weakSelf safelyLeaveDispatchGroup:@"GateRemoval"];
                 return;
             }
             
             // Every 10 seconds, log progress
             if (i % 10 == 0) {
+                NSInteger pendingDownloads;
+                NSInteger activeDownloads;
+                NSInteger pendingVerifications;
+                
                 @synchronized(weakSelf.pendingDownloads) {
-                    NSLog(@"[MCDL] Download monitor: %ld pending, %ld active downloads",
-                          (long)weakSelf.pendingDownloads.count, (long)weakSelf.activeDownloads);
+                    pendingDownloads = weakSelf.pendingDownloads.count;
+                    activeDownloads = weakSelf.activeDownloads;
                 }
+                
+                @synchronized(weakSelf.pendingVerificationList) {
+                    pendingVerifications = weakSelf.pendingVerificationList.count;
+                }
+                
+                NSLog(@"[MCDL] Download monitor: %ld pending, %ld active downloads, %ld pending verifications",
+                      (long)pendingDownloads, (long)activeDownloads, (long)pendingVerifications);
             }
         }
         
-        // If we get here, we've waited 60 seconds - force leave gate
-        NSLog(@"[MCDL] Download monitor timeout after 60 seconds. Removing gate.");
+        // If we get here, we've waited 2 minutes - force leave gate
+        NSLog(@"[MCDL] Download monitor timeout after 120 seconds. Removing gate.");
         [weakSelf safelyLeaveDispatchGroup:@"GateRemovalTimeout"];
     });
 }
