@@ -1154,26 +1154,104 @@ typedef struct {
 
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
 
+    // Create a temporary gate to keep the group non-empty until we're ready
+    self.hasFinishedSetup = NO;  // Add this as a property
+    
+    // Critical fix: Enter the group TWICE at the start - once for the metadata phase
+    // and once for a "gate" that will be left only when everything is fully complete
+    dispatch_group_enter(self.downloadCompletionGroup);  // For metadata phase
+    dispatch_group_enter(self.downloadCompletionGroup);  // Gate task that stays until the end
+    
+    [self.completionLock lock]; 
+    self.totalTasksEnqueued += 2;  // Account for both entries
+    [self.completionLock unlock];
+
     // --- Setup Final Completion Notification ---
-    // This is set up ONCE at the beginning. It will trigger checkFinalCompletion
-    // only when ALL tasks added to downloadCompletionGroup have left.
+    // This will trigger checkFinalCompletion only when the gate is removed
     __weak typeof(self) weakSelf = self;
     dispatch_group_notify(self.downloadCompletionGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [weakSelf checkFinalCompletion];
     });
 
-    // --- Start the download chain ---
-    // Enter the group for the overall process. This ensures notify waits even if early steps fail fast.
-    dispatch_group_enter(self.downloadCompletionGroup);
-    [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
-
     // Stage 1: Download Version Metadata
     [self downloadVersionMetadata:version success:^{
         // Stage 2: Process Libraries, Client Jar, and Assets (triggered by metadata success)
         [self processPostMetadataDownloads];
-        // Leave the group for the initial stage completion
-        [weakSelf safelyLeaveDispatchGroup:@"OverallProcessStart"];
+        
+        // Leave group for the metadata phase
+        [weakSelf safelyLeaveDispatchGroup:@"MetadataPhase"];
+        
+        // Mark setup as complete - all downloads have been queued now
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            // Give queue processing time to start downloads
+            sleep(1);
+            
+            // Now we're ready to remove the gate, but only if all downloads are truly complete
+            [weakSelf finalizeSetup];
+        });
     }];
+}
+
+- (void)finalizeSetup {
+    @synchronized(self) {
+        if (self.hasFinishedSetup) return; // Prevent double finalization
+        
+        self.hasFinishedSetup = YES;
+        
+        // Check if any downloads are still active or pending
+        BOOL hasActiveDownloads = NO;
+        @synchronized(self.pendingDownloads) {
+            hasActiveDownloads = (self.pendingDownloads.count > 0 || self.activeDownloads > 0);
+        }
+        
+        if (hasActiveDownloads) {
+            // Downloads are still in progress, set up monitoring
+            NSLog(@"[MCDL] Setup complete but downloads still in progress. Starting download monitor.");
+            
+            // Start a monitor to check download progress
+            [self startDownloadMonitor];
+        } else {
+            // No active downloads, we can remove the gate
+            NSLog(@"[MCDL] Setup complete and no downloads in progress. Removing gate.");
+            [self safelyLeaveDispatchGroup:@"GateRemoval"];
+        }
+    }
+}
+
+- (void)startDownloadMonitor {
+    __weak typeof(self) weakSelf = self;
+    
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        // Monitor loop - check every second until downloads complete
+        for (int i = 0; i < 60; i++) {  // Maximum 60 second wait
+            sleep(1);
+            
+            if (!weakSelf) return;  // Safety check
+            
+            BOOL downloadsPending = NO;
+            @synchronized(weakSelf.pendingDownloads) {
+                downloadsPending = (weakSelf.pendingDownloads.count > 0 || weakSelf.activeDownloads > 0);
+            }
+            
+            if (!downloadsPending) {
+                NSLog(@"[MCDL] All downloads completed. Removing gate.");
+                [weakSelf safelyLeaveDispatchGroup:@"GateRemoval"];
+                return;
+            }
+            
+            // Every 10 seconds, log progress
+            if (i % 10 == 0) {
+                @synchronized(weakSelf.pendingDownloads) {
+                    NSLog(@"[MCDL] Download monitor: %ld pending, %ld active downloads",
+                          (long)weakSelf.pendingDownloads.count, (long)weakSelf.activeDownloads);
+                }
+            }
+        }
+        
+        // If we get here, we've waited 60 seconds - force leave gate
+        NSLog(@"[MCDL] Download monitor timeout after 60 seconds. Removing gate.");
+        [weakSelf safelyLeaveDispatchGroup:@"GateRemovalTimeout"];
+    });
 }
 
 - (void)processPostMetadataDownloads {
