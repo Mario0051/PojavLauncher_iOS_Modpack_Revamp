@@ -223,16 +223,32 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
 #pragma mark - Completion Management
 
 - (void)safelyLeaveDispatchGroup:(NSString *)reason {
+    BOOL shouldLeave = NO;
+    BOOL shouldCheckCompletion = NO;
+    
     [self.completionLock lock];
-    self.tasksLeftGroup++;
-    if (self.verboseLogging) {
-        NSLog(@"[MCDL] Task left group (%@). Total Left: %ld, Total Enqueued: %ld", 
-              reason, (long)self.tasksLeftGroup, (long)self.totalTasksEnqueued);
+    // Only leave if we haven't left all tasks already
+    if (self.tasksLeftGroup < self.totalTasksEnqueued) {
+        self.tasksLeftGroup++;
+        shouldLeave = YES;
+        
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Task left group (%@). Total Left: %ld, Total Enqueued: %ld", 
+                  reason, (long)self.tasksLeftGroup, (long)self.totalTasksEnqueued);
+        }
+        
+        // Check if all tasks have left
+        shouldCheckCompletion = (self.tasksLeftGroup >= self.totalTasksEnqueued && self.totalTasksEnqueued > 0);
+    } else {
+        // Log attempt to leave when all tasks already left
+        NSLog(@"[MCDL] Warning: Attempted to leave dispatch group (%@) when all tasks already left. Ignored.", reason);
     }
-    BOOL shouldCheckCompletion = (self.tasksLeftGroup >= self.totalTasksEnqueued && self.totalTasksEnqueued > 0);
     [self.completionLock unlock];
     
-    dispatch_group_leave(self.downloadCompletionGroup);
+    // Only leave the group if we should
+    if (shouldLeave) {
+        dispatch_group_leave(self.downloadCompletionGroup);
+    }
     
     if (shouldCheckCompletion) {
         [self checkFinalCompletion];
@@ -1366,12 +1382,7 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                     [self safelyLeaveDispatchGroup:@"AssetIndexSuccess"];
                 }
             }];
-        } else {
-            NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
         }
-        
-        // Leave group for overall process
-        [self safelyLeaveDispatchGroup:@"OverallProcessStart"];
     }
 }
 
