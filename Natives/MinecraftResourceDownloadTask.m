@@ -1196,54 +1196,67 @@ typedef struct {
 }
 
 - (void)processPostMetadataDownloads {
-    // This now runs sequentially after metadata success
     @synchronized(self) {
         if (!self || self.progress.cancelled) return;
 
         NSDictionary *localMetadata = [self.metadata copy]; // Use a local copy
 
-        // --- Enqueue Libraries and Client JAR ---
-         if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing libraries...");
-         [self downloadClientLibraries:localMetadata];
-         if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing client JAR...");
-         [self downloadClientJar:localMetadata];
-         // ---------------------------------------
+        // Enter group for libraries and client JAR
+        dispatch_group_enter(self.downloadCompletionGroup);
+        [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
 
-        // --- Handle Assets ---
+        // Enqueue Libraries and Client JAR
+        if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing libraries...");
+        [self downloadClientLibraries:localMetadata];
+        if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing client JAR...");
+        [self downloadClientJar:localMetadata];
+        
+        // Leave group for libraries and client JAR
+        [self safelyLeaveDispatchGroup:@"LibrariesAndClientJar"];
+
+        // Handle Assets 
         NSDictionary *assetIndexInfo = localMetadata[@"assetIndex"];
         if (assetIndexInfo) {
-             // Enter group for asset index download
-             dispatch_group_enter(self.downloadCompletionGroup);
-             [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
-
-             if (self.verboseLogging) NSLog(@"[MCDL] Downloading Asset Metadata...");
-             [self downloadAssetMetadataWithSuccess:^{
-                  @synchronized(self) {
-                      if (!self || self.progress.cancelled) {
-                           [self safelyLeaveDispatchGroup:@"AssetIndexCancelled"];
-                           return;
-                      }
-                      // Asset index metadata is now in self.metadata[@"assetIndexObj"]
-                      NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
-                      if (assetIndexObj && assetIndexObj[@"objects"]) {
-                           if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing assets...");
-                           [self downloadClientAssets:assetIndexObj]; // This enqueues asset downloads
-                           [self.metadata removeObjectForKey:@"assetIndexObj"]; // Clean up
-                      } else {
-                           NSLog(@"[MCDL] No assets found in index or index missing.");
-                      }
-                      // Leave group after processing assets based on this index
-                      [self safelyLeaveDispatchGroup:@"AssetIndexSuccess"];
-                  }
-             }];
+            // Enter group for asset index download
+            dispatch_group_enter(self.downloadCompletionGroup);
+            [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
+            
+            if (self.verboseLogging) NSLog(@"[MCDL] Downloading Asset Metadata...");
+            [self downloadAssetMetadataWithSuccess:^{
+                @synchronized(self) {
+                    if (!self || self.progress.cancelled) {
+                        [self safelyLeaveDispatchGroup:@"AssetIndexCancelled"];
+                        return;
+                    }
+                    // Asset index metadata is now in self.metadata[@"assetIndexObj"]
+                    NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
+                    if (assetIndexObj && assetIndexObj[@"objects"]) {
+                        // Enter group for asset downloads as a whole
+                        dispatch_group_enter(self.downloadCompletionGroup);
+                        [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
+                        
+                        if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing assets...");
+                        [self downloadClientAssets:assetIndexObj]; // This enqueues asset downloads
+                        
+                        // Leave group for asset downloads
+                        [self safelyLeaveDispatchGroup:@"AssetDownloads"];
+                        
+                        [self.metadata removeObjectForKey:@"assetIndexObj"]; // Clean up
+                    } else {
+                        NSLog(@"[MCDL] No assets found in index or index missing.");
+                    }
+                    // Leave group after processing assets based on this index
+                    [self safelyLeaveDispatchGroup:@"AssetIndexSuccess"];
+                }
+            }];
         } else {
-             NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
-              // If no assets, we still need to check if the overall download is complete
-              // Don't call checkCompletionStatus here, let the group notify handle it.
+            NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
         }
+
+        // Only leave AFTER all other downloads have been queued to prevent premature completion
+        [self safelyLeaveDispatchGroup:@"OverallProcessStart"];
     }
 }
-
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success {
     // Download base json
