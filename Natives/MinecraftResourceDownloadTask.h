@@ -16,6 +16,7 @@
 @property(nonatomic, assign) BOOL deferSHAVerification;
 @property(nonatomic, assign) BOOL hasProcessedAssets;
 @property (nonatomic, readonly) BOOL isDownloadPhaseComplete;
+@property (atomic, assign) BOOL hasFinishedSetup;
 
 /**
  * Creates a download task with optional callbacks for success and failure handling.
