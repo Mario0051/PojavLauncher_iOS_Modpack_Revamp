@@ -1,4 +1,3 @@
-#import <dlfcn.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 #import "authenticator/BaseAuthenticator.h"
@@ -239,7 +238,9 @@ static NSLock *versionListLock;
          ].mutableCopy;
      } else {
          // Clear existing remote versions except latest markers
-         [remoteVersionList removeObjectsInRange:NSMakeRange(2, remoteVersionList.count - 2)];
+         if (remoteVersionList.count > 2) { // Ensure we don't remove the markers
+            [remoteVersionList removeObjectsInRange:NSMakeRange(2, remoteVersionList.count - 2)];
+         }
      }
     [versionListLock unlock];
 
@@ -396,15 +397,16 @@ static NSLock *versionListLock;
     if (BaseAuthenticator.current == nil) {
         // Present the account selector if none selected
          // Ensure sidebarViewController is correctly obtained
-         UIViewController *sidebarVC = sidebarViewController;
+         LauncherMenuViewController *sidebarVC = sidebarViewController; // Use the macro which should cast correctly
          if (sidebarVC) {
-             [sidebarVC performSelector:@selector(selectAccount:) withObject:sender];
+             [sidebarVC selectAccount:sender]; // Call the method directly
          } else {
              NSLog(@"[LauncherNav] Error: Could not find sidebarViewController to present account selection.");
              showDialog(@"Account Error", @"Please select an account first.");
          }
         return;
     }
+
 
     // Disable UI during download
     [self setInteractionEnabled:NO forDownloading:YES];
@@ -438,10 +440,13 @@ static NSLock *versionListLock;
     NSDictionary *object = nil;
     [versionListLock lock];
      if (remoteVersionList) {
-         object = [remoteVersionList filteredArrayUsingPredicate:
+         // Create a safe copy for filtering
+         NSArray *safeRemoteList = [remoteVersionList copy];
+         object = [safeRemoteList filteredArrayUsingPredicate:
                    [NSPredicate predicateWithFormat:@"(id == %@)", versionId]].firstObject;
      }
     [versionListLock unlock];
+
 
     // If not found in remote list, create a custom version object
     if (!object) {
@@ -454,7 +459,17 @@ static NSLock *versionListLock;
     NSLog(@"[MCDL] Starting download for version: %@", versionId);
 
     // Create the download task
-    self.task = [MinecraftResourceDownloadTask new];
+     // Use synchronized block for task creation/access
+     @synchronized(self) {
+         // Ensure any previous task observer is removed first
+         if (self.task && self.task.progress) {
+             @try {
+                 [self.task.progress removeObserver:self forKeyPath:@"fractionCompleted"];
+             } @catch(NSException *e) {}
+         }
+         self.task = [MinecraftResourceDownloadTask new];
+     }
+
 
     // Set up error handler with weak self reference to avoid memory leaks
     __weak LauncherNavigationController *weakSelf = self;
@@ -463,8 +478,10 @@ static NSLock *versionListLock;
              // Check if weakSelf is still valid
              if (!weakSelf) return;
             [weakSelf setInteractionEnabled:YES forDownloading:YES]; // Re-enable interaction fully
-            weakSelf.task = nil;
-            weakSelf.progressVC = nil;
+             @synchronized(weakSelf) { // Synchronize access
+                 weakSelf.task = nil;
+                 weakSelf.progressVC = nil;
+             }
         });
     };
 
@@ -487,26 +504,29 @@ static NSLock *versionListLock;
         dispatch_async(dispatch_get_main_queue(), ^{
             // Skip if task was cancelled or cleared
              // Check weakSelf and task validity again
-             if (!weakSelf || !weakSelf.task || !weakSelf.task.progress) return;
+             if (!weakSelf) return;
+             @synchronized(weakSelf) {
+                 if (!weakSelf.task || !weakSelf.task.progress) return;
 
-            // Connect progress bar to task progress
-            weakSelf.progressViewMain.observedProgress = weakSelf.task.progress;
-             weakSelf.progressViewSub.observedProgress = weakSelf.task.textProgress; // Observe textProgress for sub view
+                 // Connect progress bar to task progress
+                 weakSelf.progressViewMain.observedProgress = weakSelf.task.progress;
+                  weakSelf.progressViewSub.observedProgress = weakSelf.task.textProgress; // Observe textProgress for sub view
 
 
-            // Add observer for progress updates
-            @try {
-                [weakSelf.task.progress addObserver:weakSelf
-                                     forKeyPath:@"fractionCompleted"
-                                        options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew // Add New option
-                                        context:ProgressObserverContext];
-            } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Exception adding progress observer: %@", exception);
-                 // Attempt cleanup if observer fails
-                 [weakSelf setInteractionEnabled:YES forDownloading:YES];
-                 weakSelf.task = nil;
-                 weakSelf.progressVC = nil;
-            }
+                 // Add observer for progress updates
+                 @try {
+                     [weakSelf.task.progress addObserver:weakSelf
+                                          forKeyPath:@"fractionCompleted"
+                                             options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew // Add New option
+                                             context:ProgressObserverContext];
+                 } @catch (NSException *exception) {
+                     NSLog(@"[MCDL] Exception adding progress observer: %@", exception);
+                      // Attempt cleanup if observer fails
+                      [weakSelf setInteractionEnabled:YES forDownloading:YES]; // Re-enable fully
+                      weakSelf.task = nil;
+                      weakSelf.progressVC = nil;
+                 }
+             }
         });
     });
 }
@@ -614,15 +634,17 @@ static NSLock *versionListLock;
              gettimeofday(&tv, NULL);
              // Use the main progress's completed count for calculations
              NSInteger completedUnitCount = (NSInteger)(observedProgress.totalUnitCount * observedProgress.fractionCompleted);
-             textProgress.completedUnitCount = completedUnitCount; // Update textProgress completed count
+             // Update textProgress completed count safely
+             @try { textProgress.completedUnitCount = completedUnitCount; } @catch(NSException* e){}
+
 
              // Calculate throughput only if time has passed
              CGFloat currentTime = tv.tv_sec + tv.tv_usec / 1000000.0;
              if (lastSecTime < tv.tv_sec && currentTime > lastMsTime) { // Prevent division by zero or negative time diff
                  NSInteger throughput = (completedUnitCount - lastCompletedUnitCount) / (currentTime - lastMsTime);
-                 textProgress.throughput = @(throughput);
+                 @try { textProgress.throughput = @(throughput); } @catch(NSException* e){}
                  // Avoid division by zero for ETA
-                 textProgress.estimatedTimeRemaining = (throughput > 0) ? @((textProgress.totalUnitCount - completedUnitCount) / throughput) : @(DBL_MAX);
+                  @try { textProgress.estimatedTimeRemaining = (throughput > 0) ? @((textProgress.totalUnitCount - completedUnitCount) / throughput) : @(DBL_MAX); } @catch(NSException* e){}
                  lastCompletedUnitCount = completedUnitCount;
                  lastSecTime = tv.tv_sec;
                  lastMsTime = currentTime;
@@ -639,7 +661,7 @@ static NSLock *versionListLock;
         // Check if download has finished using the more reliable flag
         BOOL isTrulyFinished = NO;
          @synchronized(observedTask) {
-             isTrulyFinished = observedTask.isDownloadPhaseComplete;
+             isTrulyFinished = observedTask.isDownloadPhaseComplete; // Use the new flag
          }
 
 
@@ -650,12 +672,18 @@ static NSLock *versionListLock;
 
         // Dismiss progress view controller if it's open
         if (weakSelf.progressVC) {
-            [weakSelf.progressVC dismissViewControllerAnimated:NO completion:nil];
+            // Ensure dismissal happens on the main thread
+             dispatch_async(dispatch_get_main_queue(), ^{
+                 [weakSelf.progressVC dismissViewControllerAnimated:NO completion:nil];
+             });
         }
 
+
         // Clear progress observation
-        weakSelf.progressViewMain.observedProgress = nil;
-         weakSelf.progressViewSub.observedProgress = nil;
+         dispatch_async(dispatch_get_main_queue(), ^{
+             weakSelf.progressViewMain.observedProgress = nil;
+             weakSelf.progressViewSub.observedProgress = nil;
+         });
 
 
         // Critical: Check if this was a modpack installation
@@ -717,7 +745,7 @@ static NSLock *versionListLock;
 
     // Create a new download task
      @synchronized(self) {
-         // Ensure any previous task's observer is removed
+         // Ensure any previous task's observer is removed first
          if (self.task && self.task.progress) {
              @try {
                  [self.task.progress removeObserver:self forKeyPath:@"fractionCompleted"];
@@ -733,8 +761,10 @@ static NSLock *versionListLock;
         dispatch_async(dispatch_get_main_queue(), ^{
              if (!weakSelf) return;
             [weakSelf setInteractionEnabled:YES forDownloading:YES]; // Re-enable fully
-            weakSelf.task = nil;
-            weakSelf.progressVC = nil;
+             @synchronized(weakSelf) { // Synchronize access
+                 weakSelf.task = nil;
+                 weakSelf.progressVC = nil;
+             }
         });
     };
 
@@ -792,6 +822,7 @@ static NSLock *versionListLock;
      localVersionList = nil;
      remoteVersionList = nil;
      [versionListLock unlock];
+
 
     BOOL hasTrollStoreJIT = getEntitlementValue(@"com.apple.private.local.sandboxed-jit");
 
@@ -909,9 +940,11 @@ static NSLock *versionListLock;
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
      // Update account info in the sidebar safely
-     UIViewController *sidebarVC = sidebarViewController;
-     if (sidebarVC) {
+     LauncherMenuViewController *sidebarVC = sidebarViewController; // Use the macro
+     if (sidebarVC && [sidebarVC isKindOfClass:[LauncherMenuViewController class]]) {
          [sidebarVC updateAccountInfo];
+     } else {
+        NSLog(@"[LauncherNav] Warning: Could not find or cast sidebarViewController to update account info.");
      }
 }
 
