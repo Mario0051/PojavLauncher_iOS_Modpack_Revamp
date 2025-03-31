@@ -12,33 +12,29 @@
 #import "utils.h"
 #import <objc/runtime.h>
 
-// Static key for objc association
+// Static keys for objc association
 static const void *kIsTrackedByTaskKey = &kIsTrackedByTaskKey;
 static const NSInteger kMaxConcurrentDownloads = 6; // Limit concurrent downloads
-
-typedef struct {
-    NSString *path;
-    NSString *sha;
-    NSString *altName;
-    NSString *url;
-    NSUInteger size;
-} VerificationItem;
+static const NSTimeInterval kUIUpdateInterval = 0.3; // Update UI every 0.3 seconds
+static const NSTimeInterval kDownloadTimeout = 60.0; // 60 second timeout for downloads
+static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for resources
 
 // Class extension to declare private properties
 @interface MinecraftResourceDownloadTask ()
 @property(nonatomic, readwrite) AFURLSessionManager* manager;
-@property(nonatomic, strong) NSLock *progressLock; // Lock for synchronizing progress updates
-@property(nonatomic, strong) NSLock *fileListLock; // Lock for synchronizing file list updates
-@property(nonatomic, strong) dispatch_queue_t downloadQueue; // Serial queue for managing downloads
-@property(nonatomic, strong) NSMutableArray *pendingDownloads; // Queue of pending downloads
-@property(nonatomic, assign) NSInteger activeDownloads; // Track active downloads
-@property(nonatomic, strong) NSTimer *uiUpdateTimer; // Timer for batched UI updates
-@property(nonatomic, assign) BOOL needsUIUpdate; // Flag for pending UI updates
-@property (nonatomic, strong) dispatch_group_t downloadCompletionGroup; // Group to track all download tasks
-@property (nonatomic, readwrite) BOOL isDownloadPhaseComplete; // Flag to indicate true completion
-@property (nonatomic, assign) NSInteger totalTasksEnqueued; // Counter for all tasks added to the group
-@property (nonatomic, assign) NSInteger tasksLeftGroup; // Counter for tasks leaving the group
-@property (nonatomic, strong) NSLock *completionLock; // Lock for completion status checks
+@property(nonatomic, strong) NSLock *progressLock;
+@property(nonatomic, strong) NSLock *fileListLock;
+@property(nonatomic, strong) NSLock *completionLock;
+@property(nonatomic, strong) dispatch_queue_t downloadQueue;
+@property(nonatomic, strong) NSMutableArray *pendingDownloads;
+@property(nonatomic, assign) NSInteger activeDownloads;
+@property(nonatomic, strong) NSTimer *uiUpdateTimer;
+@property(nonatomic, assign) BOOL needsUIUpdate;
+@property(nonatomic, strong) dispatch_group_t downloadCompletionGroup;
+@property(nonatomic, readwrite) BOOL isDownloadPhaseComplete;
+@property(nonatomic, assign) NSInteger totalTasksEnqueued;
+@property(nonatomic, assign) NSInteger tasksLeftGroup;
+@property(nonatomic, strong) NSDate *downloadStartTime;
 @end
 
 @implementation MinecraftResourceDownloadTask
@@ -46,69 +42,69 @@ typedef struct {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        // Initialize with safer session configuration
+        // Initialize with improved session configuration
         NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-        configuration.timeoutIntervalForRequest = 60; // Shorter default timeout
-        configuration.timeoutIntervalForResource = 300; // 5 minutes max for resource
-        configuration.HTTPMaximumConnectionsPerHost = kMaxConcurrentDownloads; // Limit concurrent connections
-        configuration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData; // Avoid cache issues
-
+        configuration.timeoutIntervalForRequest = kDownloadTimeout;
+        configuration.timeoutIntervalForResource = kResourceTimeout;
+        configuration.HTTPMaximumConnectionsPerHost = kMaxConcurrentDownloads;
+        configuration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        
         self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
-
+        
         // Initialize collections with thread safety in mind
         self.fileList = [NSMutableArray new];
         self.progressList = [NSMutableArray new];
         self.pendingDownloads = [NSMutableArray new];
         self.pendingVerificationList = [NSMutableArray new];
         self.activeDownloads = 0;
-
-        // Initialize lock objects for thread safety
+        
+        // Initialize lock objects
         self.progressLock = [[NSLock alloc] init];
         self.fileListLock = [[NSLock alloc] init];
-        self.completionLock = [[NSLock alloc] init]; // Initialize completion lock
-
+        self.completionLock = [[NSLock alloc] init];
+        
         // Create serial queue for managing downloads
         self.downloadQueue = dispatch_queue_create("net.kdt.pojavlauncher.downloadQueue", DISPATCH_QUEUE_SERIAL);
-
+        
         // Initialize progress tracking
         self.progress = [NSProgress new];
         self.progress.totalUnitCount = 0;
         self.progress.cancellable = YES;
-
+        
         // Initialize text progress for UI updates
         self.textProgress = [NSProgress new];
         self.textProgress.kind = NSProgressKindFile;
         self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
-        self.textProgress.totalUnitCount = 0; // Start with 0 instead of 1
+        self.textProgress.totalUnitCount = 0;
         self.textProgress.cancellable = YES;
-
-        // Initialize counters for logging
+        
+        // Initialize counters
         self.successfulDownloads = 0;
         self.totalDownloads = 0;
         self.verboseLogging = getPrefBool(@"general.debug_logging");
-
+        
         // Initialize verification flag
         self.deferSHAVerification = !getPrefBool(@"general.check_sha");
-
+        
         // Flag to prevent duplicate asset processing
         self.hasProcessedAssets = NO;
-
-        // Setup timer for batched UI updates with lower frequency
+        
+        // Setup timer for UI updates with lower frequency
         self.needsUIUpdate = NO;
-        self.uiUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
+        self.uiUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:kUIUpdateInterval
                                                              target:self
                                                            selector:@selector(processBatchedUIUpdates)
                                                            userInfo:nil
                                                             repeats:YES];
         // Ensure timer runs even during scrolling
         [[NSRunLoop mainRunLoop] addTimer:self.uiUpdateTimer forMode:NSRunLoopCommonModes];
-
-
-        // Initialize download completion group
+        
+        // Initialize download completion tracking
         self.downloadCompletionGroup = dispatch_group_create();
-        self.isDownloadPhaseComplete = NO; // Initialize completion flag
-        self.totalTasksEnqueued = 0; // Initialize enqueue counter
-        self.tasksLeftGroup = 0; // Initialize leave counter
+        self.isDownloadPhaseComplete = NO;
+        self.totalTasksEnqueued = 0;
+        self.tasksLeftGroup = 0;
+        self.hasFinishedSetup = NO;
     }
     return self;
 }
@@ -122,6 +118,10 @@ typedef struct {
         self.activeDownloads = 0;
     }
     
+    // Invalidate timers
+    [self.uiUpdateTimer invalidate];
+    self.uiUpdateTimer = nil;
+    
     // Invalidate the session manager
     if (self.manager) {
         [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
@@ -129,18 +129,111 @@ typedef struct {
     }
 }
 
-// Helper to safely leave the dispatch group and check completion
+#pragma mark - Progress Management
+
+- (void)processBatchedUIUpdates {
+    if (!self.needsUIUpdate) return;
+    
+    // Send a notification for UI components to update
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSNotificationCenter.defaultCenter postNotificationName:@"DownloadProgressUpdated" object:self];
+        self.needsUIUpdate = NO;
+        
+        // Update text progress safely
+        [self.progressLock lock];
+        if (self.textProgress && self.progress && self.progress.totalUnitCount > 0) {
+            self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+            
+            // Calculate speed and ETA if we have a start time
+            if (self.downloadStartTime) {
+                NSTimeInterval elapsed = [[NSDate date] timeIntervalSinceDate:self.downloadStartTime];
+                if (elapsed > 0 && self.progress.completedUnitCount > 0) {
+                    // Calculate bytes per second
+                    double bytesPerSecond = self.progress.completedUnitCount / elapsed;
+                    self.textProgress.throughput = @(bytesPerSecond);
+                    
+                    // Calculate estimated time remaining
+                    if (bytesPerSecond > 0 && self.progress.fractionCompleted < 1.0) {
+                        double remaining = (self.progress.totalUnitCount - self.progress.completedUnitCount) / bytesPerSecond;
+                        self.textProgress.estimatedTimeRemaining = @(remaining);
+                    }
+                }
+            }
+        }
+        [self.progressLock unlock];
+    });
+}
+
+- (void)prepareForDownload {
+    @synchronized(self) {
+        // Create new progress tracking objects
+        self.progress = [NSProgress new];
+        self.progress.totalUnitCount = 0;
+        self.progress.cancellable = YES;
+        
+        self.textProgress = [NSProgress new];
+        self.textProgress.kind = NSProgressKindFile;
+        self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
+        self.textProgress.totalUnitCount = 0;
+        self.textProgress.cancellable = YES;
+        
+        // Reset counters
+        self.successfulDownloads = 0;
+        self.totalDownloads = 0;
+        self.totalTasksEnqueued = 0;
+        self.tasksLeftGroup = 0;
+        
+        // Reset flags
+        self.hasProcessedAssets = NO;
+        self.isDownloadPhaseComplete = NO;
+        self.hasFinishedSetup = NO;
+        
+        // Set download start time for speed calculations
+        self.downloadStartTime = [NSDate date];
+    }
+    
+    // Reset tracking lists with synchronization
+    [self.fileListLock lock];
+    [self.fileList removeAllObjects];
+    [self.fileListLock unlock];
+    
+    [self.progressLock lock];
+    [self.progressList removeAllObjects];
+    [self.progressLock unlock];
+    
+    // Reset download queue
+    @synchronized(self.pendingDownloads) {
+        [self.pendingDownloads removeAllObjects];
+        self.activeDownloads = 0;
+    }
+    
+    // Reset verification list
+    @synchronized(self.pendingVerificationList) {
+        [self.pendingVerificationList removeAllObjects];
+    }
+    
+    // Flag UI update
+    self.needsUIUpdate = YES;
+    
+    // Check SHA verification preference
+    self.deferSHAVerification = !getPrefBool(@"general.check_sha");
+}
+
+#pragma mark - Completion Management
+
 - (void)safelyLeaveDispatchGroup:(NSString *)reason {
     [self.completionLock lock];
     self.tasksLeftGroup++;
     if (self.verboseLogging) {
-        NSLog(@"[MCDL_DEBUG] Task left group (%@). Total Left: %ld, Total Enqueued: %ld", reason, (long)self.tasksLeftGroup, (long)self.totalTasksEnqueued);
+        NSLog(@"[MCDL] Task left group (%@). Total Left: %ld, Total Enqueued: %ld", 
+              reason, (long)self.tasksLeftGroup, (long)self.totalTasksEnqueued);
     }
     BOOL shouldCheckCompletion = (self.tasksLeftGroup >= self.totalTasksEnqueued && self.totalTasksEnqueued > 0);
     [self.completionLock unlock];
-
+    
     dispatch_group_leave(self.downloadCompletionGroup);
-
+    
     if (shouldCheckCompletion) {
         [self checkFinalCompletion];
     }
@@ -149,41 +242,30 @@ typedef struct {
 - (void)markDownloadPhaseComplete:(BOOL)complete {
     [self.completionLock lock];
     BOOL oldValue = self.isDownloadPhaseComplete;
-    self.isDownloadPhaseComplete = complete;
     
-    // Only log state changes to avoid spam
     if (oldValue != complete) {
+        [self willChangeValueForKey:@"isDownloadPhaseComplete"];
+        _isDownloadPhaseComplete = complete;
+        [self didChangeValueForKey:@"isDownloadPhaseComplete"];
+        
         if (self.verboseLogging) {
             NSLog(@"[MCDL] Download phase completion state changed: %@ -> %@", 
-                oldValue ? @"YES" : @"NO", 
-                complete ? @"YES" : @"NO");
+                  oldValue ? @"YES" : @"NO", complete ? @"YES" : @"NO");
         }
         
         // Add completion marker to fileList
         if (complete) {
-            @synchronized(self.fileList) {
-                if (![self.fileList containsObject:@"Complete"]) {
-                    [self.fileList addObject:@"Complete"];
-                    self.needsUIUpdate = YES;
-                }
+            [self.fileListLock lock];
+            if (![self.fileList containsObject:@"Complete"]) {
+                [self.fileList addObject:@"Complete"];
+                self.needsUIUpdate = YES;
             }
+            [self.fileListLock unlock];
         }
     }
     [self.completionLock unlock];
 }
 
-// Override the setter for KVO compliance
-- (void)setIsDownloadPhaseComplete:(BOOL)isDownloadPhaseComplete {
-    [self.completionLock lock];
-    if (_isDownloadPhaseComplete != isDownloadPhaseComplete) {
-        [self willChangeValueForKey:@"isDownloadPhaseComplete"];
-        _isDownloadPhaseComplete = isDownloadPhaseComplete;
-        [self didChangeValueForKey:@"isDownloadPhaseComplete"];
-    }
-    [self.completionLock unlock];
-}
-
-// Final completion check, called only when all enqueued tasks have left the group
 - (void)checkFinalCompletion {
     if (self.verboseLogging) {
         NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
@@ -191,9 +273,9 @@ typedef struct {
     
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (!weakSelf) return; // Check if self is still valid
-
-        // Check for any pending downloads first
+        if (!weakSelf) return;
+        
+        // Check for pending downloads
         BOOL hasActiveDownloads = NO;
         @synchronized(weakSelf.pendingDownloads) {
             hasActiveDownloads = (weakSelf.pendingDownloads.count > 0 || weakSelf.activeDownloads > 0);
@@ -203,238 +285,121 @@ typedef struct {
             if (weakSelf.verboseLogging) {
                 NSLog(@"[MCDL] Warning: Tasks left dispatch group but downloads are still active. Delaying completion.");
             }
-            return; // Don't proceed with completion yet
+            return;
         }
-
-        BOOL verificationSuccess = YES;
-        BOOL hasPendingVerifications = NO;
         
+        // Check for pending verifications
+        BOOL hasPendingVerifications = NO;
         @synchronized(weakSelf.pendingVerificationList) {
             hasPendingVerifications = (weakSelf.pendingVerificationList.count > 0);
         }
         
-        if (hasPendingVerifications && weakSelf.verboseLogging) {
-            NSLog(@"[MCDL] Found pending verifications (%lu files). Starting verification process...", 
-                 (unsigned long)weakSelf.pendingVerificationList.count);
-        }
-        
-        if (weakSelf.deferSHAVerification || hasPendingVerifications) {
+        // Verify any pending files
+        BOOL verificationSuccess = YES;
+        if (hasPendingVerifications) {
             if (weakSelf.verboseLogging) {
-                NSLog(@"[MCDL] Verifying deferred files...");
+                NSLog(@"[MCDL] Starting verification of pending files...");
             }
             verificationSuccess = [weakSelf verifyPendingFiles];
-            // If verification fails, verifyPendingFiles queues redownloads which re-enter the group,
-            // so the final completion will be triggered again later.
             if (!verificationSuccess) {
                 if (weakSelf.verboseLogging) {
-                    NSLog(@"[MCDL] Deferred verification failed, redownload initiated. Completion delayed.");
+                    NSLog(@"[MCDL] Verification failed, redownload initiated. Completion delayed.");
                 }
-                return; // Don't mark as complete yet
+                return;
             }
         }
-
+        
         if (verificationSuccess) {
             BOOL alreadyComplete = NO;
-            @synchronized(weakSelf) {
-                if (!weakSelf) return;
-                alreadyComplete = weakSelf.isDownloadPhaseComplete;
-                if (!alreadyComplete) {
-                    if (weakSelf.verboseLogging) {
-                        NSLog(@"[MCDL] All tasks truly complete and verified.");
-                    }
-                    // Ensure progress reflects completion if not already set
-                    if (weakSelf.progress.totalUnitCount <= 0) { // Use <= 0 for safety
-                        weakSelf.progress.totalUnitCount = 1;
-                        weakSelf.textProgress.totalUnitCount = 1;
-                    }
-                    weakSelf.progress.completedUnitCount = weakSelf.progress.totalUnitCount;
-                    weakSelf.textProgress.completedUnitCount = weakSelf.textProgress.totalUnitCount;
-                    weakSelf.isDownloadPhaseComplete = YES; // Set the final completion flag
-
-                    // Add completion marker for UI
-                    @synchronized(weakSelf.fileList) {
-                        if (!weakSelf) return; // Re-check self
-                        if (![weakSelf.fileList containsObject:@"Complete"]) {
-                            [weakSelf.fileList addObject:@"Complete"];
-                        }
-                    }
-                    // Trigger UI update
-                    weakSelf.needsUIUpdate = YES;
-                    [weakSelf processBatchedUIUpdates]; // Process immediately for completion
+            [weakSelf.completionLock lock];
+            alreadyComplete = weakSelf.isDownloadPhaseComplete;
+            [weakSelf.completionLock unlock];
+            
+            if (!alreadyComplete) {
+                if (weakSelf.verboseLogging) {
+                    NSLog(@"[MCDL] All tasks truly complete and verified.");
                 }
+                
+                // Ensure progress is complete
+                [weakSelf.progressLock lock];
+                if (weakSelf.progress.totalUnitCount <= 0) {
+                    weakSelf.progress.totalUnitCount = 1;
+                    weakSelf.textProgress.totalUnitCount = 1;
+                }
+                weakSelf.progress.completedUnitCount = weakSelf.progress.totalUnitCount;
+                weakSelf.textProgress.completedUnitCount = weakSelf.textProgress.totalUnitCount;
+                [weakSelf.progressLock unlock];
+                
+                [weakSelf markDownloadPhaseComplete:YES];
+                
+                // Final UI update
+                weakSelf.needsUIUpdate = YES;
+                [weakSelf processBatchedUIUpdates];
             }
-        } else if (weakSelf.verboseLogging) {
-            NSLog(@"[MCDL] Warning: Completion check found verification unsuccessful. Completion delayed.");
         }
     });
 }
 
-- (void)downloadClientJar:(NSDictionary *)versionMetadata {
-    NSDictionary *downloads = versionMetadata[@"downloads"];
-    NSDictionary *clientInfo = downloads[@"client"];
-    if (!clientInfo) {
-        NSLog(@"[MCDL] No client JAR information found in version metadata.");
-        return;
-    }
-
-    NSString *url = clientInfo[@"url"];
-    NSString *sha1 = clientInfo[@"sha1"];
-    NSUInteger size = [clientInfo[@"size"] unsignedIntegerValue];
-    NSString *versionId = versionMetadata[@"id"]; // Get version ID for path
-
-    if (!versionId || !url || !sha1) {
-        NSLog(@"[MCDL] Client JAR information incomplete. Cannot download.");
-        return;
-    }
-
-    NSString *path = [NSString stringWithFormat:@"%s/versions/%@/%@.jar", getenv("POJAV_GAME_DIR"), versionId, versionId];
-    NSString *altName = [NSString stringWithFormat:@"%@.jar", versionId];
-
-    if (self.verboseLogging) {
-        NSLog(@"[MCDL] Enqueuing client JAR: %@", altName);
-    }
-
-    // Create and enqueue the task (will be handled by the queue)
-    [self createDownloadTask:url size:size sha:sha1 altName:altName toPath:path success:nil failure:nil];
-}
-
-- (void)processBatchedUIUpdates {
-    if (!self.needsUIUpdate) return;
-
-    // Send a notification for UI components to update
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [NSNotificationCenter.defaultCenter postNotificationName:@"DownloadProgressUpdated" object:self];
-        self.needsUIUpdate = NO;
-
-        // Update text progress safely
-        [self.progressLock lock];
-        if (self.textProgress && self.progress && self.progress.totalUnitCount > 0) {
-             // Use the main progress's completed count for text progress
-             self.textProgress.completedUnitCount = self.progress.completedUnitCount;
-             self.textProgress.totalUnitCount = self.progress.totalUnitCount; // Ensure totals match
-        }
-        [self.progressLock unlock];
-    });
-}
-
-
-- (void)prepareForDownload {
-    @synchronized(self) {
-        // Create a new progress tracking object starting with 0 units
-        self.progress = [NSProgress new];
-        self.progress.totalUnitCount = 0; // Start with 0 instead of 1
-        self.progress.cancellable = YES;
-
-        // Create a text progress for UI display
-        self.textProgress = [NSProgress new];
-        self.textProgress.kind = NSProgressKindFile;
-        self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
-        self.textProgress.totalUnitCount = 0; // Start with 0 instead of 1
-        self.textProgress.cancellable = YES;
-
-        // Reset counters
-        self.successfulDownloads = 0;
-        self.totalDownloads = 0;
-        self.totalTasksEnqueued = 0; // Reset enqueue counter
-        self.tasksLeftGroup = 0; // Reset leave counter
-
-        // Reset the asset processing flag
-        self.hasProcessedAssets = NO;
-
-        // Reset completion flag
-        self.isDownloadPhaseComplete = NO;
-    }
-
-    // Reset tracking lists with proper synchronization
-    @synchronized(self.fileList) {
-        [self.fileList removeAllObjects];
-    }
-
-    @synchronized(self.progressList) {
-        [self.progressList removeAllObjects];
-    }
-
-    // Reset download queue
-    @synchronized(self.pendingDownloads) {
-        [self.pendingDownloads removeAllObjects];
-        self.activeDownloads = 0;
-    }
-
-    // Reset verification list
-    @synchronized(self.pendingVerificationList) {
-        [self.pendingVerificationList removeAllObjects];
-    }
-
-    // Flag that UI update is needed
-    self.needsUIUpdate = YES;
-
-    // Check if we should defer SHA verification
-    self.deferSHAVerification = !getPrefBool(@"general.check_sha");
-}
-
+#pragma mark - Download Queue Management
 
 - (void)processNextDownloadInQueue {
     @synchronized(self.pendingDownloads) {
-        // Check if we're at the concurrency limit or if there are no pending downloads
+        // Check concurrency limits and queue state
         if (self.activeDownloads >= kMaxConcurrentDownloads || self.pendingDownloads.count == 0) {
             return;
         }
-
+        
         // Check if download was cancelled
         BOOL isCancelled = NO;
-
         @try {
-            // Access progress safely within a synchronized block if necessary,
-            // but reading `cancelled` is usually atomic.
             isCancelled = self.progress.cancelled;
         } @catch (NSException *exception) {
             NSLog(@"[MCDL] Warning: Exception checking if progress is cancelled: %@", exception);
             isCancelled = NO;
         }
-
+        
         if (isCancelled) {
-            // Clear all pending downloads if cancelled
+            // Clear all pending downloads
             NSInteger countToLeave = self.pendingDownloads.count;
             [self.pendingDownloads removeAllObjects];
             self.activeDownloads = 0;
-            // Leave the group for any tasks that were entered but not started
+            
+            // Leave the group for cancelled tasks
             for (NSInteger i = 0; i < countToLeave; i++) {
                 [self safelyLeaveDispatchGroup:@"CancelledPendingQueue"];
             }
             return;
         }
-
+        
         // Get next download task and start it
         NSURLSessionDownloadTask *nextTask = self.pendingDownloads[0];
         [self.pendingDownloads removeObjectAtIndex:0];
         self.activeDownloads++;
-
-        // Resume task on a background queue to avoid blocking
+        
+        // Resume task on background thread
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            // Check again for cancellation right before resuming
             BOOL isCancelledBeforeResume = NO;
             @try {
                 isCancelledBeforeResume = self.progress.cancelled;
             } @catch (NSException *exception) {}
-
+            
             if (!isCancelledBeforeResume) {
                 [nextTask resume];
             } else {
-                // If cancelled before resume, ensure we leave the group
-                @synchronized(self) {
-                    self.activeDownloads--; // Decrement active count
+                // If cancelled before resume, decrement active count and leave the group
+                @synchronized(self.pendingDownloads) {
+                    self.activeDownloads--;
                 }
-                // Use the helper to leave the group
                 [self safelyLeaveDispatchGroup:@"CancelledBeforeResume"];
-
+                
                 // Process next if possible
                 dispatch_async(self.downloadQueue, ^{
                     [self processNextDownloadInQueue];
                 });
             }
         });
-
-        // If we're still below the concurrent limit and have more tasks, process another one
+        
+        // Process another task if below concurrent limit
         if (self.activeDownloads < kMaxConcurrentDownloads && self.pendingDownloads.count > 0) {
             dispatch_async(self.downloadQueue, ^{
                 [self processNextDownloadInQueue];
@@ -443,8 +408,8 @@ typedef struct {
     }
 }
 
+#pragma mark - Download Task Creation
 
-// This should match the declaration in the header file
 - (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url
                                            size:(NSUInteger)size
                                             sha:(NSString *)sha
@@ -453,11 +418,10 @@ typedef struct {
                                         success:(void (^)(void))success
                                         failure:(void (^)(NSError *error))failure {
     @autoreleasepool {
-        // Safety check for invalid URL with enhanced logging
+        // Validate URL
         if (!url || url.length == 0) {
-            NSLog(@"[MCDL] Error: Invalid or empty download URL");
-            NSLog(@"[MCDL] File: %@, Path: %@", altName ?: @"(null)", path ?: @"(null)");
-
+            NSLog(@"[MCDL] Error: Invalid or empty download URL for %@", altName ?: path.lastPathComponent);
+            
             NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher"
                                                    code:1001
                                                userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL"}];
@@ -468,99 +432,89 @@ typedef struct {
             }
             return nil;
         }
-
-        // Enter the group *before* checking cache or existence
+        
+        // Enter dispatch group before checking cache
         dispatch_group_enter(self.downloadCompletionGroup);
-        // Increment the total enqueued count
+        
         [self.completionLock lock];
         self.totalTasksEnqueued++;
         [self.completionLock unlock];
-
-        // Track total downloads early
+        
+        // Track total downloads
         self.totalDownloads++;
-
-        // Check if file already exists and has valid SHA
+        
+        // Check if file exists and has valid SHA
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-
-        // Special handling for version files
-        BOOL isVersionFile = (altName && [altName hasSuffix:@".json"]) ||
-                             (path && [path hasSuffix:@".json"] && [path containsString:@"/versions/"]);
-
-        // Check for latest version files that should be forced to re-download
-        BOOL isLatestVersionFile = (altName &&
-                                  ([altName containsString:@"latest-release"] ||
-                                   [altName containsString:@"latest-snapshot"]));
-
-        // Determine if we should verify SHA now or defer it
+        BOOL isVersionFile = [path hasSuffix:@".json"] && [path containsString:@"/versions/"];
+        BOOL isLatestVersionFile = [path containsString:@"latest-release"] || [path containsString:@"latest-snapshot"];
+        
+        // Determine if we should verify now or defer
         BOOL shouldVerifyNow = !self.deferSHAVerification || isVersionFile || isLatestVersionFile;
-
-        if (shouldVerifyNow && fileExists && sha && sha.length > 0 &&
-            [self checkSHA:sha forFile:path altName:altName]) {
-
+        
+        if (shouldVerifyNow && fileExists && sha && sha.length > 0 && [self checkSHA:sha forFile:path altName:altName]) {
             // Use estimated size if actual size is 0
-            NSUInteger itemSize = size > 0 ? size : 100000; // Use 100KB estimate if size unknown
-            @synchronized(self) {
-                // Add to total and mark as complete
-                self.progress.totalUnitCount += itemSize;
-                self.progress.completedUnitCount += itemSize;
-                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-                self.textProgress.completedUnitCount = self.progress.completedUnitCount;
-            }
-
+            NSUInteger itemSize = size > 0 ? size : 100000;
+            
+            [self.progressLock lock];
+            self.progress.totalUnitCount += itemSize;
+            self.progress.completedUnitCount += itemSize;
+            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+            self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+            [self.progressLock unlock];
+            
             // Increment successful downloads counter
             self.successfulDownloads++;
-
-            // Periodic summary logging instead of per-file
-            if (self.successfulDownloads % 50 == 0) {
+            
+            // Periodic logging
+            if (self.verboseLogging && self.successfulDownloads % 50 == 0) {
                 NSLog(@"[MCDL] Progress: %ld of %ld files verified/downloaded",
                       (long)self.successfulDownloads, (long)self.totalDownloads);
             }
-
-            // Optimization: Handle success callback on background thread
+            
+            // Handle success callback
             if (success) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     success();
                 });
             }
+            
             // Leave group for cached file
             [self safelyLeaveDispatchGroup:@"CachedFile"];
             return nil;
         } else if (fileExists && self.deferSHAVerification && sha && sha.length > 0) {
             // File exists, but we're deferring SHA verification
-            // Add to verification list for later checking
             [self addFileToVerificationList:path sha:sha altName:altName url:url size:size];
-
-            // Update overall progress
-            NSUInteger itemSize = size > 0 ? size : 100000; // Use 100KB estimate if size unknown
-            @synchronized(self) {
-                self.progress.totalUnitCount += itemSize;
-                self.progress.completedUnitCount += itemSize; // Mark as complete
-                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-                self.textProgress.completedUnitCount = self.progress.completedUnitCount;
-            }
-
-            // Count as successful for UI purposes (will be verified later)
+            
+            // Update progress
+            NSUInteger itemSize = size > 0 ? size : 100000;
+            
+            [self.progressLock lock];
+            self.progress.totalUnitCount += itemSize;
+            self.progress.completedUnitCount += itemSize;
+            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+            self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+            [self.progressLock unlock];
+            
             self.successfulDownloads++;
-
+            
             if (success) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     success();
                 });
             }
-            // Leave group for deferred verification
+            
             [self safelyLeaveDispatchGroup:@"DeferredVerification"];
             return nil;
         } else if (![self checkAccessWithDialog:YES]) {
-            // Leave group for access denied
             [self safelyLeaveDispatchGroup:@"AccessDenied"];
-            self.totalDownloads--; // Decrement total count as this wasn't a real task
+            self.totalDownloads--;
             return nil;
         }
-
-        // Use filename as display name if no alternate name provided
+        
+        // Use filename as display name if none provided
         NSString *name = altName ?: path.lastPathComponent;
-
-        // Create URL request with increased validity checks
+        
+        // Create URL request
         NSURL *requestURL = [NSURL URLWithString:url];
         if (!requestURL) {
             NSLog(@"[MCDL] Error: Invalid download URL format: %@", url);
@@ -574,170 +528,154 @@ typedef struct {
             } else {
                 [self finishDownloadWithErrorString:@"Invalid download URL format"];
             }
-            // Leave group for invalid URL
+            
             [self safelyLeaveDispatchGroup:@"InvalidURL"];
-            self.totalDownloads--; // Decrement total count
+            self.totalDownloads--;
             return nil;
         }
-
+        
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:requestURL];
-        request.timeoutInterval = 60; // Set a reasonable timeout
-        request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData; // Avoid cache issues
-
-        // Add to file list for UI tracking (before creating the task to avoid race conditions)
-        @synchronized(self.fileList) {
-            // Check if name is already in the fileList to avoid duplicates
-            if (![self.fileList containsObject:name]) {
-                [self.fileList addObject:name];
-                self.needsUIUpdate = YES; // Flag UI update needed
-            }
+        request.timeoutInterval = kDownloadTimeout;
+        request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+        
+        // Add to file list for UI tracking
+        [self.fileListLock lock];
+        if (![self.fileList containsObject:name]) {
+            [self.fileList addObject:name];
+            self.needsUIUpdate = YES;
         }
-
-        // Estimate size if 0, necessary for adding to totalUnitCount early
-        NSUInteger estimatedSize = size > 0 ? size : 100000; // 100KB estimate
+        [self.fileListLock unlock];
+        
+        // Create and track progress
+        NSUInteger estimatedSize = size > 0 ? size : 100000;
         NSProgress *downloadProgress = [NSProgress progressWithTotalUnitCount:estimatedSize];
         downloadProgress.kind = NSProgressKindFile;
-
-        // Add this progress to our tracking list - using synchronization for thread safety
+        
+        // Add to tracking list
         BOOL progressAdded = NO;
-
-        @synchronized(self) {
-            @try {
-                @synchronized(self.progressList) {
-                    [self.progressList addObject:downloadProgress];
-                }
-
-                // Increment total BEFORE adding child
-                self.progress.totalUnitCount += downloadProgress.totalUnitCount;
-                self.textProgress.totalUnitCount = self.progress.totalUnitCount;
-
-                // Add child progress
-                [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
-
-                // Mark progress as tracked
-                objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-                progressAdded = YES;
-            } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Exception adding progress: %@", exception);
-
-                // If adding progress fails, remove from fileList to maintain consistency
-                @synchronized(self.fileList) {
-                    // Only remove if this file was actually the last added
-                    if ([self.fileList.lastObject isEqual:name]) {
-                        [self.fileList removeLastObject];
-                    }
-                }
-                self.totalDownloads--; // Decrement total count
-                // Leave group for progress add failure
-                [self safelyLeaveDispatchGroup:@"ProgressAddFail"];
-                return nil; // Cannot proceed without progress tracking
+        
+        [self.progressLock lock];
+        @try {
+            [self.progressList addObject:downloadProgress];
+            
+            // Update total progress
+            self.progress.totalUnitCount += downloadProgress.totalUnitCount;
+            self.textProgress.totalUnitCount = self.progress.totalUnitCount;
+            
+            // Add child progress
+            [self.progress addChild:downloadProgress withPendingUnitCount:downloadProgress.totalUnitCount];
+            
+            // Mark progress as tracked
+            objc_setAssociatedObject(downloadProgress, kIsTrackedByTaskKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            progressAdded = YES;
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Exception adding progress: %@", exception);
+            
+            [self.fileListLock lock];
+            if ([self.fileList.lastObject isEqual:name]) {
+                [self.fileList removeLastObject];
             }
-        }
-
-        if (!progressAdded) {
-            NSLog(@"[MCDL] Failed to add progress for %@", name);
-            // Leave group for progress add failure
-            [self safelyLeaveDispatchGroup:@"ProgressAddFail2"];
-            self.totalDownloads--; // Decrement total count
+            [self.fileListLock unlock];
+            
+            self.totalDownloads--;
+            [self safelyLeaveDispatchGroup:@"ProgressAddFail"];
             return nil;
         }
-
+        [self.progressLock unlock];
+        
+        if (!progressAdded) {
+            NSLog(@"[MCDL] Failed to add progress for %@", name);
+            [self safelyLeaveDispatchGroup:@"ProgressAddFail2"];
+            self.totalDownloads--;
+            return nil;
+        }
+        
         // Create weak reference to self to avoid retain cycles
         __weak typeof(self) weakSelf = self;
-
+        
         // Create download task with proper completion handling
         __block NSURLSessionDownloadTask *task = [self.manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull taskProgress) {
-            // Only update progress every 10% to reduce overhead
+            // Only update on significant changes to reduce overhead
             static NSInteger lastReportedPercent = -1;
             NSInteger currentPercent = (NSInteger)(taskProgress.fractionCompleted * 100);
-
-            // Use a higher frequency for UI updates if needed, e.g., every 5%
-            if (currentPercent != lastReportedPercent && currentPercent % 5 == 0) {
+            
+            if (currentPercent != lastReportedPercent && (currentPercent % 5 == 0 || currentPercent == 100)) {
                 lastReportedPercent = currentPercent;
-
-                // Safely update progress
+                
+                // Update progress safely
                 @synchronized(weakSelf) {
-                    if (!weakSelf) return; // Check weakSelf validity
+                    if (!weakSelf) return;
                     @try {
-                        // Update completion amount with safeguards
                         CGFloat fraction = taskProgress.fractionCompleted;
                         if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
-                            // Update the child progress's completed count
                             downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
                         }
                     } @catch (NSException *exception) {
-                        // Just log and continue
                         NSLog(@"[MCDL] Exception in progress update: %@", exception);
                     }
                 }
             }
         } destination:^NSURL * _Nonnull(NSURL * _Nonnull targetPath, NSURLResponse * _Nonnull response) {
-            // Check weakSelf validity and return nil if invalid
             if (!weakSelf) return nil;
-
-            // Update progress size if response has size info and size was initially 0
+            
+            // Update progress size if response has content length
             if (size == 0 && response.expectedContentLength > 0) {
                 NSUInteger actualSize = (NSUInteger)response.expectedContentLength;
-
-                @synchronized(weakSelf) {
-                    if (!weakSelf) return nil; // Re-check weakSelf
-                    @try {
-                        // Update progress size and overall progress total
-                        NSUInteger oldSize = downloadProgress.totalUnitCount;
-                        downloadProgress.totalUnitCount = actualSize;
-
-                        // Update parent progress total only if the task wasn't cancelled
-                        if (weakSelf.progress && !weakSelf.progress.cancelled) {
-                            weakSelf.progress.totalUnitCount = MAX(0, weakSelf.progress.totalUnitCount - oldSize + actualSize);
-                        }
-
-                        if (weakSelf.textProgress && !weakSelf.textProgress.cancelled) {
-                            weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
-                        }
-                    } @catch (NSException *exception) {
-                        NSLog(@"[MCDL] Exception updating progress size: %@", exception);
+                
+                [weakSelf.progressLock lock];
+                @try {
+                    NSUInteger oldSize = downloadProgress.totalUnitCount;
+                    downloadProgress.totalUnitCount = actualSize;
+                    
+                    if (weakSelf.progress && !weakSelf.progress.cancelled) {
+                        weakSelf.progress.totalUnitCount = MAX(0, weakSelf.progress.totalUnitCount - oldSize + actualSize);
                     }
+                    
+                    if (weakSelf.textProgress && !weakSelf.textProgress.cancelled) {
+                        weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
+                    }
+                } @catch (NSException *exception) {
+                    NSLog(@"[MCDL] Exception updating progress size: %@", exception);
                 }
+                [weakSelf.progressLock unlock];
             }
-
-            // Create directory structure if needed
+            
+            // Create directory structure
             NSString *dirPath = [path stringByDeletingLastPathComponent];
             NSError *dirError = nil;
-            BOOL dirCreated = [[NSFileManager defaultManager] createDirectoryAtPath:dirPath
-                                              withIntermediateDirectories:YES
-                                                               attributes:nil
-                                                                    error:&dirError];
-
-            if (!dirCreated && dirError.code != NSFileWriteFileExistsError) { // Ignore "already exists" error
+            [[NSFileManager defaultManager] createDirectoryAtPath:dirPath
+                                       withIntermediateDirectories:YES
+                                                        attributes:nil
+                                                             error:&dirError];
+            
+            if (dirError && dirError.code != NSFileWriteFileExistsError) {
                 NSLog(@"[MCDL] Warning: Could not create directory at %@: %@",
                       dirPath, dirError ? dirError.localizedDescription : @"Unknown error");
-                // Don't fail the whole download for a directory creation issue if it might exist
             }
-
-            // Remove existing file if it exists to avoid write errors
+            
+            // Remove existing file if needed
             if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
                 NSError *removeError = nil;
-                BOOL removed = [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
-
-                if (!removed) {
+                [NSFileManager.defaultManager removeItemAtPath:path error:&removeError];
+                
+                if (removeError) {
                     NSLog(@"[MCDL] Warning: Could not remove existing file at %@: %@",
-                          path, removeError ? removeError.localizedDescription : @"Unknown error");
+                          path, removeError.localizedDescription);
                 }
             }
-
+            
             return [NSURL fileURLWithPath:path];
         } completionHandler:^(NSURLResponse * _Nonnull response, NSURL * _Nullable filePath, NSError * _Nullable error) {
-            if (!weakSelf) return; // Check weakSelf validity
-
-            // Decrement active downloads count first
+            if (!weakSelf) return;
+            
+            // Decrement active downloads count
             @synchronized(weakSelf.pendingDownloads) {
                 weakSelf.activeDownloads--;
             }
-
-            // Safely check if progress is cancelled to avoid potential crashes
+            
+            // Check if cancelled
             BOOL isCancelled = NO;
             @synchronized(weakSelf) {
-                if (!weakSelf) return;
                 @try {
                     isCancelled = weakSelf.progress.cancelled;
                 } @catch (NSException *exception) {
@@ -745,70 +683,65 @@ typedef struct {
                     isCancelled = NO;
                 }
             }
-
+            
             if (isCancelled) {
-                // Leave group
                 [weakSelf safelyLeaveDispatchGroup:@"Cancelled"];
                 return;
             }
-
-            if (error != nil) {
-                // Always log errors
+            
+            if (error) {
                 NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
-
+                
                 if (failure) {
-                    // Call failure callback on background thread
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                         failure(error);
-                        // Leave group
                         [weakSelf safelyLeaveDispatchGroup:@"DownloadError"];
                     });
                 } else {
                     [weakSelf finishDownloadWithError:error file:name];
-                    // Leave group
                     [weakSelf safelyLeaveDispatchGroup:@"DownloadErrorFinish"];
                 }
                 return;
             }
-
+            
             // Increment successful download counter
             weakSelf.successfulDownloads++;
-
-            // Periodic progress logging
-            if (weakSelf.successfulDownloads % 50 == 0) {
+            
+            // Log progress periodically
+            if (weakSelf.verboseLogging && weakSelf.successfulDownloads % 50 == 0) {
                 NSLog(@"[MCDL] Progress: %ld of %ld files downloaded",
                       (long)weakSelf.successfulDownloads, (long)weakSelf.totalDownloads);
             }
-
-            // Verify the downloaded file if checksum is provided and we're not deferring verification
+            
+            // Verify downloaded file if checksum is provided
             BOOL shaValid = YES;
             if (sha.length > 0 && !weakSelf.deferSHAVerification) {
                 shaValid = [weakSelf checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:NO];
-
+                
                 if (!shaValid) {
                     NSLog(@"[MCDL] SHA1 verification failed for %@", path.lastPathComponent);
-
-                    // For version files, be less strict about SHA verification
+                    
+                    // Version files can continue with SHA mismatch
                     if (isVersionFile) {
                         NSLog(@"[MCDL] Version file SHA mismatch but continuing: %@", path.lastPathComponent);
                         shaValid = YES;
                     } else {
                         NSError *shaError = [NSError errorWithDomain:@"net.kdt.pojavlauncher"
                                                            code:1000
-                                                       userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]}];
-
-                        // Decrement success count on SHA failure
+                                                       userInfo:@{NSLocalizedDescriptionKey: 
+                                                                 [NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", 
+                                                                  path.lastPathComponent]}];
+                        
                         weakSelf.successfulDownloads--;
-
+                        
                         if (failure) {
                             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                                 failure(shaError);
-                                // Leave group
                                 [weakSelf safelyLeaveDispatchGroup:@"SHAFailure"];
                             });
                         } else {
-                            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", path.lastPathComponent]];
-                            // Leave group
+                            [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to verify file %@: SHA1 mismatch", 
+                                                                    path.lastPathComponent]];
                             [weakSelf safelyLeaveDispatchGroup:@"SHAFailureFinish"];
                         }
                         return;
@@ -818,81 +751,66 @@ typedef struct {
                 // Add to verification list for later checking
                 [weakSelf addFileToVerificationList:path sha:sha altName:altName url:url size:size];
             }
-
-            // Ensure progress is marked as complete
+            
+            // Mark progress as complete
             @synchronized(weakSelf) {
-                if (!weakSelf) return;
                 @try {
-                    // Mark the individual progress complete
                     if (downloadProgress.totalUnitCount > 0) {
                         downloadProgress.completedUnitCount = downloadProgress.totalUnitCount;
                     } else {
-                        // If totalUnitCount was 0 (or unknown), ensure completed is at least 1 if successful
                         downloadProgress.completedUnitCount = 1;
-                        downloadProgress.totalUnitCount = 1; // Set total to 1 to reflect completion
+                        downloadProgress.totalUnitCount = 1;
                     }
-                    // Trigger UI update after completion
                     weakSelf.needsUIUpdate = YES;
                 } @catch (NSException *exception) {
                     NSLog(@"[MCDL] Exception marking progress complete: %@", exception);
                 }
             }
-
-            // Call success callback on background thread if SHA is valid
+            
+            // Call success callback if SHA is valid
             if (success && shaValid) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     success();
                 });
             }
-
-            // Leave the dispatch group for this completed task
+            
+            // Leave dispatch group
             [weakSelf safelyLeaveDispatchGroup:@"Success"];
-
+            
             // Process next in queue if needed
             dispatch_async(weakSelf.downloadQueue, ^{
                 [weakSelf processNextDownloadInQueue];
             });
         }];
-
-        // Add the task to the pending queue
+        
+        // Add task to pending queue
         @synchronized(self.pendingDownloads) {
             [self.pendingDownloads addObject:task];
         }
-
-        // Trigger processing of the queue
+        
+        // Trigger queue processing
         dispatch_async(self.downloadQueue, ^{
             [self processNextDownloadInQueue];
         });
-
+        
         return task;
     }
 }
 
-// Simplified compatibility method with just success callback
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url
-                                           size:(NSUInteger)size
-                                            sha:(NSString *)sha
-                                        altName:(NSString *)altName
-                                         toPath:(NSString *)path
-                                        success:(void (^)(void))success {
-    // Simply forward to the comprehensive method with nil for failure
+#pragma mark - Legacy API Compatibility
+
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path success:(void (^)(void))success {
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:success failure:nil];
 }
 
-// Basic compatibility method with no callbacks
-- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url
-                                          size:(NSUInteger)size
-                                           sha:(NSString *)sha
-                                       altName:(NSString *)altName
-                                        toPath:(NSString *)path {
-    // Forward to the comprehensive method with nil for both callbacks
+- (NSURLSessionDownloadTask *)createDownloadTask:(NSString *)url size:(NSUInteger)size sha:(NSString *)sha altName:(NSString *)altName toPath:(NSString *)path {
     return [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
 }
 
-// New method to add a file to the verification list
+#pragma mark - File Verification
+
 - (void)addFileToVerificationList:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size {
     @synchronized(self.pendingVerificationList) {
-        // Create a dictionary to store verification info
         NSDictionary *verificationItem = @{
             @"path": path,
             @"sha": sha,
@@ -900,43 +818,38 @@ typedef struct {
             @"url": url,
             @"size": @(size)
         };
-
-        // Add to list
+        
         [self.pendingVerificationList addObject:verificationItem];
     }
 }
 
 - (BOOL)verifyPendingFiles {
-    // Make a thread-safe copy of the verification list
-    NSArray *verificationItems = nil;
-    NSUInteger pendingCount = 0;
+    // Make a thread-safe copy of verification list
+    NSArray *verificationItems;
     
     @synchronized(self.pendingVerificationList) {
-        pendingCount = self.pendingVerificationList.count;
-        // Return true if no files to verify
-        if (pendingCount == 0) {
+        if (self.pendingVerificationList.count == 0) {
             return YES;
         }
         
         verificationItems = [NSArray arrayWithArray:self.pendingVerificationList];
-        [self.pendingVerificationList removeAllObjects]; // Clear original list after copying
+        [self.pendingVerificationList removeAllObjects];
     }
-
+    
     if (self.verboseLogging) {
-        NSLog(@"[MCDL] Starting verification of %lu files", (unsigned long)verificationItems.count);
+        NSLog(@"[MCDL] Verifying %lu files", (unsigned long)verificationItems.count);
     }
-
-    // Track failed files
+    
+    // Track failed items
     NSMutableArray *failedItems = [NSMutableArray array];
-
-    // Verify each file with proper logging
+    
+    // Verify each file
     NSUInteger verifiedCount = 0;
     for (NSDictionary *item in verificationItems) {
         NSString *path = item[@"path"];
         NSString *sha = item[@"sha"];
         NSString *altName = [item[@"altName"] isEqual:[NSNull null]] ? nil : item[@"altName"];
-
-        // Check if file exists and SHA matches
+        
         if (![NSFileManager.defaultManager fileExistsAtPath:path] ||
             ![self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:NO]) {
             [failedItems addObject:item];
@@ -944,217 +857,94 @@ typedef struct {
             verifiedCount++;
         }
     }
-
-    // If any files failed verification, redownload them
+    
+    // Handle failed verifications
     if (failedItems.count > 0) {
         NSLog(@"[MCDL] %lu files failed verification and will be redownloaded", (unsigned long)failedItems.count);
-
-        // Reset counters and adjust progress for redownloads
-        @synchronized(self) {
-            // Adjust progress - subtract estimated size of failed files
-            NSUInteger sizeToSubtract = 0;
-            for (NSDictionary *item in failedItems) {
-                sizeToSubtract += [item[@"size"] unsignedIntegerValue] > 0 ? [item[@"size"] unsignedIntegerValue] : 100000;
-            }
-            self.progress.completedUnitCount = MAX(0, self.progress.completedUnitCount - sizeToSubtract);
-
-            // Adjust total downloads and success counts
-            self.successfulDownloads -= failedItems.count; // Adjust success count
-            self.totalDownloads = failedItems.count; // Reset total to only the failed items
-
-            // Reset group counters for the redownload phase
-            [self.completionLock lock];
-            self.totalTasksEnqueued = 0; // Reset enqueue count for redownload phase
-            self.tasksLeftGroup = 0; // Reset leave count for redownload phase
-            [self.completionLock unlock];
-            self.isDownloadPhaseComplete = NO; // Mark as not complete again
+        
+        // Adjust progress for redownloads
+        [self.progressLock lock];
+        NSUInteger sizeToSubtract = 0;
+        for (NSDictionary *item in failedItems) {
+            sizeToSubtract += [item[@"size"] unsignedIntegerValue] > 0 ? [item[@"size"] unsignedIntegerValue] : 100000;
         }
-
-        // Set deferSHAVerification to false to force immediate verification for redownloads
+        self.progress.completedUnitCount = MAX(0, self.progress.completedUnitCount - sizeToSubtract);
+        self.textProgress.completedUnitCount = self.progress.completedUnitCount;
+        [self.progressLock unlock];
+        
+        // Adjust counters for redownloads
+        self.successfulDownloads -= failedItems.count;
+        self.totalDownloads = failedItems.count;
+        
+        // Reset group counters
+        [self.completionLock lock];
+        self.totalTasksEnqueued = 0;
+        self.tasksLeftGroup = 0;
+        [self.completionLock unlock];
+        
+        self.isDownloadPhaseComplete = NO;
+        
+        // Force immediate verification for redownloads
         self.deferSHAVerification = NO;
-
-        // Redownload each failed file
+        
+        // Redownload failed files
         for (NSDictionary *item in failedItems) {
             NSString *path = item[@"path"];
             NSString *sha = item[@"sha"];
             NSString *altName = [item[@"altName"] isEqual:[NSNull null]] ? nil : item[@"altName"];
             NSString *url = item[@"url"];
             NSUInteger size = [item[@"size"] unsignedIntegerValue];
-
-            // Create download task for this file - this will re-enter the group
+            
             [self redownloadFileWithPath:path sha:sha altName:altName url:url size:size];
         }
-
-        return NO; // Indicate verification failed and redownload is in progress
+        
+        return NO;
     }
-
-    // All files verified successfully
+    
     if (self.verboseLogging) {
         NSLog(@"[MCDL] All %lu files verified successfully", (unsigned long)verifiedCount);
     }
-
-    return YES; // Indicate all files verified successfully
+    
+    return YES;
 }
 
-
-// Method to redownload a specific file
 - (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size {
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Redownloading file: %@", altName ?: path.lastPathComponent);
     }
-
-    // Create a download task for this file - this will re-enter the group and queue
+    
     [self createDownloadTask:url size:size sha:sha altName:altName toPath:path success:nil failure:nil];
 }
 
-
-- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
-    NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), file, error.localizedDescription];
-    NSLog(@"[MCDL] Error: %@", errorStr);
-    [self finishDownloadWithErrorString:errorStr];
-}
-
-- (void)finishDownloadWithErrorString:(NSString *)error {
-    // Cancel progress safely
-    @synchronized(self) {
-        @try {
-            [self.progress cancel];
-            [self.textProgress cancel];
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
-        }
-        [self markDownloadPhaseComplete:YES];
-    }
-
-    // Cancel all active downloads and reset session
-    [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
-
-    // Clear pending downloads
-    @synchronized(self.pendingDownloads) {
-        NSInteger countToLeave = self.pendingDownloads.count;
-        [self.pendingDownloads removeAllObjects];
-        self.activeDownloads = 0;
-        // Leave the group for any cancelled pending tasks
-         for (NSInteger i = 0; i < countToLeave; i++) {
-              [self safelyLeaveDispatchGroup:@"CancelledPendingOnError"];
-         }
-    }
-
-    // Show error dialog on the main thread
-     dispatch_async(dispatch_get_main_queue(), ^{
-         showDialog(localize(@"Error", nil), error);
-     });
-
-    // Call error handler if set
-    if (self.handleError) {
-        // Call error handler asynchronously on a background thread if needed
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-             self.handleError();
-        });
-    }
-}
-
-- (void)cleanupProgressObservers {
-    // First cleanup the main progress
-    if (self.progress) {
-        // Mark as cancelled to prevent further updates
-        @try {
-            [self.progress cancel];
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Exception cancelling progress: %@", exception);
-        }
-    }
-    
-    // Cancel individual progress objects in the list
-    @synchronized(self.progressList) {
-        for (NSProgress *childProgress in [self.progressList copy]) {
-            if ([childProgress isKindOfClass:[NSProgress class]]) {
-                @try {
-                    [childProgress cancel];
-                } @catch (NSException *exception) {
-                    NSLog(@"[MCDL] Exception cancelling child progress: %@", exception);
-                }
-            }
-        }
-        // Clear the progress list
-        [self.progressList removeAllObjects];
-    }
-    
-    // Reset textProgress
-    if (self.textProgress) {
-        @try {
-            [self.textProgress cancel];
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Exception cancelling text progress: %@", exception);
-        }
-    }
-    
-    // Invalidate timer if active
-    if (self.uiUpdateTimer) {
-        [self.uiUpdateTimer invalidate];
-        self.uiUpdateTimer = nil;
-    }
-    
-    // Final completion marker
-    self.isDownloadPhaseComplete = YES;
-}
-
-// Check if the account has permission to download
-- (BOOL)checkAccessWithDialog:(BOOL)show {
-    // Check if account is allowed to download Minecraft
-    BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
-
-    if (!accessible) {
-        // Cancel download if not accessible
-        @synchronized(self) {
-            @try {
-                [self.progress cancel];
-                [self.textProgress cancel];
-            } @catch (NSException *exception) {
-                NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
-            }
-            self.isDownloadPhaseComplete = YES; // Mark complete to unblock
-        }
-
-        // Show error dialog if requested
-        if (show) {
-            [self finishDownloadWithErrorString:@"Minecraft can't be legally installed when logged in with a local account. Please switch to an online account to continue."];
-        }
-    }
-
-    return accessible;
-}
-
-// Check SHA of the file with logging option
 - (BOOL)checkSHAIgnorePref:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
     if (sha.length == 0) {
-        // When sha = skip, only check for file existence
-        BOOL existence = [NSFileManager.defaultManager fileExistsAtPath:path];
-        return existence;
+        // When no SHA is provided, just check file existence
+        return [NSFileManager.defaultManager fileExistsAtPath:path];
     }
-
-    // Get file attributes to check file size
+    
+    // Check file attributes
     NSError *attributesError = nil;
     NSDictionary *fileAttributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:&attributesError];
-
+    
     if (attributesError || !fileAttributes) {
         return NO;
     }
-
-    // Check if file size is zero, which would indicate a corrupted download
+    
+    // Reject zero-size files
     unsigned long long fileSize = [fileAttributes fileSize];
     if (fileSize == 0) {
         NSLog(@"[MCDL] SHA1 checker: file exists but has zero size: %@", path.lastPathComponent);
         return NO;
     }
-
-    // Read file contents for SHA calculation
-     NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil]; // Use mapped reading for large files
-    if (data == nil) {
-        NSLog(@"[MCDL] SHA1 checker: file doesn't exist or couldn't be read: %@", altName ? altName : path.lastPathComponent);
+    
+    // Read file data
+    NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+    if (!data) {
+        NSLog(@"[MCDL] SHA1 checker: file doesn't exist or couldn't be read: %@", 
+              altName ? altName : path.lastPathComponent);
         return NO;
     }
-
+    
     // Calculate SHA1 hash
     unsigned char digest[CC_SHA1_DIGEST_LENGTH];
     CC_SHA1(data.bytes, (CC_LONG)data.length, digest);
@@ -1162,119 +952,228 @@ typedef struct {
     for(int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
         [localSHA appendFormat:@"%02x", digest[i]];
     }
-
+    
     BOOL check = [sha isEqualToString:localSHA];
-
-    // Only log SHA1 failures, not successes unless verbose is enabled
+    
+    // Log failures and optionally successes
     if (!check) {
         NSLog(@"[MCDL] SHA1 failed for %@", altName ? altName : path.lastPathComponent);
         NSLog(@"[MCDL] Expected: %@", sha);
         NSLog(@"[MCDL]Got:      %@", localSHA);
         NSLog(@"[MCDL] File size: %llu bytes", fileSize);
+    } else if (logSuccess && self.verboseLogging) {
+        NSLog(@"[MCDL] SHA1 verified for %@", altName ? altName : path.lastPathComponent);
     }
-
+    
     return check;
 }
 
-
-// Simplified SHA check with default logging behavior
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName {
-    // Special handling for version files to be more selective about forced downloads
-    if (altName) {
-        // Force download for latest version files
-        if ([altName hasSuffix:@".json"] &&
-            ([altName containsString:@"latest-release"] ||
-             [altName containsString:@"latest-snapshot"])) {
-
+    // Force download for latest version files
+    if (altName && [altName hasSuffix:@".json"] && 
+        ([altName containsString:@"latest-release"] || [altName containsString:@"latest-snapshot"])) {
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Forcing download of latest version file: %@", altName);
+        }
+        return NO;
+    }
+    
+    // For specific version files, check existence
+    if (([altName hasSuffix:@".json"] && [path containsString:@"/versions/"]) ||
+        ([path containsString:@"/versions/"] && [path hasSuffix:@".jar"])) {
+        
+        BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
+        if (!fileExists) {
             if (self.verboseLogging) {
-                NSLog(@"[MCDL] Forcing download of latest version file: %@", altName);
+                NSLog(@"[MCDL] Version file doesn't exist, downloading: %@", altName);
             }
             return NO;
         }
-
-        // For specific version files (not latest-*) check if they exist
-        if (([altName hasSuffix:@".json"] && [path containsString:@"/versions/"]) ||
-            ([path containsString:@"/versions/"] && [path hasSuffix:@".jar"])) {
-
-            BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-            if (!fileExists) {
-                if (self.verboseLogging) {
-                    NSLog(@"[MCDL] Version file doesn't exist, downloading: %@", altName);
-                }
-                return NO;
-            }
-            // If it exists, fall through to SHA check if enabled
-        }
     }
-
-    // For other files or existing version files, perform the SHA check based on preference
+    
+    // Respect user preference for SHA checking
     return [self checkSHA:sha forFile:path altName:altName logSuccess:NO];
 }
 
-
-// Check SHA of the file respecting user preferences
 - (BOOL)checkSHA:(NSString *)sha forFile:(NSString *)path altName:(NSString *)altName logSuccess:(BOOL)logSuccess {
-    // Respect user preference for SHA checking
     if (getPrefBool(@"general.check_sha")) {
         return [self checkSHAIgnorePref:sha forFile:path altName:altName logSuccess:logSuccess];
     } else {
-        // When SHA checking is disabled, still check if file exists
+        // When SHA checking is disabled, just check file existence
         return [NSFileManager.defaultManager fileExistsAtPath:path];
     }
 }
 
+#pragma mark - Account Validation
+
+- (BOOL)checkAccessWithDialog:(BOOL)show {
+    // Check if account is allowed to download Minecraft
+    BOOL accessible = [BaseAuthenticator.current.authData[@"username"] hasPrefix:@"Demo."] || 
+                      BaseAuthenticator.current.authData[@"xboxGamertag"] != nil;
+    
+    if (!accessible) {
+        // Cancel download if not accessible
+        [self.progressLock lock];
+        @try {
+            [self.progress cancel];
+            [self.textProgress cancel];
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
+        }
+        [self.progressLock unlock];
+        
+        self.isDownloadPhaseComplete = YES;
+        
+        // Show error dialog if requested
+        if (show) {
+            [self finishDownloadWithErrorString:@"Minecraft can't be legally installed when logged in with a local account. Please switch to an online account to continue."];
+        }
+    }
+    
+    return accessible;
+}
+
+#pragma mark - Error Handling
+
+- (void)finishDownloadWithError:(NSError *)error file:(NSString *)file {
+    NSString *errorStr = [NSString stringWithFormat:localize(@"launcher.mcl.error_download", NULL), 
+                          file, error.localizedDescription];
+    NSLog(@"[MCDL] Error: %@", errorStr);
+    [self finishDownloadWithErrorString:errorStr];
+}
+
+- (void)finishDownloadWithErrorString:(NSString *)error {
+    // Cancel progress
+    [self.progressLock lock];
+    @try {
+        [self.progress cancel];
+        [self.textProgress cancel];
+    } @catch (NSException *exception) {
+        NSLog(@"[MCDL] Warning: Exception cancelling progress: %@", exception);
+    }
+    [self.progressLock unlock];
+    
+    [self markDownloadPhaseComplete:YES];
+    
+    // Cancel all active downloads
+    [self.manager invalidateSessionCancelingTasks:YES resetSession:YES];
+    
+    // Clear pending downloads
+    @synchronized(self.pendingDownloads) {
+        NSInteger countToLeave = self.pendingDownloads.count;
+        [self.pendingDownloads removeAllObjects];
+        self.activeDownloads = 0;
+        
+        // Leave the group for cancelled pending tasks
+        for (NSInteger i = 0; i < countToLeave; i++) {
+            [self safelyLeaveDispatchGroup:@"CancelledPendingOnError"];
+        }
+    }
+    
+    // Show error dialog
+    dispatch_async(dispatch_get_main_queue(), ^{
+        showDialog(localize(@"Error", nil), error);
+    });
+    
+    // Call error handler if set
+    if (self.handleError) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            self.handleError();
+        });
+    }
+}
+
+- (void)cleanupProgressObservers {
+    // Cancel main progress
+    [self.progressLock lock];
+    if (self.progress) {
+        @try {
+            [self.progress cancel];
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Exception cancelling progress: %@", exception);
+        }
+    }
+    
+    // Cancel individual progress objects
+    for (NSProgress *childProgress in [self.progressList copy]) {
+        if ([childProgress isKindOfClass:[NSProgress class]]) {
+            @try {
+                [childProgress cancel];
+            } @catch (NSException *exception) {
+                NSLog(@"[MCDL] Exception cancelling child progress: %@", exception);
+            }
+        }
+    }
+    [self.progressList removeAllObjects];
+    
+    // Cancel text progress
+    if (self.textProgress) {
+        @try {
+            [self.textProgress cancel];
+        } @catch (NSException *exception) {
+            NSLog(@"[MCDL] Exception cancelling text progress: %@", exception);
+        }
+    }
+    [self.progressLock unlock];
+    
+    // Invalidate timer
+    if (self.uiUpdateTimer) {
+        [self.uiUpdateTimer invalidate];
+        self.uiUpdateTimer = nil;
+    }
+    
+    // Mark completion
+    self.isDownloadPhaseComplete = YES;
+}
+
+#pragma mark - Resource Download Methods
 
 - (void)downloadVersion:(NSDictionary *)version {
     // Prepare download state
     [self prepareForDownload];
-
-    // Reset metadata and explicitly mark as NOT a modpack
+    
+    // Reset metadata
     @synchronized(self) {
         if (!self.metadata) {
             self.metadata = [NSMutableDictionary dictionary];
         } else {
             [self.metadata removeAllObjects];
         }
-        // Critical: Mark this as NOT a modpack installation
         self.metadata[@"isModpackInstall"] = @NO;
-        self.isDownloadPhaseComplete = NO; // Reset completion flag
+        self.isDownloadPhaseComplete = NO;
     }
-
+    
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
-
-    // Create a temporary gate to keep the group non-empty until we're ready
-    self.hasFinishedSetup = NO;  // Add this as a property
     
-    // Critical fix: Enter the group TWICE at the start - once for the metadata phase
-    // and once for a "gate" that will be left only when everything is fully complete
-    dispatch_group_enter(self.downloadCompletionGroup);  // For metadata phase
-    dispatch_group_enter(self.downloadCompletionGroup);  // Gate task that stays until the end
+    // Setup completion gate
+    self.hasFinishedSetup = NO;
     
-    [self.completionLock lock]; 
-    self.totalTasksEnqueued += 2;  // Account for both entries
+    // Enter group twice - for metadata and gate
+    dispatch_group_enter(self.downloadCompletionGroup);
+    dispatch_group_enter(self.downloadCompletionGroup);
+    
+    [self.completionLock lock];
+    self.totalTasksEnqueued += 2;
     [self.completionLock unlock];
-
-    // --- Setup Final Completion Notification ---
-    // This will trigger checkFinalCompletion only when the gate is removed
+    
+    // Setup completion notification
     __weak typeof(self) weakSelf = self;
     dispatch_group_notify(self.downloadCompletionGroup, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [weakSelf checkFinalCompletion];
     });
-
-    // Stage 1: Download Version Metadata
+    
+    // Start with metadata download
     [self downloadVersionMetadata:version success:^{
-        // Stage 2: Process Libraries, Client Jar, and Assets (triggered by metadata success)
-        [self processPostMetadataDownloads];
+        // Process all other downloads
+        [weakSelf processPostMetadataDownloads];
         
-        // Leave group for the metadata phase
+        // Leave group for metadata phase
         [weakSelf safelyLeaveDispatchGroup:@"MetadataPhase"];
         
-        // Mark setup as complete - all downloads have been queued now
+        // Mark setup complete and start monitoring
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            // Give queue processing time to start downloads
+            // Give queue time to start downloads
             sleep(1);
-            
-            // Now we're ready to remove the gate, but only if all downloads are truly complete
             [weakSelf finalizeSetup];
         });
     }];
@@ -1282,34 +1181,27 @@ typedef struct {
 
 - (void)finalizeSetup {
     @synchronized(self) {
-        if (self.hasFinishedSetup) return; // Prevent double finalization
+        if (self.hasFinishedSetup) return;
         
         self.hasFinishedSetup = YES;
         
-        // Check if any downloads are still active or pending
+        // Check for active downloads or pending verifications
         BOOL hasActiveDownloads = NO;
         @synchronized(self.pendingDownloads) {
             hasActiveDownloads = (self.pendingDownloads.count > 0 || self.activeDownloads > 0);
         }
         
-        // Also check if we have pending verifications
         BOOL hasPendingVerifications = NO;
         @synchronized(self.pendingVerificationList) {
             hasPendingVerifications = (self.pendingVerificationList.count > 0);
         }
         
         if (hasActiveDownloads || hasPendingVerifications) {
-            // Downloads are still in progress or files need verification, set up monitoring
             if (self.verboseLogging) {
                 NSLog(@"[MCDL] Setup complete but downloads/verifications still in progress. Starting download monitor.");
-                NSLog(@"[MCDL] Pending downloads: %ld, Active downloads: %ld, Pending verifications: %ld", 
-                    (long)self.pendingDownloads.count, (long)self.activeDownloads, (long)self.pendingVerificationList.count);
             }
-            
-            // Start a monitor to check download progress
             [self startDownloadMonitor];
         } else {
-            // No active downloads, we can remove the gate
             if (self.verboseLogging) {
                 NSLog(@"[MCDL] Setup complete and no downloads in progress. Removing gate.");
             }
@@ -1322,11 +1214,11 @@ typedef struct {
     __weak typeof(self) weakSelf = self;
     
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        // Monitor loop - check every second until downloads complete
-        for (int i = 0; i < 120; i++) {  // Maximum 2 minute wait (increased from 60s)
+        // Monitor loop - check every second for up to 2 minutes
+        for (int i = 0; i < 120; i++) {
             sleep(1);
             
-            if (!weakSelf) return;  // Safety check
+            if (!weakSelf) return;
             
             // Check for pending downloads
             BOOL downloadsPending = NO;
@@ -1340,7 +1232,7 @@ typedef struct {
                 verificationsPending = (weakSelf.pendingVerificationList.count > 0);
             }
             
-            // If everything is done, we can leave the group
+            // If everything is done, leave the group
             if (!downloadsPending && !verificationsPending) {
                 if (weakSelf.verboseLogging) {
                     NSLog(@"[MCDL] All downloads and verifications completed. Removing gate.");
@@ -1349,11 +1241,9 @@ typedef struct {
                 return;
             }
             
-            // Every 10 seconds, log progress if verbose
+            // Log progress periodically
             if (weakSelf.verboseLogging && i % 10 == 0) {
-                NSInteger pendingDownloads;
-                NSInteger activeDownloads;
-                NSInteger pendingVerifications;
+                NSInteger pendingDownloads, activeDownloads, pendingVerifications;
                 
                 @synchronized(weakSelf.pendingDownloads) {
                     pendingDownloads = weakSelf.pendingDownloads.count;
@@ -1369,7 +1259,7 @@ typedef struct {
             }
         }
         
-        // If we get here, we've waited 2 minutes - force leave gate
+        // Timeout after 2 minutes
         NSLog(@"[MCDL] Download monitor timeout after 120 seconds. Removing gate.");
         [weakSelf safelyLeaveDispatchGroup:@"GateRemovalTimeout"];
     });
@@ -1378,65 +1268,79 @@ typedef struct {
 - (void)processPostMetadataDownloads {
     @synchronized(self) {
         if (!self || self.progress.cancelled) return;
-
-        NSDictionary *localMetadata = [self.metadata copy]; // Use a local copy
-
+        
+        NSDictionary *localMetadata = [self.metadata copy];
+        
         // Enter group for libraries and client JAR
         dispatch_group_enter(self.downloadCompletionGroup);
-        [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
-
-        // Enqueue Libraries and Client JAR
+        
+        [self.completionLock lock];
+        self.totalTasksEnqueued++;
+        [self.completionLock unlock];
+        
+        // Enqueue downloads
         if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing libraries...");
         [self downloadClientLibraries:localMetadata];
+        
         if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing client JAR...");
         [self downloadClientJar:localMetadata];
         
         // Leave group for libraries and client JAR
         [self safelyLeaveDispatchGroup:@"LibrariesAndClientJar"];
-
-        // Handle Assets 
+        
+        // Handle Assets
         NSDictionary *assetIndexInfo = localMetadata[@"assetIndex"];
         if (assetIndexInfo) {
             // Enter group for asset index download
             dispatch_group_enter(self.downloadCompletionGroup);
-            [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
+            
+            [self.completionLock lock];
+            self.totalTasksEnqueued++;
+            [self.completionLock unlock];
             
             if (self.verboseLogging) NSLog(@"[MCDL] Downloading Asset Metadata...");
+            
             [self downloadAssetMetadataWithSuccess:^{
                 @synchronized(self) {
                     if (!self || self.progress.cancelled) {
                         [self safelyLeaveDispatchGroup:@"AssetIndexCancelled"];
                         return;
                     }
-                    // Asset index metadata is now in self.metadata[@"assetIndexObj"]
+                    
                     NSDictionary *assetIndexObj = self.metadata[@"assetIndexObj"];
                     if (assetIndexObj && assetIndexObj[@"objects"]) {
-                        // Enter group for asset downloads as a whole
+                        // Enter group for asset downloads
                         dispatch_group_enter(self.downloadCompletionGroup);
-                        [self.completionLock lock]; self.totalTasksEnqueued++; [self.completionLock unlock];
+                        
+                        [self.completionLock lock];
+                        self.totalTasksEnqueued++;
+                        [self.completionLock unlock];
                         
                         if (self.verboseLogging) NSLog(@"[MCDL] Enqueuing assets...");
-                        [self downloadClientAssets:assetIndexObj]; // This enqueues asset downloads
+                        [self downloadClientAssets:assetIndexObj];
                         
                         // Leave group for asset downloads
                         [self safelyLeaveDispatchGroup:@"AssetDownloads"];
                         
-                        [self.metadata removeObjectForKey:@"assetIndexObj"]; // Clean up
+                        [self.metadata removeObjectForKey:@"assetIndexObj"];
                     } else {
                         NSLog(@"[MCDL] No assets found in index or index missing.");
                     }
-                    // Leave group after processing assets based on this index
+                    
+                    // Leave group for asset index processing
                     [self safelyLeaveDispatchGroup:@"AssetIndexSuccess"];
                 }
             }];
         } else {
             NSLog(@"[MCDL] No asset index found. Skipping asset downloads.");
         }
-
-        // Only leave AFTER all other downloads have been queued to prevent premature completion
+        
+        // Leave group for overall process
         [self safelyLeaveDispatchGroup:@"OverallProcessStart"];
     }
 }
+
+#pragma mark - Resource Download Methods
 
 - (void)downloadVersionMetadata:(NSDictionary *)version success:(void (^)(void))success {
     // Download base json
@@ -1446,10 +1350,10 @@ typedef struct {
     } else if ([versionStr isEqualToString:@"latest-snapshot"]) {
         versionStr = getPrefObject(@"internal.latest_version.snapshot");
     }
-
+    
     NSString *path = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json", getenv("POJAV_GAME_DIR"), versionStr];
-
-    // Ensure version directory exists before attempting to download
+    
+    // Ensure version directory exists
     NSString *versionDir = [path stringByDeletingLastPathComponent];
     NSError *dirError = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:versionDir
@@ -1461,15 +1365,14 @@ typedef struct {
         [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create version directory: %@", dirError.localizedDescription]];
         return;
     }
-
-    // Find it again to resolve latest-*
-     NSDictionary* versionInfoToDownload = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
-
-
+    
+    // Find version in remote list
+    NSDictionary* versionInfoToDownload = (id)[MinecraftResourceUtils findVersion:versionStr inList:remoteVersionList];
+    
     // Create wrapped success callback
     __weak typeof(self) weakSelf = self;
     void(^wrappedSuccess)(void) = ^{
-        // Safely check if task is cancelled
+        // Check if cancelled
         BOOL isCancelled = NO;
         @synchronized(weakSelf) {
             if (!weakSelf) return;
@@ -1481,7 +1384,7 @@ typedef struct {
             }
         }
         if (isCancelled) return;
-
+        
         // Parse the JSON file
         NSError *jsonError = nil;
         NSData *jsonData = [NSData dataWithContentsOfFile:path options:0 error:&jsonError];
@@ -1490,8 +1393,8 @@ typedef struct {
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error reading version JSON: %@", jsonError.localizedDescription]];
             return;
         }
-
-        // Parse JSON with mutable containers option
+        
+        // Parse JSON with mutable containers
         id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData
                                                        options:NSJSONReadingMutableContainers
                                                          error:&jsonError];
@@ -1500,158 +1403,163 @@ typedef struct {
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing version JSON: %@", jsonError.localizedDescription]];
             return;
         }
-
-        // Set metadata safely
+        
+        // Store and process metadata
         @synchronized(weakSelf) {
             if (!weakSelf) return;
-            // Store version metadata
-             // Use mutableCopy to ensure we can modify it later
-             weakSelf.metadata = [jsonObject mutableCopy];
-
-            // Explicitly mark as NOT a modpack installation
+            
+            // Store metadata
+            weakSelf.metadata = [jsonObject mutableCopy];
             weakSelf.metadata[@"isModpackInstall"] = @NO;
-        }
-
-        // Handle inheritsFrom for mod versions
-        @synchronized(weakSelf) {
-             if (!weakSelf) return;
-             NSString *inheritsFromVersionId = weakSelf.metadata[@"inheritsFrom"];
-             if (inheritsFromVersionId) {
-                 NSLog(@"[MCDL] Version inherits from: %@", inheritsFromVersionId);
-                 NSString *inheritsFromPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json",
-                                             getenv("POJAV_GAME_DIR"),
-                                             inheritsFromVersionId];
-
-                 // Read parent version JSON
-                 NSMutableDictionary *inheritsFromDict = parseJSONFromFile(inheritsFromPath);
-                 if (inheritsFromDict && !inheritsFromDict[@"NSErrorObject"]) {
-                      [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:inheritsFromDict];
-                      weakSelf.metadata = inheritsFromDict; // Replace metadata with merged parent
-                 } else {
-                      // If parent JSON is missing or invalid, try downloading it.
-                      // Find the parent version in the remote list
-                      NSDictionary *parentVersionInfo = (id)[MinecraftResourceUtils findVersion:inheritsFromVersionId inList:remoteVersionList];
-                      if (parentVersionInfo) {
-                           NSLog(@"[MCDL] Parent JSON missing, attempting to download: %@", inheritsFromVersionId);
-                           // Download the parent JSON recursively. The success block here will re-trigger the merging logic.
-                           [weakSelf downloadVersionMetadata:parentVersionInfo success:^{
-                                // After parent is downloaded, re-attempt merging with the original child metadata
-                                // Need to re-parse the child JSON as self.metadata was overwritten
-                                NSMutableDictionary *childJson = parseJSONFromFile(path);
-                                NSMutableDictionary *parentJson = parseJSONFromFile(inheritsFromPath);
-                                if (childJson && !childJson[@"NSErrorObject"] && parentJson && !parentJson[@"NSErrorObject"]) {
-                                     [MinecraftResourceUtils processVersion:childJson inheritsFrom:parentJson];
-                                     @synchronized(weakSelf) {
-                                         if (!weakSelf) return;
-                                         weakSelf.metadata = parentJson; // Replace metadata with merged parent
-                                         [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata]; // Tweak merged version
-                                     }
-                                     // Call original success callback now that merging is complete
-                                     if (success) { success(); }
-                                } else {
-                                     [weakSelf finishDownloadWithErrorString:@"Failed to load or merge inherited version JSON after download."];
+            
+            // Handle inheritsFrom for mod versions
+            NSString *inheritsFromVersionId = weakSelf.metadata[@"inheritsFrom"];
+            if (inheritsFromVersionId) {
+                NSLog(@"[MCDL] Version inherits from: %@", inheritsFromVersionId);
+                NSString *inheritsFromPath = [NSString stringWithFormat:@"%1$s/versions/%2$@/%2$@.json",
+                                           getenv("POJAV_GAME_DIR"),
+                                           inheritsFromVersionId];
+                
+                // Read parent version JSON
+                NSMutableDictionary *inheritsFromDict = parseJSONFromFile(inheritsFromPath);
+                if (inheritsFromDict && !inheritsFromDict[@"NSErrorObject"]) {
+                    [MinecraftResourceUtils processVersion:weakSelf.metadata inheritsFrom:inheritsFromDict];
+                    weakSelf.metadata = inheritsFromDict; // Replace with merged parent
+                } else {
+                    // Download parent version if missing
+                    NSDictionary *parentVersionInfo = (id)[MinecraftResourceUtils findVersion:inheritsFromVersionId inList:remoteVersionList];
+                    if (parentVersionInfo) {
+                        NSLog(@"[MCDL] Parent JSON missing, downloading: %@", inheritsFromVersionId);
+                        
+                        // Download parent recursively
+                        [weakSelf downloadVersionMetadata:parentVersionInfo success:^{
+                            // Re-attempt merging after parent download
+                            NSMutableDictionary *childJson = parseJSONFromFile(path);
+                            NSMutableDictionary *parentJson = parseJSONFromFile(inheritsFromPath);
+                            
+                            if (childJson && !childJson[@"NSErrorObject"] && 
+                                parentJson && !parentJson[@"NSErrorObject"]) {
+                                [MinecraftResourceUtils processVersion:childJson inheritsFrom:parentJson];
+                                
+                                @synchronized(weakSelf) {
+                                    if (!weakSelf) return;
+                                    weakSelf.metadata = parentJson; // Use merged parent
+                                    [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
                                 }
-                           }];
-                           return; // Return here, the recursive call will handle the final success call
-                      } else {
-                           [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Could not find inherited version %@ in remote list.", inheritsFromVersionId]];
-                           return;
-                      }
-                 }
-             }
-
-            // Apply version tweaks after potential merging
+                                
+                                // Call original success callback
+                                if (success) success();
+                            } else {
+                                [weakSelf finishDownloadWithErrorString:@"Failed to load or merge inherited version JSON after download."];
+                            }
+                        }];
+                        return; // Exit as recursive call will handle success
+                    } else {
+                        [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Could not find inherited version %@ in remote list.", inheritsFromVersionId]];
+                        return;
+                    }
+                }
+            }
+            
+            // Apply tweaks to version JSON
             [MinecraftResourceUtils tweakVersionJson:weakSelf.metadata];
         }
-
-
+        
         // Call original success callback
         if (success) {
             success();
         }
     };
-
+    
     if (!versionInfoToDownload) {
-        // This is likely a local version, check if json exists
-         if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-             if (self.verboseLogging) {
-                 NSLog(@"[MCDL] Using existing local/custom version JSON: %@", path.lastPathComponent);
-             }
-             wrappedSuccess(); // Process existing file
-         } else {
-             // If JSON doesn't exist locally and wasn't in remote list, it's an error
-             [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Version JSON not found locally or remotely: %@", versionStr]];
-         }
+        // Check for local version
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Using existing local/custom version JSON: %@", path.lastPathComponent);
+            }
+            wrappedSuccess(); // Process existing file
+        } else {
+            // Error if not found
+            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Version JSON not found locally or remotely: %@", versionStr]];
+        }
         return;
     }
-
-
-    // Re-get version string and URL after resolving latest-* and inheritsFrom
+    
+    // Get version details for download
     versionStr = versionInfoToDownload[@"id"];
     NSString *url = versionInfoToDownload[@"url"];
-    NSString *sha = versionInfoToDownload[@"sha1"]; // Use sha1 from manifest if available
+    NSString *sha = versionInfoToDownload[@"sha1"];
     NSUInteger size = [versionInfoToDownload[@"size"] unsignedLongLongValue];
-
+    
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Downloading version JSON from %@", url);
     }
-
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:[path lastPathComponent] toPath:path success:wrappedSuccess failure:^(NSError *error){
-         // If download fails, try to use existing file if it's valid (less strict for JSON)
-         if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-              NSLog(@"[MCDL] Warning: Version JSON download failed, but using existing file: %@", path.lastPathComponent);
-              wrappedSuccess(); // Try to proceed with existing file
-         } else {
-              [self finishDownloadWithError:error file:[path lastPathComponent]];
-         }
+    
+    // Create download task
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url 
+                                                        size:size 
+                                                         sha:sha 
+                                                     altName:[path lastPathComponent] 
+                                                      toPath:path 
+                                                     success:wrappedSuccess 
+                                                     failure:^(NSError *error) {
+        // Try existing file if download fails
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            NSLog(@"[MCDL] Warning: Version JSON download failed, using existing file: %@", path.lastPathComponent);
+            wrappedSuccess(); // Try to proceed with existing file
+        } else {
+            [self finishDownloadWithError:error file:[path lastPathComponent]];
+        }
     }];
-
-
-    // If no task was created (e.g., file exists and SHA matches), still call success
+    
+    // Handle case where no task was created
     if (!task && !self.progress.cancelled) {
-         if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-              wrappedSuccess();
-         } else {
-              [self finishDownloadWithErrorString:[NSString stringWithFormat:@"File %@ missing and download task not created.", path.lastPathComponent]];
-         }
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            wrappedSuccess();
+        } else {
+            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"File %@ missing and download task not created.", path.lastPathComponent]];
+        }
     } else if (!task && self.progress.cancelled) {
-         if (self.verboseLogging) {
-             NSLog(@"[MCDL] Version JSON download cancelled before task creation.");
-         }
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Version JSON download cancelled before task creation.");
+        }
     }
 }
 
-
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success {
+    // Get asset index from metadata
     NSDictionary *assetIndex = nil;
     @synchronized(self) {
         if (!self) return;
-        assetIndex = [self.metadata[@"assetIndex"] copy]; // Use a copy
+        assetIndex = [self.metadata[@"assetIndex"] copy];
     }
-
+    
     if (!assetIndex) {
-        if (success) success(); // Call success immediately if no asset index
+        if (success) success(); // Call success if no asset index
         return;
     }
-
+    
+    // Prepare path and download info
     NSString *assetIndexId = assetIndex[@"id"];
     NSString *name = [NSString stringWithFormat:@"assets/indexes/%@.json", assetIndexId];
     NSString *path = [@(getenv("POJAV_GAME_DIR")) stringByAppendingPathComponent:name];
     NSString *url = assetIndex[@"url"];
-    NSString *sha = assetIndex[@"sha1"]; // Use sha1 from assetIndex
+    NSString *sha = assetIndex[@"sha1"];
     NSUInteger size = [assetIndex[@"size"] unsignedLongLongValue];
-
+    
     // Create wrapped success callback
     __weak typeof(self) weakSelf = self;
     void(^wrappedSuccess)(void) = ^{
-        // Safely check if task is cancelled
+        // Check if cancelled
         BOOL isCancelled = NO;
         @synchronized(weakSelf) {
             if (!weakSelf) return;
-            @try { isCancelled = weakSelf.progress.cancelled; } @catch (NSException *e) {}
+            @try { 
+                isCancelled = weakSelf.progress.cancelled; 
+            } @catch (NSException *e) {}
         }
         if (isCancelled) return;
-
+        
         // Parse the JSON file
         NSError *jsonError = nil;
         NSData *jsonData = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:&jsonError];
@@ -1660,8 +1568,8 @@ typedef struct {
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error reading asset index JSON: %@", jsonError.localizedDescription]];
             return;
         }
-
-        // Parse JSON with mutable containers option
+        
+        // Parse JSON
         id jsonObject = [NSJSONSerialization JSONObjectWithData:jsonData
                                                        options:NSJSONReadingMutableContainers
                                                          error:&jsonError];
@@ -1670,418 +1578,452 @@ typedef struct {
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Error parsing asset index JSON: %@", jsonError.localizedDescription]];
             return;
         }
-
-        // Set asset index object safely
+        
+        // Store asset index
         @synchronized(weakSelf) {
             if (!weakSelf) return;
             weakSelf.metadata[@"assetIndexObj"] = jsonObject;
         }
-
+        
         // Call original success callback
         if (success) {
             success();
         }
     };
-
+    
     // Ensure directories exist
     NSString *dirPath = [path stringByDeletingLastPathComponent];
     NSError *dirError = nil;
-    BOOL dirCreated = [[NSFileManager defaultManager] createDirectoryAtPath:dirPath
-                                               withIntermediateDirectories:YES
-                                                                attributes:nil
-                                                                     error:&dirError];
-    if (!dirCreated && dirError.code != NSFileWriteFileExistsError) {
+    [[NSFileManager defaultManager] createDirectoryAtPath:dirPath
+                                withIntermediateDirectories:YES
+                                                 attributes:nil
+                                                      error:&dirError];
+    if (dirError && dirError.code != NSFileWriteFileExistsError) {
         NSLog(@"[MCDL] Error creating asset index directory: %@", dirError.localizedDescription);
         [self finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to create asset index directory: %@", dirError.localizedDescription]];
         return;
     }
-
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:wrappedSuccess failure:^(NSError *error) {
-         // If download fails, try to use existing file if it's valid
-         if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-              NSLog(@"[MCDL] Warning: Asset index download failed, but using existing file: %@", path.lastPathComponent);
-              wrappedSuccess(); // Try to proceed with existing file
-         } else {
-              [self finishDownloadWithError:error file:name];
-         }
+    
+    // Create download task
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url 
+                                                        size:size 
+                                                         sha:sha 
+                                                     altName:name 
+                                                      toPath:path 
+                                                     success:wrappedSuccess 
+                                                     failure:^(NSError *error) {
+        // Try existing file if download fails
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            NSLog(@"[MCDL] Warning: Asset index download failed, using existing file: %@", path.lastPathComponent);
+            wrappedSuccess();
+        } else {
+            [self finishDownloadWithError:error file:name];
+        }
     }];
-
-
-    // If no task was created (e.g., file exists and SHA matches), still call success
+    
+    // Handle case where no task was created
     if (!task && !self.progress.cancelled) {
-         if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
-              wrappedSuccess();
-         } else {
-              [self finishDownloadWithErrorString:[NSString stringWithFormat:@"File %@ missing and download task not created.", path.lastPathComponent]];
-         }
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            wrappedSuccess();
+        } else {
+            [self finishDownloadWithErrorString:[NSString stringWithFormat:@"File %@ missing and download task not created.", path.lastPathComponent]];
+        }
     } else if (!task && self.progress.cancelled) {
-         if (self.verboseLogging) {
-             NSLog(@"[MCDL] Asset index download cancelled before task creation.");
-         }
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Asset index download cancelled before task creation.");
+        }
     }
 }
 
-
-// Reintegrated implementation
 - (NSArray *)downloadClientLibraries:(NSDictionary *)versionMetadata {
     NSMutableArray *tasks = [NSMutableArray new];
-
+    
     // Skip if no libraries defined
     if (!versionMetadata[@"libraries"] || ![versionMetadata[@"libraries"] isKindOfClass:[NSArray class]]) {
         return tasks;
     }
-
+    
     NSArray *libraries = versionMetadata[@"libraries"];
     NSInteger libraryCount = libraries.count;
-
+    
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Processing %ld libraries for download", (long)libraryCount);
     }
-
-    // Process each library directly without batching
+    
+    // Process each library
     for (NSDictionary *library in libraries) {
-         BOOL isCancelled = NO;
-         @synchronized(self) {
-             @try { isCancelled = self.progress.cancelled; } @catch(NSException* e){}
-         }
+        // Check if cancelled
+        BOOL isCancelled = NO;
+        @synchronized(self) {
+            @try { 
+                isCancelled = self.progress.cancelled; 
+            } @catch(NSException* e){}
+        }
         if (isCancelled) break;
-
-
+        
         NSString *name = library[@"name"];
         if (!name) continue;
-
-        // Skip Forge/NeoForge client JARs entirely - they're already installed by the installer
+        
+        // Skip Forge/NeoForge client JARs
         if (([name containsString:@"net.minecraftforge:forge:"] ||
              [name containsString:@"net.neoforged:neoforge:"] ||
-             [name containsString:@"net.neoforged.forge:forge:"]) && // Handle older NeoForge naming
-            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"] || [name containsString:@"-installer"])) { // Also skip installers
+             [name containsString:@"net.neoforged.forge:forge:"]) && 
+            ([name hasSuffix:@":client"] || [name hasSuffix:@":universal"] || [name containsString:@"-installer"])) {
             if (self.verboseLogging) {
                 NSLog(@"[MCDL] Skipping Forge/NeoForge JAR %@ - installed separately", name);
             }
             continue;
         }
-
-
-        NSMutableDictionary *artifactDict = [library[@"downloads"][@"artifact"] mutableCopy]; // Make mutable
+        
+        // Get or generate artifact information
+        NSMutableDictionary *artifactDict = [library[@"downloads"][@"artifact"] mutableCopy];
         if (artifactDict == nil && [name containsString:@":"]) {
-             if (self.verboseLogging) {
-                 NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
-             }
-             artifactDict = [[NSMutableDictionary alloc] init];
-
-            // Standard library URL construction
-             NSString *prefix = library[@"url"] ?: @"https://libraries.minecraft.net/"; // Default to Minecraft libs
-             prefix = [prefix stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"]; // Ensure HTTPS
-             if (![prefix hasSuffix:@"/"]) {
-                 prefix = [prefix stringByAppendingString:@"/"];
-             }
-
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Generating artifact object for %@", name);
+            }
+            artifactDict = [[NSMutableDictionary alloc] init];
+            
+            // Build library URL
+            NSString *prefix = library[@"url"] ?: @"https://libraries.minecraft.net/";
+            prefix = [prefix stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
+            if (![prefix hasSuffix:@"/"]) {
+                prefix = [prefix stringByAppendingString:@"/"];
+            }
+            
             NSArray *libParts = [name componentsSeparatedByString:@":"];
-
-            // Handle library names with more than 3 components (e.g., Forge libraries with classifier)
+            
             if (libParts.count >= 3) {
                 NSString *group = [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"];
                 NSString *artifactName = libParts[1];
                 NSString *version = libParts[2];
-
-                // Check if we have a classifier (4th component) or extension (if specified after version)
+                
+                // Handle classifier and extension
                 NSString *classifier = @"";
-                NSString *extension = @"jar"; // Default extension
-
+                NSString *extension = @"jar";
+                
                 if (libParts.count > 3) {
-                     // Check if the 4th part contains '@' indicating an extension
-                     NSRange extRange = [libParts[3] rangeOfString:@"@"];
-                     if (extRange.location != NSNotFound) {
-                          classifier = [libParts[3] substringToIndex:extRange.location];
-                          extension = [libParts[3] substringFromIndex:extRange.location + 1];
-                     } else {
-                          classifier = libParts[3];
-                     }
-                     // Append classifier with a hyphen if it exists
-                     if (classifier.length > 0) {
-                          classifier = [NSString stringWithFormat:@"-%@", classifier];
-                     }
+                    NSRange extRange = [libParts[3] rangeOfString:@"@"];
+                    if (extRange.location != NSNotFound) {
+                        classifier = [libParts[3] substringToIndex:extRange.location];
+                        extension = [libParts[3] substringFromIndex:extRange.location + 1];
+                    } else {
+                        classifier = libParts[3];
+                    }
+                    
+                    if (classifier.length > 0) {
+                        classifier = [NSString stringWithFormat:@"-%@", classifier];
+                    }
                 }
-
-                // Construct path and URL correctly
+                
+                // Build path and URL
                 artifactDict[@"path"] = [NSString stringWithFormat:@"%@/%@/%@/%@-%@%@.%@",
                                      group, artifactName, version, artifactName, version, classifier, extension];
                 artifactDict[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifactDict[@"path"]];
-
-                // Safely get SHA1 from checksums if available
+                
+                // Get SHA1 if available
                 id checksums = library[@"checksums"];
                 if (checksums && [checksums isKindOfClass:[NSArray class]]) {
                     NSArray *checksumsArray = (NSArray *)checksums;
                     if (checksumsArray.count > 0 && [checksumsArray[0] isKindOfClass:[NSString class]]) {
                         artifactDict[@"sha1"] = checksumsArray[0];
                     }
-                } else if (library[@"sha1"] && [library[@"sha1"] isKindOfClass:[NSString class]]) { // Handle direct sha1 property
-                     artifactDict[@"sha1"] = library[@"sha1"];
+                } else if (library[@"sha1"] && [library[@"sha1"] isKindOfClass:[NSString class]]) {
+                    artifactDict[@"sha1"] = library[@"sha1"];
                 }
             } else {
-                 // Fallback for potential malformed names
-                 NSLog(@"[MCDL] Warning: Malformed library name encountered: %@", name);
-                 continue; // Skip this library
+                NSLog(@"[MCDL] Warning: Malformed library name: %@", name);
+                continue;
             }
         }
-
-        // Skip library if marked to skip
-         if ([library[@"skip"] boolValue]) {
-             if (self.verboseLogging) {
-                 NSLog(@"[MCDL] Skipped library %@", name);
-             }
-             continue;
-         }
-
-         // Skip if rules block it (basic OS check for now)
-         NSArray* rules = library[@"rules"];
-         if (rules) {
-             BOOL allow = YES; // Default to allow if no rules match
-             for (NSDictionary* rule in rules) {
-                 NSString* action = rule[@"action"]; // "allow" or "disallow"
-                 NSDictionary* os = rule[@"os"];
-                 if (os) {
-                      NSString* osName = os[@"name"];
-                      // We only care about disallowing non-mac/non-ios or allowing only mac/ios
-                      if ([action isEqualToString:@"disallow"] && ![osName isEqualToString:@"osx"] && ![osName isEqualToString:@"ios"]) {
-                           allow = NO; break; // Disallow if rule is for other OS
-                      } else if ([action isEqualToString:@"allow"] && ![osName isEqualToString:@"osx"] && ![osName isEqualToString:@"ios"]) {
-                           allow = NO; break; // Disallow if allow rule is not for mac/ios
-                      } else if ([action isEqualToString:@"allow"] && ([osName isEqualToString:@"osx"] || [osName isEqualToString:@"ios"])) {
-                           allow = YES; break; // Explicitly allow for mac/ios
-                      }
-                 } else {
-                      // If no OS specified, action applies universally based on the last rule
-                      allow = [action isEqualToString:@"allow"];
-                 }
-             }
-             if (!allow) {
-                  if (self.verboseLogging) {
-                      NSLog(@"[MCDL] Skipped library due to rules: %@", name);
-                  }
-                  continue;
-             }
-         }
-
-
-        // Build the download path
+        
+        // Skip if marked to skip
+        if ([library[@"skip"] boolValue]) {
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Skipped library %@", name);
+            }
+            continue;
+        }
+        
+        // Check rules
+        NSArray* rules = library[@"rules"];
+        if (rules) {
+            BOOL allow = YES;
+            for (NSDictionary* rule in rules) {
+                NSString* action = rule[@"action"];
+                NSDictionary* os = rule[@"os"];
+                if (os) {
+                    NSString* osName = os[@"name"];
+                    if ([action isEqualToString:@"disallow"] && ![osName isEqualToString:@"osx"] && ![osName isEqualToString:@"ios"]) {
+                        allow = NO; break;
+                    } else if ([action isEqualToString:@"allow"] && ![osName isEqualToString:@"osx"] && ![osName isEqualToString:@"ios"]) {
+                        allow = NO; break;
+                    } else if ([action isEqualToString:@"allow"] && ([osName isEqualToString:@"osx"] || [osName isEqualToString:@"ios"])) {
+                        allow = YES; break;
+                    }
+                } else {
+                    allow = [action isEqualToString:@"allow"];
+                }
+            }
+            
+            if (!allow) {
+                if (self.verboseLogging) {
+                    NSLog(@"[MCDL] Skipped library due to rules: %@", name);
+                }
+                continue;
+            }
+        }
+        
+        // Prepare download parameters
         NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifactDict[@"path"]];
         NSString *sha = artifactDict[@"sha1"];
         NSUInteger size = [artifactDict[@"size"] unsignedLongLongValue];
         NSString *url = artifactDict[@"url"];
-
-        // Skip if URL is missing - don't create invalid tasks
+        
+        // Skip if URL is missing
         if (!url || [url length] == 0) {
             NSLog(@"[MCDL] Warning: Skipping library %@ due to missing URL", name);
             continue;
         }
-
-        // Create download task and add to tasks list
+        
+        // Create download task
         NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil failure:nil];
         if (task) {
             [tasks addObject:task];
         }
     }
-
+    
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Enqueued %ld library downloads", (long)tasks.count);
     }
+    
     return tasks;
 }
 
-// Reintegrated implementation
+- (void)downloadClientJar:(NSDictionary *)versionMetadata {
+    // Get client download information
+    NSDictionary *downloads = versionMetadata[@"downloads"];
+    NSDictionary *clientInfo = downloads[@"client"];
+    
+    if (!clientInfo) {
+        NSLog(@"[MCDL] No client JAR information found in version metadata.");
+        return;
+    }
+    
+    NSString *url = clientInfo[@"url"];
+    NSString *sha1 = clientInfo[@"sha1"];
+    NSUInteger size = [clientInfo[@"size"] unsignedIntegerValue];
+    NSString *versionId = versionMetadata[@"id"];
+    
+    if (!versionId || !url || !sha1) {
+        NSLog(@"[MCDL] Client JAR information incomplete. Cannot download.");
+        return;
+    }
+    
+    NSString *path = [NSString stringWithFormat:@"%s/versions/%@/%@.jar", getenv("POJAV_GAME_DIR"), versionId, versionId];
+    NSString *altName = [NSString stringWithFormat:@"%@.jar", versionId];
+    
+    if (self.verboseLogging) {
+        NSLog(@"[MCDL] Enqueuing client JAR: %@", altName);
+    }
+    
+    // Create download task
+    [self createDownloadTask:url size:size sha:sha1 altName:altName toPath:path success:nil failure:nil];
+}
+
 - (NSArray *)downloadClientAssets:(NSDictionary *)assetIndexObj {
-    // Use a synchronized block to ensure we only process assets once per session
+    // Check if we've already processed assets
     @synchronized(self) {
-        // If we've already processed assets for this download session, return an empty array
         if (self.hasProcessedAssets) {
             if (self.verboseLogging) {
                 NSLog(@"[MCDL] Assets already processed for this session, skipping");
             }
             return @[];
         }
-
+        
         // Mark that we've processed assets
         self.hasProcessedAssets = YES;
     }
-
+    
     NSMutableArray *tasks = [NSMutableArray new];
-
+    
+    // Validate asset index
     if (!assetIndexObj || !assetIndexObj[@"objects"] || ![assetIndexObj[@"objects"] isKindOfClass:[NSDictionary class]]) {
         return tasks;
     }
-
+    
     NSDictionary *objectsDict = assetIndexObj[@"objects"];
     NSArray *assetNames = objectsDict.allKeys;
     NSInteger totalAssets = assetNames.count;
-
+    
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Processing %ld assets for download", (long)totalAssets);
     }
-
+    
     // Set up asset directories
     NSString *assetsDir = [NSString stringWithFormat:@"%s/assets/objects", getenv("POJAV_GAME_DIR")];
     NSString *resourcesDir = [NSString stringWithFormat:@"%s/resources", getenv("POJAV_GAME_DIR")];
+    
+    // Create directories
     NSError *dirError = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:assetsDir
                              withIntermediateDirectories:YES
                                               attributes:nil
                                                    error:&dirError];
     if (dirError) NSLog(@"[MCDL] Warning: Error creating assets directory: %@", dirError.localizedDescription);
+    
     dirError = nil;
     [[NSFileManager defaultManager] createDirectoryAtPath:resourcesDir
                              withIntermediateDirectories:YES
                                               attributes:nil
                                                    error:&dirError];
     if (dirError) NSLog(@"[MCDL] Warning: Error creating resources directory: %@", dirError.localizedDescription);
-
-
-    // Process all assets without batching
+    
+    // Process assets
     for (NSString *name in assetNames) {
-         BOOL isCancelled = NO;
-         @synchronized(self) {
-             @try { isCancelled = self.progress.cancelled; } @catch(NSException *e){}
-         }
+        // Check if cancelled
+        BOOL isCancelled = NO;
+        @synchronized(self) {
+            @try { 
+                isCancelled = self.progress.cancelled; 
+            } @catch(NSException *e){}
+        }
         if (isCancelled) break;
-
-
+        
         NSDictionary *object = assetIndexObj[@"objects"][name];
         NSString *hash = object[@"hash"];
-         if (!hash || hash.length < 2) { // Need at least 2 chars for subdir
-              NSLog(@"[MCDL] Warning: Skipping asset %@ due to missing or short hash", name);
-              continue;
-         }
+        
+        if (!hash || hash.length < 2) {
+            NSLog(@"[MCDL] Warning: Skipping asset %@ due to missing or short hash", name);
+            continue;
+        }
+        
         NSString *pathname = [NSString stringWithFormat:@"%@/%@", [hash substringToIndex:2], hash];
         NSUInteger size = [object[@"size"] unsignedLongLongValue];
-
+        
+        // Determine path based on mapping
         NSString *path;
         if ([assetIndexObj[@"map_to_resources"] boolValue]) {
             path = [NSString stringWithFormat:@"%s/resources/%@", getenv("POJAV_GAME_DIR"), name];
         } else {
             path = [NSString stringWithFormat:@"%s/assets/objects/%@", getenv("POJAV_GAME_DIR"), pathname];
         }
-
-        /* Special case for 1.19+
-         * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
-         * However, if an IOException occurs, it won't try to set.
-         * We skip downloading the icon file to workaround this. */
+        
+        // Skip icon for 1.19+ to avoid ObjC issue
         if ([name hasSuffix:@"/minecraft.icns"]) {
             [NSFileManager.defaultManager removeItemAtPath:path error:nil];
             continue;
         }
-
+        
+        // Create download task
         NSString *url = [NSString stringWithFormat:@"https://resources.download.minecraft.net/%@", pathname];
         NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:hash altName:name toPath:path success:nil failure:nil];
-
+        
         if (task) {
             [tasks addObject:task];
         }
     }
-
+    
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Enqueued %ld asset downloads", (long)tasks.count);
     }
+    
     return tasks;
 }
 
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion {
+    // Initialize download state
     [self prepareForDownload];
-
-    // Reset counters
-    self.successfulDownloads = 0;
-    self.totalDownloads = 0;
-
-    // Create metadata dictionary if needed
+    
+    // Reset metadata and mark as modpack
     @synchronized(self) {
-         if (!self.metadata) {
-              self.metadata = [NSMutableDictionary dictionary];
-         } else {
-              [self.metadata removeAllObjects];
-         }
-         // Explicitly mark this as a modpack installation
-         self.metadata[@"isModpackInstall"] = @YES;
-         self.isDownloadPhaseComplete = NO; // Reset completion
+        if (!self.metadata) {
+            self.metadata = [NSMutableDictionary dictionary];
+        } else {
+            [self.metadata removeAllObjects];
+        }
+        self.metadata[@"isModpackInstall"] = @YES;
+        self.isDownloadPhaseComplete = NO;
     }
-
-
+    
+    // Get modpack info
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
     NSUInteger size = [modDetail[@"versionSizes"][selectedVersion] unsignedLongLongValue];
     NSString *sha = modDetail[@"versionHashes"][selectedVersion];
-
-    // Use the original title without converting to lowercase or replacing spaces with underscores
+    
+    // Use original modpack name
     NSString *name = [modDetail[@"title"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-
-    // For the filesystem paths, create a sanitized version of the name (for the zip file only)
+    
+    // Create sanitized name for file path
     NSString *sanitizedName = [[name lowercaseString] stringByReplacingOccurrencesOfString:@" " withString:@"_"];
-    sanitizedName = [sanitizedName stringByReplacingOccurrencesOfString:@"[^a-z0-9_]+" withString:@"" options:NSRegularExpressionSearch range:NSMakeRange(0, sanitizedName.length)]; // Sanitize further
+    sanitizedName = [sanitizedName stringByReplacingOccurrencesOfString:@"[^a-z0-9_]+" 
+                                                           withString:@"" 
+                                                              options:NSRegularExpressionSearch 
+                                                                range:NSMakeRange(0, sanitizedName.length)];
+    
     NSString *packagePath = [NSTemporaryDirectory() stringByAppendingFormat:@"/%@.zip", sanitizedName];
-
-
+    
     NSLog(@"[MCDL] Starting download for modpack: %@", name);
-
-    // Get the game directory for this modpack
+    
+    // Get game directory for modpack
     NSString *gameDir = [PLProfiles uniqueGameDirForProfileName:name];
-
-    // Get the full absolute path where we'll extract the modpack
     NSString *destPath = [PLProfiles fullPathForProfileWithName:name gameDir:gameDir];
-
-    // Store the game directory in metadata for proper profile creation
-     @synchronized(self) {
-         self.metadata[@"gameDir"] = gameDir;
-     }
-
-
-    // Create a display name for progress reporting
+    
+    // Store game directory for profile creation
+    @synchronized(self) {
+        self.metadata[@"gameDir"] = gameDir;
+    }
+    
+    // Create display name for progress
     NSString *displayName = [NSString stringWithFormat:@"Downloading modpack: %@", name];
-
-    // Create success callback for modpack download
+    
+    // Success callback for modpack download
     __weak typeof(self) weakSelf = self;
     void(^modpackSuccess)(void) = ^{
         @synchronized(weakSelf) {
             if (!weakSelf) return;
+            
             // Reset progress for extraction phase
-             weakSelf.progress.totalUnitCount = 1; // Start with 1 unit for extraction
-             weakSelf.progress.completedUnitCount = 0;
-             weakSelf.textProgress.totalUnitCount = 1;
-             weakSelf.textProgress.completedUnitCount = 0;
-
-             weakSelf.totalDownloads = 0; // Reset counts for mod downloads
-             weakSelf.successfulDownloads = 0;
-             weakSelf.totalTasksEnqueued = 0; // Reset group counts too
-             weakSelf.tasksLeftGroup = 0;
-             weakSelf.isDownloadPhaseComplete = NO; // Ensure completion is reset
+            weakSelf.progress.totalUnitCount = 1;
+            weakSelf.progress.completedUnitCount = 0;
+            weakSelf.textProgress.totalUnitCount = 1;
+            weakSelf.textProgress.completedUnitCount = 0;
+            
+            // Reset counters for mod downloads
+            weakSelf.totalDownloads = 0;
+            weakSelf.successfulDownloads = 0;
+            weakSelf.totalTasksEnqueued = 0;
+            weakSelf.tasksLeftGroup = 0;
+            weakSelf.isDownloadPhaseComplete = NO;
         }
-
-        // Add extraction marker to file list
-         @synchronized(weakSelf.fileList) {
-             if (!weakSelf) return;
-             [weakSelf.fileList removeAllObjects]; // Clear previous download entry
-             [weakSelf.fileList addObject:[NSString stringWithFormat:@"Preparing modpack %@", name]];
-         }
-         weakSelf.needsUIUpdate = YES;
-
-
-        NSLog(@"[MCDL] Modpack download complete, proceeding to extraction and mod downloads.");
-
-        // Use the API to handle extraction and installation (which includes mod downloads)
+        
+        // Add extraction marker to UI
+        @synchronized(weakSelf.fileList) {
+            if (!weakSelf) return;
+            [weakSelf.fileList removeAllObjects];
+            [weakSelf.fileList addObject:[NSString stringWithFormat:@"Preparing modpack %@", name]];
+        }
+        weakSelf.needsUIUpdate = YES;
+        
+        NSLog(@"[MCDL] Modpack download complete, proceeding to installation.");
+        
+        // Use API to handle extraction and installation
         [api downloader:weakSelf submitDownloadTasksFromPackage:packagePath toPath:destPath];
-         // The API's downloader method should now enqueue individual mod tasks,
-         // which will increment totalDownloads and use the downloadCompletionGroup.
     };
-
-    // Failure callback to handle retries for modpack download
+    
+    // Failure callback with retry
     void(^modpackFailure)(NSError *error) = ^(NSError *error) {
         if (!weakSelf) return;
+        
         NSLog(@"[MCDL] Failed to download modpack: %@. Retrying...", error.localizedDescription);
-
-        // Add retry attempt to file list for UI visibility
+        
+        // Add retry notification to UI
         @synchronized(weakSelf.fileList) {
-             if (!weakSelf) return;
+            if (!weakSelf) return;
             [weakSelf.fileList addObject:[NSString stringWithFormat:@"Retrying download for %@", name]];
         }
         weakSelf.needsUIUpdate = YES;
-
-        // Create a retry task - this will re-enter the group
+        
+        // Create retry task
         [weakSelf createDownloadTask:url
                                 size:size
                                  sha:sha
@@ -2089,12 +2031,12 @@ typedef struct {
                               toPath:packagePath
                              success:modpackSuccess
                              failure:^(NSError *retryError) {
-            // If retry also fails, show error
+            // Show error if retry fails
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to download modpack after retry: %@", retryError.localizedDescription]];
         }];
     };
-
-    // Create initial download task for the modpack zip
+    
+    // Create download task for modpack zip
     [self createDownloadTask:url
                         size:size
                          sha:sha
@@ -2102,11 +2044,11 @@ typedef struct {
                       toPath:packagePath
                      success:modpackSuccess
                      failure:modpackFailure];
-
-     // Start processing the queue (which now contains the modpack zip download)
-     dispatch_async(self.downloadQueue, ^{
-         [self processNextDownloadInQueue];
-     });
+    
+    // Process the download queue
+    dispatch_async(self.downloadQueue, ^{
+        [self processNextDownloadInQueue];
+    });
 }
 
 @end
