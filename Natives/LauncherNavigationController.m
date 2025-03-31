@@ -6,7 +6,8 @@
 #import "CustomControlsViewController.h"
 #import "DownloadProgressViewController.h"
 #import "JavaGUIViewController.h"
-#import "LauncherMenuViewController.h" // Import the specific header
+#import "LauncherMenuViewController.h"
+#import "LauncherNewsViewController.h"
 #import "LauncherNavigationController.h"
 #import "LauncherPreferences.h"
 #import "MinecraftResourceDownloadTask.h"
