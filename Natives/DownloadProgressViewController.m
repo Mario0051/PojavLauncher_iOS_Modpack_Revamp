@@ -315,19 +315,27 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         }
     }
     
-    // Simplified Completion Check
+    // Check both completion indicators
     BOOL isComplete = NO;
+    BOOL isModpackInstall = NO;
+    BOOL allTasksComplete = NO;
+    
     @synchronized(self.task) {
-        // Check if progress is complete
-        isComplete = self.task.progress.finished || (self.task.progress.totalUnitCount > 0 && self.task.progress.fractionCompleted >= 1.0);
+        // Check various completion indicators
+        isComplete = self.task.progress.finished || 
+                    (self.task.progress.totalUnitCount > 0 && 
+                     self.task.progress.fractionCompleted >= 1.0) ||
+                    self.task.isDownloadPhaseComplete;
+        
+        // Also check for modpack completion via metadata
+        if (self.task.metadata) {
+            isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
+            allTasksComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
+        }
         
         // Also consider successful downloads vs total downloads
-        // Since we can't access pendingDownloads and activeDownloads directly
-        // (they're private properties), we'll rely on progress and counts
         if (!isComplete && self.task.totalDownloads > 0 && 
             self.task.successfulDownloads >= self.task.totalDownloads) {
-            // If all downloads are successful, and there's been some delay in progress update,
-            // consider it complete
             isComplete = YES;
         }
     }
@@ -347,6 +355,14 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
             [self updateFilteredFileList]; // Update filtered list
             [self reloadTableViewPreservingOffset];
             self.statusLabel.text = @"Download complete";
+        }
+        
+        // Auto-dismiss for modpack installations that are complete
+        if (isModpackInstall && allTasksComplete) {
+            // Use a small delay to ensure UI updates are visible
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+            });
         }
     }
 }
