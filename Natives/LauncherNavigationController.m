@@ -708,10 +708,7 @@ static NSDate *lastRemoteVersionRefresh;
             
             if (observedTask.metadata) {
                 metadataCopy = [observedTask.metadata copy];
-                
-                if (weakSelf.verboseLogging) {
-                    NSLog(@"[MCDL] Metadata copy created: %@", metadataCopy);
-                }
+                NSLog(@"[MCDL] Metadata copy created successfully");
             } else {
                 NSLog(@"[MCDL] Warning: Task metadata is nil at completion");
             }
