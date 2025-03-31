@@ -1085,21 +1085,20 @@ typedef struct {
         } @catch (NSException *exception) {
             NSLog(@"[MCDL] Exception cancelling progress: %@", exception);
         }
-        
-        // Detach all child progress objects
-        @try {
-            for (NSProgress *childProgress in [self.progressList copy]) {
-                if ([childProgress isKindOfClass:[NSProgress class]]) {
-                    [self.progress removeChild:childProgress];
-                }
-            }
-        } @catch (NSException *exception) {
-            NSLog(@"[MCDL] Exception removing child progresses: %@", exception);
-        }
     }
     
-    // Clear the progress lists with proper synchronization
+    // Cancel individual progress objects in the list
     @synchronized(self.progressList) {
+        for (NSProgress *childProgress in [self.progressList copy]) {
+            if ([childProgress isKindOfClass:[NSProgress class]]) {
+                @try {
+                    [childProgress cancel];
+                } @catch (NSException *exception) {
+                    NSLog(@"[MCDL] Exception cancelling child progress: %@", exception);
+                }
+            }
+        }
+        // Clear the progress list
         [self.progressList removeAllObjects];
     }
     
@@ -1122,8 +1121,6 @@ typedef struct {
     self.isDownloadPhaseComplete = YES;
     NSLog(@"[MCDL] Progress observers cleaned up");
 }
-
-
 
 // Check if the account has permission to download
 - (BOOL)checkAccessWithDialog:(BOOL)show {
