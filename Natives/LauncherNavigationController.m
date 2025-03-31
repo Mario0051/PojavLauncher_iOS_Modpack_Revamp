@@ -6,7 +6,7 @@
 #import "CustomControlsViewController.h"
 #import "DownloadProgressViewController.h"
 #import "JavaGUIViewController.h"
-#import "LauncherMenuViewController.h"
+#import "LauncherMenuViewController.h" // Import the specific header
 #import "LauncherNavigationController.h"
 #import "LauncherPreferences.h"
 #import "MinecraftResourceDownloadTask.h"
@@ -722,9 +722,16 @@ static NSLock *versionListLock;
 
         // Launch the game if it's not a modpack installation and we have metadata
         if (metadataCopy && !isModpackInstall) {
-            [weakSelf invokeAfterJITEnabled:^{
-                UIKit_launchMinecraftSurfaceVC(weakSelf.view.window, metadataCopy);
-            }];
+             // Ensure we have metadata before launching
+             if (metadataCopy[@"id"]) { // Check for a key expected in Minecraft metadata
+                 [weakSelf invokeAfterJITEnabled:^{
+                      UIKit_launchMinecraftSurfaceVC(weakSelf.view.window, metadataCopy);
+                 }];
+             } else {
+                 NSLog(@"[MCDL] Error: Metadata missing required information for launch.");
+                 [weakSelf setInteractionEnabled:YES forDownloading:YES]; // Re-enable UI
+                 showDialog(@"Launch Error", @"Failed to prepare game data for launch.");
+             }
         } else {
             // Otherwise just re-enable UI
             [weakSelf setInteractionEnabled:YES forDownloading:YES]; // Re-enable fully
