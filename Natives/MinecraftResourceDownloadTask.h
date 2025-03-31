@@ -15,7 +15,7 @@
 @property(nonatomic, strong) NSMutableArray *pendingVerificationList;
 @property(nonatomic, assign) BOOL deferSHAVerification;
 @property(nonatomic, assign) BOOL hasProcessedAssets;
-@property (nonatomic, readonly) BOOL isDownloadPhaseComplete;
+@property (nonatomic, readonly) BOOL isDownloadPhaseComplete; // Ensure this property is declared
 
 /**
  * Creates a download task with optional callbacks for success and failure handling.
@@ -76,7 +76,7 @@
 - (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 
 // Helper method to check completion status
-- (void)checkCompletionStatus;
+- (void)checkCompletionStatus; // Keep for internal logic if needed, but rely on group/flag externally
 
 // Main download methods
 - (void)downloadVersion:(NSDictionary *)version;
@@ -84,6 +84,7 @@
 - (void)downloadAssetMetadataWithSuccess:(void (^)(void))success;
 - (NSArray *)downloadClientLibraries:(NSDictionary *)versionMetadata;
 - (NSArray *)downloadClientAssets:(NSDictionary *)assetIndexObj;
+- (void)downloadClientJar:(NSDictionary *)versionMetadata;
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
 
 @end
