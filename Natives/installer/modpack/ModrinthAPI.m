@@ -1069,6 +1069,56 @@ extern void showDialog(NSString *title, NSString *message);
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
     
+    // Re-enable UI in LauncherNavigationController
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Find LauncherNavigationController
+        UIViewController *rootVC = nil;
+        
+        // Get key window using the appropriate API for iOS 13+
+        UIWindow *keyWindow = nil;
+        NSArray<UIWindow *> *windows = nil;
+            
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]] && 
+                    ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive) {
+                    windows = ((UIWindowScene *)scene).windows;
+                    break;
+                }
+            }
+        } else {
+            windows = UIApplication.sharedApplication.windows;
+        }
+            
+        for (UIWindow *window in windows) {
+            if (window.isKeyWindow) {
+                keyWindow = window;
+                break;
+            }
+        }
+        
+        if (keyWindow) {
+            rootVC = keyWindow.rootViewController;
+        }
+        
+        // Find LauncherNavigationController
+        LauncherNavigationController *navVC = nil;
+        if ([rootVC isKindOfClass:[UISplitViewController class]]) {
+            UISplitViewController *splitVC = (UISplitViewController *)rootVC;
+            if (splitVC.viewControllers.count > 1) {
+                if ([splitVC.viewControllers[1] isKindOfClass:[LauncherNavigationController class]]) {
+                    navVC = (LauncherNavigationController *)splitVC.viewControllers[1];
+                }
+            }
+        }
+        
+        // Re-enable the UI
+        if (navVC) {
+            [navVC setInteractionEnabled:YES forDownloading:NO];
+            [navVC reloadProfileList];
+        }
+    });
+    
     // Check for Forge immediately
     [self checkAndInstallForge:downloader 
              withDependencies:indexDict[@"dependencies"] 
