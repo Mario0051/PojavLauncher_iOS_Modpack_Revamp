@@ -697,7 +697,7 @@ static NSDate *lastRemoteVersionRefresh;
         [weakSelf.progressUpdateTimer invalidate];
         weakSelf.progressUpdateTimer = nil;
         
-        // Check if this was a modpack installation
+        // Thoroughly validate metadata
         BOOL isModpackInstall = NO;
         NSDictionary *metadataCopy = nil;
         
@@ -705,40 +705,68 @@ static NSDate *lastRemoteVersionRefresh;
             if (observedTask.metadata && observedTask.metadata[@"isModpackInstall"]) {
                 isModpackInstall = [observedTask.metadata[@"isModpackInstall"] boolValue];
             }
-            metadataCopy = [observedTask.metadata copy];
+            
+            if (observedTask.metadata) {
+                metadataCopy = [observedTask.metadata copy];
+                
+                if (weakSelf.verboseLogging) {
+                    NSLog(@"[MCDL] Metadata copy created: %@", metadataCopy);
+                }
+            } else {
+                NSLog(@"[MCDL] Warning: Task metadata is nil at completion");
+            }
         }
         
         NSLog(@"[MCDL] isModpackInstall: %d, has metadata: %@",
               isModpackInstall, metadataCopy ? @"YES" : @"NO");
         
-        // Clean up task references
-        MinecraftResourceDownloadTask *completedTask = nil;
+        // Validate metadata for non-modpack launches
+        if (!isModpackInstall) {
+            if (!metadataCopy) {
+                NSLog(@"[MCDL] Error: No metadata available for launch.");
+                [weakSelf setInteractionEnabled:YES forDownloading:YES];
+                showDialog(@"Launch Error", @"Failed to prepare game data for launch: Missing metadata.");
+                return;
+            }
+            
+            if (![metadataCopy isKindOfClass:[NSDictionary class]]) {
+                NSLog(@"[MCDL] Error: Metadata is not a dictionary. Type: %@", NSStringFromClass([metadataCopy class]));
+                [weakSelf setInteractionEnabled:YES forDownloading:YES];
+                showDialog(@"Launch Error", @"Failed to prepare game data for launch: Invalid metadata type.");
+                return;
+            }
+            
+            if (!metadataCopy[@"id"]) {
+                NSLog(@"[MCDL] Error: Metadata missing 'id' key.");
+                [weakSelf setInteractionEnabled:YES forDownloading:YES];
+                showDialog(@"Launch Error", @"Failed to prepare game data for launch: Missing version ID.");
+                return;
+            }
+        }
         
+        // Store a final copy of metadata before clearing task
+        NSDictionary *finalMetadataCopy = [metadataCopy copy];
+        
+        // Clean up task references
         @synchronized(weakSelf) {
-            completedTask = weakSelf.task;
             weakSelf.task = nil;
             weakSelf.progressVC = nil;
         }
         
         // Launch the game for non-modpack installations
-        if (metadataCopy && !isModpackInstall) {
-            if (metadataCopy[@"id"]) {
-                // Launch with slight delay to ensure cleanup completes
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    [weakSelf invokeAfterJITEnabled:^{
-                        if (weakSelf && weakSelf.view.window) {
-                            UIKit_launchMinecraftSurfaceVC(weakSelf.view.window, metadataCopy);
-                        } else {
-                            NSLog(@"[MCDL] Error: View hierarchy invalid for launch");
-                            [weakSelf setInteractionEnabled:YES forDownloading:YES];
-                        }
-                    }];
-                });
-            } else {
-                NSLog(@"[MCDL] Error: Metadata missing required information for launch.");
-                [weakSelf setInteractionEnabled:YES forDownloading:YES];
-                showDialog(@"Launch Error", @"Failed to prepare game data for launch.");
-            }
+        if (finalMetadataCopy && !isModpackInstall) {
+            // Launch with slight delay to ensure cleanup completes
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [weakSelf invokeAfterJITEnabled:^{
+                    if (weakSelf && weakSelf.view.window) {
+                        NSLog(@"[MCDL] Launching game with metadata: %@", finalMetadataCopy[@"id"]);
+                        UIKit_launchMinecraftSurfaceVC(weakSelf.view.window, finalMetadataCopy);
+                    } else {
+                        NSLog(@"[MCDL] Error: View hierarchy invalid for launch");
+                        [weakSelf setInteractionEnabled:YES forDownloading:YES];
+                    }
+                }];
+            });
         } else {
             // Re-enable UI for modpack installs
             [weakSelf setInteractionEnabled:YES forDownloading:YES];
@@ -910,47 +938,35 @@ static NSDate *lastRemoteVersionRefresh;
 #pragma mark - JIT and Launch Helper Methods
 
 - (void)invokeAfterJITEnabled:(void(^)(void))handler {
-    // Clear version lists to free memory before launch
-    [versionListLock lock];
-    localVersionList = nil;
-    remoteVersionList = nil;
-    [versionListLock unlock];
-    
-    // Check if JIT is already enabled
     BOOL hasTrollStoreJIT = getEntitlementValue(@"com.apple.private.local.sandboxed-jit");
-    
+
     if (isJITEnabled(false)) {
         [ALTServerManager.sharedManager stopDiscovering];
         handler();
         return;
     } else if (hasTrollStoreJIT) {
-        // Use TrollStore JIT enablement
-        NSURL *jitURL = [NSURL URLWithString:[NSString stringWithFormat:@"apple-magnifier://enable-jit?bundle-id=%@", 
-                                             NSBundle.mainBundle.bundleIdentifier]];
+        NSURL *jitURL = [NSURL URLWithString:[NSString stringWithFormat:@"apple-magnifier://enable-jit?bundle-id=%@", NSBundle.mainBundle.bundleIdentifier]];
         [UIApplication.sharedApplication openURL:jitURL options:@{} completionHandler:nil];
-        // Continue to wait for TrollStore to enable JIT
+        // Do not return, wait for TrollStore to enable JIT and jump back
     } else if (getPrefBool(@"debug.debug_skip_wait_jit")) {
         NSLog(@"Debug option skipped waiting for JIT. Java might not work.");
         handler();
         return;
     }
-    
-    // Show JIT wait dialog
+
     self.progressText.text = localize(@"launcher.wait_jit.title", nil);
-    
+
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:localize(@"launcher.wait_jit.title", nil)
         message:hasTrollStoreJIT ? localize(@"launcher.wait_jit_trollstore.message", nil) : localize(@"launcher.wait_jit.message", nil)
         preferredStyle:UIAlertControllerStyleAlert];
-    
+
     [self presentViewController:alert animated:YES completion:nil];
-    
-    // Wait for JIT to be enabled
+
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         while (!isJITEnabled(false)) {
-            // Check every 200ms
+            // Perform check for every 200ms
             usleep(1000*200);
         }
-        
         dispatch_async(dispatch_get_main_queue(), ^{
             [alert dismissViewControllerAnimated:YES completion:handler];
         });
