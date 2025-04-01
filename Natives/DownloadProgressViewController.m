@@ -193,24 +193,43 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
 - (void)viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
     
-    // Stop observing progress
-    @try {
-        if (self.task && self.task.textProgress) {
-            [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+    // Check if we should keep the timer running a bit longer
+    BOOL shouldKeepTimer = NO;
+    @synchronized(self.task) {
+        if (self.task && self.task.metadata) {
+            BOOL isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
+            BOOL allTasksComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
+            
+            // If we're a modpack installation in progress, keep timer running
+            if (isModpackInstall && !allTasksComplete) {
+                shouldKeepTimer = YES;
+                NSLog(@"[ProgressView] Keeping timer active for modpack installation");
+            }
         }
-    } @catch (NSException *exception) {
-        NSLog(@"[ProgressView] Warning: Failed to remove textProgress observer: %@", exception);
     }
     
-    // Invalidate refresh timer
-    [self.refreshTimer invalidate];
-    self.refreshTimer = nil;
-    
-    // Remove all observers from cell progress
-    [self removeAllProgressObservers];
-    
-    // Clear observed progress to avoid dangling references
-    self.overallProgressView.observedProgress = nil;
+    if (!shouldKeepTimer) {
+        // Stop observing progress
+        @try {
+            if (self.task && self.task.textProgress) {
+                [self.task.textProgress removeObserver:self forKeyPath:@"fractionCompleted"];
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"[ProgressView] Warning: Failed to remove textProgress observer: %@", exception);
+        }
+        
+        // Invalidate refresh timer
+        [self.refreshTimer invalidate];
+        self.refreshTimer = nil;
+        
+        // Remove all observers from cell progress
+        [self removeAllProgressObservers];
+        
+        // Clear observed progress to avoid dangling references
+        self.overallProgressView.observedProgress = nil;
+    } else {
+        NSLog(@"[ProgressView] viewDidDisappear but keeping timer active");
+    }
 }
 
 
@@ -319,6 +338,7 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     BOOL isComplete = NO;
     BOOL isModpackInstall = NO;
     BOOL allTasksComplete = NO;
+    NSDictionary *metadataCopy = nil;
     
     @synchronized(self.task) {
         // Check various completion indicators
@@ -329,8 +349,14 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         
         // Also check for modpack completion via metadata
         if (self.task.metadata) {
-            isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
-            allTasksComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
+            metadataCopy = [self.task.metadata copy]; // Make a thread-safe copy
+            isModpackInstall = [metadataCopy[@"isModpackInstall"] boolValue];
+            allTasksComplete = [metadataCopy[@"allTasksComplete"] boolValue];
+            
+            if (isModpackInstall) {
+                NSLog(@"[ProgressView] Task is a modpack installation, allTasksComplete = %@", 
+                      allTasksComplete ? @"YES" : @"NO");
+            }
         }
         
         // Also consider successful downloads vs total downloads
@@ -359,13 +385,100 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         
         // Auto-dismiss for modpack installations that are complete
         if (isModpackInstall && allTasksComplete) {
+            NSLog(@"[ProgressView] Modpack installation complete, preparing to dismiss view...");
+            
+            // Store a strong reference to navigationController to prevent it from being deallocated
+            __block UINavigationController *navController = self.navigationController;
+            
             // Use a small delay to ensure UI updates are visible
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+                NSLog(@"[ProgressView] Auto-dismiss timer fired");
+                
+                // Make sure we still have a valid navigation controller
+                if (navController) {
+                    NSLog(@"[ProgressView] Dismissing view controller");
+                    // Try different dismissal methods depending on what's available
+                    if (navController.presentingViewController) {
+                        [navController.presentingViewController dismissViewControllerAnimated:YES completion:^{
+                            NSLog(@"[ProgressView] View controller dismissed successfully");
+                            
+                            // Find and re-enable the UI in LauncherNavigationController as a fallback
+                            [self forceReenableUI];
+                        }];
+                    } else {
+                        NSLog(@"[ProgressView] No presenting view controller found, trying alternative dismissal");
+                        [navController dismissViewControllerAnimated:YES completion:^{
+                            NSLog(@"[ProgressView] Alternative dismissal complete");
+                            
+                            // Find and re-enable the UI in LauncherNavigationController as a fallback
+                            [self forceReenableUI];
+                        }];
+                    }
+                } else {
+                    NSLog(@"[ProgressView] Navigation controller is nil, cannot dismiss");
+                    // As a fallback, try to find and re-enable the UI directly
+                    [self forceReenableUI];
+                }
             });
         }
     }
 }
+
+- (void)forceReenableUI {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Find LauncherNavigationController
+        UIViewController *rootVC = nil;
+        
+        // Get key window using the appropriate API
+        UIWindow *keyWindow = nil;
+        NSArray<UIWindow *> *windows = nil;
+            
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]] && 
+                    ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive) {
+                    windows = ((UIWindowScene *)scene).windows;
+                    break;
+                }
+            }
+        } else {
+            windows = UIApplication.sharedApplication.windows;
+        }
+            
+        for (UIWindow *window in windows) {
+            if (window.isKeyWindow) {
+                keyWindow = window;
+                break;
+            }
+        }
+        
+        if (keyWindow) {
+            rootVC = keyWindow.rootViewController;
+        }
+        
+        // Find LauncherNavigationController
+        LauncherNavigationController *navVC = nil;
+        if ([rootVC isKindOfClass:[UISplitViewController class]]) {
+            UISplitViewController *splitVC = (UISplitViewController *)rootVC;
+            if (splitVC.viewControllers.count > 1) {
+                if ([splitVC.viewControllers[1] isKindOfClass:[LauncherNavigationController class]]) {
+                    navVC = (LauncherNavigationController *)splitVC.viewControllers[1];
+                }
+            }
+        }
+        
+        // Re-enable the UI
+        if (navVC) {
+            NSLog(@"[ProgressView] Found LauncherNavigationController, re-enabling UI");
+            [navVC setInteractionEnabled:YES forDownloading:NO];
+            [navVC fetchLocalVersionList];
+            [PLProfiles updateCurrent];
+        } else {
+            NSLog(@"[ProgressView] Could not find LauncherNavigationController");
+        }
+    });
+}
+
 
 - (void)reloadTableViewPreservingOffset {
     // Save current scroll position and content size
