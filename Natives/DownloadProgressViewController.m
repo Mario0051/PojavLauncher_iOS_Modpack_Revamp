@@ -394,12 +394,6 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
                     NSLog(@"[ProgressView] Dismissing view controller");
                     [navController dismissViewControllerAnimated:YES completion:nil];
                 }
-                
-                // Post a notification to inform other parts of the app that a modpack installation completed
-                NSDictionary *userInfo = @{@"isComplete": @YES};
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
-                                                                    object:nil 
-                                                                  userInfo:userInfo];
             });
         }
     }
