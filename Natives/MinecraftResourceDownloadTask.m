@@ -348,9 +348,10 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                 
                 // Validate metadata before signaling completion
                 BOOL metadataValid = NO;
+                BOOL isModpackInstall = NO;
+                
                 @synchronized(weakSelf) {
                     // Check if this is a modpack installation
-                    BOOL isModpackInstall = NO;
                     if (weakSelf.metadata && weakSelf.metadata[@"isModpackInstall"]) {
                         isModpackInstall = [weakSelf.metadata[@"isModpackInstall"] boolValue];
                     }
@@ -373,8 +374,15 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                             NSLog(@"[MCDL] Metadata validation passed. ID: %@", weakSelf.metadata[@"id"]);
                         }
                     } else {
-                        // For modpacks, we don't need to validate the same way
-                        metadataValid = YES;
+                        // For modpacks, explicitly check if allTasksComplete flag is set
+                        if (weakSelf.metadata[@"allTasksComplete"] && [weakSelf.metadata[@"allTasksComplete"] boolValue]) {
+                            metadataValid = YES;
+                            NSLog(@"[MCDL] Modpack installation confirmed complete via allTasksComplete flag");
+                        } else {
+                            // If modpack but allTasksComplete not set, still mark as valid but log it
+                            metadataValid = YES;
+                            NSLog(@"[MCDL] Warning: Modpack installation without allTasksComplete flag");
+                        }
                     }
                 }
                 
@@ -385,6 +393,15 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                     // Final UI update
                     weakSelf.needsUIUpdate = YES;
                     [weakSelf processBatchedUIUpdates];
+                    
+                    // For modpack installs, post a notification to make sure UI is re-enabled
+                    if (isModpackInstall) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
+                                                                                object:weakSelf
+                                                                              userInfo:weakSelf.metadata];
+                        });
+                    }
                 }
             }
         }
