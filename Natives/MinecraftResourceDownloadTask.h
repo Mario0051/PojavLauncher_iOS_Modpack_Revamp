@@ -19,6 +19,14 @@
 @property (atomic, assign) BOOL hasFinishedSetup;
 
 /**
+ * Marks the download phase as complete or incomplete.
+ * This updates the isDownloadPhaseComplete property and adds a "Complete" marker to the fileList if complete.
+ *
+ * @param complete Whether the download phase is complete
+ */
+- (void)markDownloadPhaseComplete:(BOOL)complete;
+
+/**
  * Creates a download task with optional callbacks for success and failure handling.
  *
  * @param url The URL to download from
@@ -75,9 +83,6 @@
 - (void)addFileToVerificationList:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
 - (BOOL)verifyPendingFiles;
 - (void)redownloadFileWithPath:(NSString *)path sha:(NSString *)sha altName:(NSString *)altName url:(NSString *)url size:(NSUInteger)size;
-
-// Helper method to check completion status
-// - (void)checkCompletionStatus;
 
 // Main download methods
 - (void)downloadVersion:(NSDictionary *)version;
