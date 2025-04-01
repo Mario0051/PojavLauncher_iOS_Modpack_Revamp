@@ -180,6 +180,26 @@ static NSDate *lastRemoteVersionRefresh;
     dispatch_async(dispatch_get_main_queue(), ^{
         NSLog(@"[MCDL] Received ModpackInstallationComplete notification, ensuring UI is restored");
         
+        // ENHANCED: Add protection against premature UI restoration
+        // Check if this is potentially a notification for an intermediate step (e.g. the first notification)
+        NSDictionary *userInfo = notification.userInfo;
+        BOOL isComplete = [userInfo[@"isComplete"] boolValue];
+        BOOL hasProfileInfo = (userInfo[@"profileName"] != nil);
+        BOOL installInProgress = [[NSUserDefaults standardUserDefaults] boolForKey:@"ModpackInstallInProgress"];
+        
+        // Simple notification with just isComplete flag may be from DownloadProgressViewController
+        // Only honor it if no install is in progress or it contains complete profile information
+        if (isComplete && !hasProfileInfo && installInProgress) {
+            NSLog(@"[MCDL] Ignoring intermediate notification during modpack installation");
+            return;
+        }
+        
+        // Mark installation as complete - safe to restore UI now
+        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"ModpackInstallInProgress"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+        
+        NSLog(@"[MCDL] Modpack installation confirmed complete, restoring UI");
+        
         // Force UI restoration
         [self setInteractionEnabled:YES forDownloading:NO];
         
@@ -787,16 +807,27 @@ static NSDate *lastRemoteVersionRefresh;
               isModpackInstall, metadataCopy ? @"YES" : @"NO");
         
         // For modpack installs, don't re-enable UI here - let the notification handle it
-        // CRITICAL CHANGE: Remove the UI restoration for modpacks here to avoid duplicate calls
         if (isModpackInstall) {
             NSLog(@"[MCDL] Modpack installation detected, UI will be restored via notification");
-            // Don't call setInteractionEnabled:forDownloading: here anymore
+            
+            // ENHANCED: Store a flag to track whether Forge is being installed
+            // This prevents premature UI restoration when multiple notifications arrive
+            if (metadataCopy && metadataCopy[@"dependencies"]) {
+                NSLog(@"[MCDL] Modpack has dependencies, marking UI as locked until final notification");
+                // Using NSUserDefaults to store temporary state for simplicity
+                // This ensures the state persists across notifications
+                [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"ModpackInstallInProgress"];
+                [[NSUserDefaults standardUserDefaults] synchronize];
+            }
             
             // Clean up task references though
             @synchronized(weakSelf) {
                 weakSelf.task = nil;
                 weakSelf.progressVC = nil;
             }
+            
+            return;
+        }
             
             return;
         }
