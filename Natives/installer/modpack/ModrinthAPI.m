@@ -1066,7 +1066,13 @@ extern void showDialog(NSString *title, NSString *message);
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
     
+    // Check for Forge immediately
+    [self checkAndInstallForge:downloader 
+             withDependencies:indexDict[@"dependencies"] 
+                  profileName:profileName];
+    
     // Post notification that modpack installation is complete
+    // CRITICAL CHANGE: Moved after checkAndInstallForge call
     dispatch_async(dispatch_get_main_queue(), ^{
         NSDictionary *userInfo = @{
             @"profileName": profileName,
@@ -1077,210 +1083,126 @@ extern void showDialog(NSString *title, NSString *message);
                                                             object:self 
                                                           userInfo:userInfo];
     });
+}
+
+- (void)finalizeModpackInstallation:(MinecraftResourceDownloadTask *)downloader 
+                          indexDict:(NSDictionary *)indexDict
+                            depInfo:(NSDictionary *)depInfo
+                           destPath:(NSString *)destPath {
+    // Add setup progress to file list
+    [downloader.fileList addObject:@"Setting up modpack profile..."];
+    NSProgress *setupProgress = [NSProgress progressWithTotalUnitCount:100];
+    setupProgress.completedUnitCount = 0;
+    [downloader.progressList addObject:setupProgress];
+    [downloader.progress addChild:setupProgress withPendingUnitCount:50]; // Add to overall progress
+    
+    // Update setup progress
+    setupProgress.completedUnitCount = 25; // 25% started setup
+    
+    // Get the profile name from indexDict, or use the directory name if not available
+    NSString *profileName = indexDict[@"name"];
+    if (!profileName || [profileName length] == 0) {
+        profileName = [destPath lastPathComponent];
+    }
+    
+    // Calculate the relative gameDir from the absolute destPath
+    NSString *gameDir;
+    NSString *instancesPath = [NSString stringWithFormat:@"%s/instances/%@", 
+                              getenv("POJAV_HOME"), 
+                              getPrefObject(@"general.game_directory")];
+    
+    // Check if destPath is within the instances directory structure
+    if ([destPath hasPrefix:instancesPath]) {
+        // Calculate the relative path by removing the instances path prefix
+        NSUInteger prefixLength = instancesPath.length;
+        if (prefixLength < destPath.length) {
+            // Extract relative path
+            gameDir = [destPath substringFromIndex:prefixLength];
+            
+            // Remove leading slash if present
+            if ([gameDir hasPrefix:@"/"]) {
+                gameDir = [gameDir substringFromIndex:1];
+            }
+        } else {
+            // Fallback: If the path calculation fails, use a default profile-based path
+            gameDir = [PLProfiles uniqueGameDirForProfileName:profileName];
+            NSLog(@"[ModrinthAPI] Warning: destPath equals or is shorter than instancesPath. Using default profile path: %@", gameDir);
+        }
+    } else {
+        // If destPath is outside instances directory, use a standardized path
+        gameDir = [PLProfiles uniqueGameDirForProfileName:profileName];
+        NSLog(@"[ModrinthAPI] Warning: destPath is not within instances directory. Using default profile path: %@", gameDir);
+    }
+    
+    // Update setup progress
+    setupProgress.completedUnitCount = 50; // 50% determined paths
+    
+    NSLog(@"[ModrinthAPI] Creating profile: %@ with gameDir: %@", profileName, gameDir);
+    
+    // Create the profile with the properly aligned gameDir
+    NSMutableDictionary *newProfile = [@{
+        @"gameDir": gameDir,
+        @"name": profileName,
+        @"lastVersionId": depInfo[@"id"] ?: @"latest-release"
+    } mutableCopy];
+    
+    // Update setup progress
+    setupProgress.completedUnitCount = 75; // 75% profile created
+    
+    // Safely handle the icon data
+    NSString *tmpIconPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"icon.png"];
+    NSData *iconData = [NSData dataWithContentsOfFile:tmpIconPath];
+    if (iconData && iconData.length > 0) {
+        // Only add icon if valid data exists
+        newProfile[@"icon"] = [NSString stringWithFormat:@"data:image/png;base64,%@",
+                              [iconData base64EncodedStringWithOptions:0]];
+    }
+    
+    // Add the profile to the profiles list
+    PLProfiles.current.profiles[profileName] = newProfile;
+    
+    // Set this as the selected profile
+    PLProfiles.current.selectedProfileName = profileName;
+    
+    // Save the profile changes to disk
+    [PLProfiles.current save];
+    
+    // Update setup progress
+    setupProgress.completedUnitCount = 100; // 100% profile saved
+    
+    // Ensure metadata reflects completion and marks this as a modpack install
+    if (!downloader.metadata) {
+        downloader.metadata = [NSMutableDictionary dictionary];
+    }
+    downloader.metadata[@"isModpackInstall"] = @YES;
+    downloader.metadata[@"allTasksComplete"] = @YES;
+    downloader.metadata[@"profileName"] = profileName;
+    
+    // Ensure progress is marked as complete
+    downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+    
+    // Now we can directly mark the download phase as complete using the public method
+    [downloader markDownloadPhaseComplete:YES];
+    
+    // Log completion
+    NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
     
     // Check for Forge immediately
     [self checkAndInstallForge:downloader 
              withDependencies:indexDict[@"dependencies"] 
                   profileName:profileName];
-}
-
-- (void)checkAndInstallForge:(MinecraftResourceDownloadTask *)downloader 
-            withDependencies:(NSDictionary *)dependencies 
-                 profileName:(NSString *)profileName {
-    // Check if the modpack requires Forge/NeoForge
-    NSString *forgeVersion = dependencies[@"forge"];
-    NSString *neoForgeVersion = dependencies[@"neoforge"];
-    NSString *minecraftVersion = dependencies[@"minecraft"];
     
-    if (!forgeVersion && !neoForgeVersion) {
-        // No Forge dependency, nothing to install
-        return;
-    }
-
-    NSString *vendor = forgeVersion ? @"Forge" : @"NeoForge";
-    NSString *version = forgeVersion ?: neoForgeVersion;
-    NSString *fullVersion;
-    
-    // Format the version based on the vendor
-    if ([vendor isEqualToString:@"Forge"]) {
-        fullVersion = [NSString stringWithFormat:@"%@-%@", minecraftVersion, version];
-    } else {
-        // NeoForge uses a different format
-        fullVersion = version;
-    }
-    
-    // Check if this Forge version is already installed
-    NSString *versionPath = [NSString stringWithFormat:@"%s/versions/%@", getenv("POJAV_GAME_DIR"), fullVersion];
-    if ([NSFileManager.defaultManager fileExistsAtPath:versionPath]) {
-        NSLog(@"[ModrinthAPI] %@ version %@ is already installed", vendor, fullVersion);
-        return;
-    }
-    
-    // Need to present this on the main thread after the download is complete
+    // Post notification that modpack installation is complete
+    // CRITICAL CHANGE: Moved after checkAndInstallForge call
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Show alert to user
-        UIAlertController *alert = [UIAlertController 
-            alertControllerWithTitle:[NSString stringWithFormat:@"%@ Installation Required", vendor]
-            message:[NSString stringWithFormat:@"This modpack requires %@ %@, which is not yet installed. Would you like to install it now?", vendor, fullVersion]
-            preferredStyle:UIAlertControllerStyleAlert];
-            
-        [alert addAction:[UIAlertAction 
-            actionWithTitle:@"Yes" 
-            style:UIAlertActionStyleDefault 
-            handler:^(UIAlertAction * _Nonnull action) {
-                // Get the correct endpoint info based on vendor type
-                NSDictionary *endpoints;
-                
-                if ([vendor isEqualToString:@"Forge"]) {
-                    endpoints = @{
-                        @"installer": @"https://maven.minecraftforge.net/net/minecraftforge/forge/%1$@/forge-%1$@-installer.jar",
-                        @"metadata": @"https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
-                    };
-                } else { // NeoForge
-                    endpoints = @{
-                        @"installer": @"https://maven.neoforged.net/releases/net/neoforged/neoforge/%1$@/neoforge-%1$@-installer.jar",
-                        @"metadata": @"https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
-                    };
-                }
-                
-                // Download the installer
-                NSString *installerUrl = [NSString stringWithFormat:endpoints[@"installer"], fullVersion];
-                NSString *outPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"forge-installer.jar"];
-                NSLog(@"[ModrinthAPI] Downloading %@ installer from: %@", vendor, installerUrl);
-                
-                // Create download manager
-                NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-                AFURLSessionManager *manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
-                
-                // Setup UI for download
-                UIViewController *currentVC = nil;
-                UISplitViewController *splitVC = nil;
-                
-                // Find the root view controller - proper way to get the current UI
-                NSArray<UIWindow *> *windows = nil;
-                if (@available(iOS 13.0, *)) {
-                    UIWindowScene *windowScene = nil;
-                    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-                        if ([scene isKindOfClass:[UIWindowScene class]] && 
-                            ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive) {
-                            windowScene = (UIWindowScene *)scene;
-                            break;
-                        }
-                    }
-                    windows = windowScene.windows;
-                } else {
-                    windows = UIApplication.sharedApplication.windows;
-                }
-                
-                UIWindow *mainWindow = nil;
-                for (UIWindow *window in windows) {
-                    if (window.isKeyWindow) {
-                        mainWindow = window;
-                        break;
-                    }
-                }
-                
-                if (mainWindow) {
-                    currentVC = mainWindow.rootViewController;
-                    if ([currentVC isKindOfClass:[UISplitViewController class]]) {
-                        splitVC = (UISplitViewController *)currentVC;
-                    }
-                }
-                
-                // Get the navigation controller for progress updates
-                LauncherNavigationController *navVC = nil;
-                if (splitVC && splitVC.viewControllers.count > 1) {
-                    navVC = (LauncherNavigationController *)splitVC.viewControllers[1];
-                    [navVC setInteractionEnabled:NO forDownloading:YES];
-                    navVC.progressText.text = [NSString stringWithFormat:@"Downloading %@ installer...", vendor];
-                    navVC.progressViewMain.hidden = NO;
-                }
-                
-                // Create download request with proper User-Agent header
-                NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:installerUrl]];
-                [request setValue:self.userAgent forHTTPHeaderField:@"User-Agent"];
-                
-                NSURLSessionDownloadTask *downloadTask = [manager downloadTaskWithRequest:request progress:^(NSProgress * _Nonnull progress) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if (navVC) {
-                            navVC.progressViewMain.progress = progress.fractionCompleted;
-                        }
-                    });
-                } destination:^NSURL *(NSURL *targetPath, NSURLResponse *response) {
-                    [NSFileManager.defaultManager removeItemAtPath:outPath error:nil];
-                    return [NSURL fileURLWithPath:outPath];
-                } completionHandler:^(NSURLResponse *response, NSURL *filePath, NSError *error) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        if (error) {
-                            if (navVC) {
-                                [navVC setInteractionEnabled:YES forDownloading:NO];
-                            }
-                            showDialog(@"Error", [NSString stringWithFormat:@"Failed to download %@ installer: %@", vendor, error.localizedDescription]);
-                            return;
-                        }
-                        
-                        // Reset UI 
-                        if (navVC) {
-                            [navVC setInteractionEnabled:YES forDownloading:NO];
-                            navVC.progressViewMain.hidden = YES;
-                            navVC.progressText.text = nil;
-                            
-                            // CRITICAL CHANGE: Don't show another alert before launching
-                            // Remove the showDialog and delay that was causing problems
-                            NSLog(@"[ModrinthAPI] %@ installer download complete, launching...", vendor);
-                            
-                            // Launch the installer directly
-                            [navVC enterModInstallerWithPath:outPath hitEnterAfterWindowShown:YES];
-                        } else {
-                            // Fallback if we couldn't get the navigation controller
-                            showDialog(@"Error", @"Could not locate navigation controller for installer launch");
-                        }
-                    });
-                }];
-                
-                [downloadTask resume];
-            }]];
-            
-        [alert addAction:[UIAlertAction 
-            actionWithTitle:@"No" 
-            style:UIAlertActionStyleCancel 
-            handler:nil]];
+        NSDictionary *userInfo = @{
+            @"profileName": profileName,
+            @"gameDir": gameDir
+        };
         
-        // Present the alert on the main thread using the appropriate view controller
-        UIViewController *currentVC = nil;
-        
-        // Find the root view controller - proper way to get the current UI
-        NSArray<UIWindow *> *windows = nil;
-        if (@available(iOS 13.0, *)) {
-            UIWindowScene *windowScene = nil;
-            for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-                if ([scene isKindOfClass:[UIWindowScene class]] && 
-                    ((UIWindowScene *)scene).activationState == UISceneActivationStateForegroundActive) {
-                    windowScene = (UIWindowScene *)scene;
-                    break;
-                }
-            }
-            windows = windowScene.windows;
-        } else {
-            windows = UIApplication.sharedApplication.windows;
-        }
-        
-        UIWindow *mainWindow = nil;
-        for (UIWindow *window in windows) {
-            if (window.isKeyWindow) {
-                mainWindow = window;
-                break;
-            }
-        }
-        
-        if (mainWindow) {
-            currentVC = mainWindow.rootViewController;
-            // Find the topmost presented view controller
-            while (currentVC.presentedViewController) {
-                currentVC = currentVC.presentedViewController;
-            }
-            [currentVC presentViewController:alert animated:YES completion:nil];
-        }
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
+                                                            object:self 
+                                                          userInfo:userInfo];
     });
 }
 
