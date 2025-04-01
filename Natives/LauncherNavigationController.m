@@ -828,9 +828,6 @@ static NSDate *lastRemoteVersionRefresh;
             
             return;
         }
-            
-            return;
-        }
         
         // Validate metadata for non-modpack launches
         if (!isModpackInstall) {
