@@ -75,6 +75,12 @@ static NSDate *lastRemoteVersionRefresh;
                                               name:@"InstallModpack"
                                             object:nil];
     
+    // Register for modpack installation completion notification
+    [NSNotificationCenter.defaultCenter addObserver:self
+                                          selector:@selector(handleModpackInstallationComplete:)
+                                              name:@"ModpackInstallationComplete"
+                                            object:nil];
+    
     // Handle authentication if needed
     [self refreshAuthenticationIfNeeded];
 }
@@ -167,6 +173,7 @@ static NSDate *lastRemoteVersionRefresh;
     
     // Remove notification observers
     [[NSNotificationCenter defaultCenter] removeObserver:self name:@"InstallModpack" object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"ModpackInstallationComplete" object:nil];
 }
 
 #pragma mark - Version List Management
@@ -410,6 +417,37 @@ static NSDate *lastRemoteVersionRefresh;
         
         // Prevent device sleep during downloads/launches
         UIApplication.sharedApplication.idleTimerDisabled = !enabled;
+    });
+}
+
+- (void)handleModpackInstallationComplete:(NSNotification *)notification {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[MCDL] Received ModpackInstallationComplete notification, ensuring UI is restored");
+        
+        // Force UI restoration
+        [self setInteractionEnabled:YES forDownloading:NO];
+        
+        // Refresh version lists and profiles
+        [self fetchLocalVersionList];
+        [PLProfiles updateCurrent];
+        
+        // Force layout update for UI consistency
+        [self.view setNeedsLayout];
+        [self.view layoutIfNeeded];
+        
+        // Ensure progress views are hidden
+        self.progressViewMain.hidden = YES;
+        self.progressViewSub.hidden = YES;
+        self.progressText.text = nil;
+        
+        // Reset button title
+        [self.buttonInstall setTitle:localize(@"Play", nil) forState:UIControlStateNormal];
+        
+        // Clean up any remaining task references
+        @synchronized(self) {
+            self.task = nil;
+            self.progressVC = nil;
+        }
     });
 }
 
