@@ -1114,8 +1114,14 @@ extern void showDialog(NSString *title, NSString *message);
         
         // Re-enable the UI
         if (navVC) {
+            // Enable UI interactions
             [navVC setInteractionEnabled:YES forDownloading:NO];
-            [navVC reloadProfileList];
+            
+            // Refresh version list - this is a public method in the header
+            [navVC fetchLocalVersionList];
+            
+            // Also update profiles manually since reloadProfileList isn't accessible
+            [PLProfiles updateCurrent];
         }
     });
     
