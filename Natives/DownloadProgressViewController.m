@@ -1,6 +1,8 @@
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import "DownloadProgressViewController.h"
+#import "LauncherNavigationController.h"
+#import "PLProfiles.h"
 #import "WFWorkflowProgressView.h"
 #import "utils.h"
 
@@ -478,7 +480,6 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         }
     });
 }
-
 
 - (void)reloadTableViewPreservingOffset {
     // Save current scroll position and content size
