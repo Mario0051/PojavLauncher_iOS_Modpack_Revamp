@@ -677,7 +677,17 @@ static NSDate *lastRemoteVersionRefresh;
         
         // Dismiss progress view if open
         if (weakSelf.progressVC) {
-            [weakSelf.progressVC dismissViewControllerAnimated:NO completion:nil];
+            NSLog(@"[MCDL] Trying to dismiss progress view controller");
+            
+            // Create a strong reference to prevent deallocation during dismissal
+            UIViewController *progressVC = weakSelf.progressVC;
+            
+            // Check if the progress VC is presented before trying to dismiss
+            if (progressVC.presentedViewController) {
+                [progressVC.presentedViewController dismissViewControllerAnimated:NO completion:nil];
+            } else if (progressVC.presentingViewController) {
+                [progressVC.presentingViewController dismissViewControllerAnimated:NO completion:nil];
+            }
         }
         
         // Clean up progress observation
@@ -744,6 +754,14 @@ static NSDate *lastRemoteVersionRefresh;
         // Store a final copy of metadata before clearing task
         NSDictionary *finalMetadataCopy = [metadataCopy copy];
         
+        // Check if this is a modpack installation before clearing task references
+        if (isModpackInstall) {
+            NSLog(@"[MCDL] Modpack installation detected, re-enabling UI");
+            [weakSelf setInteractionEnabled:YES forDownloading:NO];
+            [weakSelf fetchLocalVersionList];
+            [PLProfiles updateCurrent];
+        }
+        
         // Clean up task references
         @synchronized(weakSelf) {
             weakSelf.task = nil;
@@ -764,10 +782,9 @@ static NSDate *lastRemoteVersionRefresh;
                     }
                 }];
             });
-        } else {
-            // Re-enable UI for modpack installs
-            [weakSelf setInteractionEnabled:YES forDownloading:YES];
-            [weakSelf reloadProfileList];
+        } else if (!isModpackInstall) {
+            // For non-modpack case not handled above, re-enable UI
+            [weakSelf setInteractionEnabled:YES forDownloading:NO];
         }
     });
 }
