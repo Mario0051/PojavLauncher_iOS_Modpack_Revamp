@@ -340,7 +340,6 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
     BOOL isComplete = NO;
     BOOL isModpackInstall = NO;
     BOOL allTasksComplete = NO;
-    NSDictionary *metadataCopy = nil;
     
     @synchronized(self.task) {
         // Check various completion indicators
@@ -351,14 +350,8 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
         
         // Also check for modpack completion via metadata
         if (self.task.metadata) {
-            metadataCopy = [self.task.metadata copy]; // Make a thread-safe copy
-            isModpackInstall = [metadataCopy[@"isModpackInstall"] boolValue];
-            allTasksComplete = [metadataCopy[@"allTasksComplete"] boolValue];
-            
-            if (isModpackInstall) {
-                NSLog(@"[ProgressView] Task is a modpack installation, allTasksComplete = %@", 
-                      allTasksComplete ? @"YES" : @"NO");
-            }
+            isModpackInstall = [self.task.metadata[@"isModpackInstall"] boolValue];
+            allTasksComplete = [self.task.metadata[@"allTasksComplete"] boolValue];
         }
         
         // Also consider successful downloads vs total downloads
@@ -399,28 +392,14 @@ static void *TotalProgressObserverContext = &TotalProgressObserverContext;
                 // Make sure we still have a valid navigation controller
                 if (navController) {
                     NSLog(@"[ProgressView] Dismissing view controller");
-                    // Try different dismissal methods depending on what's available
-                    if (navController.presentingViewController) {
-                        [navController.presentingViewController dismissViewControllerAnimated:YES completion:^{
-                            NSLog(@"[ProgressView] View controller dismissed successfully");
-                            
-                            // Find and re-enable the UI in LauncherNavigationController as a fallback
-                            [self forceReenableUI];
-                        }];
-                    } else {
-                        NSLog(@"[ProgressView] No presenting view controller found, trying alternative dismissal");
-                        [navController dismissViewControllerAnimated:YES completion:^{
-                            NSLog(@"[ProgressView] Alternative dismissal complete");
-                            
-                            // Find and re-enable the UI in LauncherNavigationController as a fallback
-                            [self forceReenableUI];
-                        }];
-                    }
-                } else {
-                    NSLog(@"[ProgressView] Navigation controller is nil, cannot dismiss");
-                    // As a fallback, try to find and re-enable the UI directly
-                    [self forceReenableUI];
+                    [navController dismissViewControllerAnimated:YES completion:nil];
                 }
+                
+                // Post a notification to inform other parts of the app that a modpack installation completed
+                NSDictionary *userInfo = @{@"isComplete": @YES};
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
+                                                                    object:nil 
+                                                                  userInfo:userInfo];
             });
         }
     }
