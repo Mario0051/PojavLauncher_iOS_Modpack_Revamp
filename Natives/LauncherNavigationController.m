@@ -664,14 +664,35 @@ static NSDate *lastRemoteVersionRefresh;
             return;
         }
         
-        // Check if download is complete
-        BOOL isTrulyFinished = NO;
+        // Check if download is complete - check multiple indicators
+        BOOL isTrulyFinished = observedTask.isDownloadPhaseComplete;
+        BOOL isProgressFinished = NO;
+        BOOL isModpackInstall = NO;
+        BOOL allTasksComplete = NO;
         
         @synchronized(observedTask) {
-            isTrulyFinished = observedTask.isDownloadPhaseComplete;
+            // Check progress completion
+            @try {
+                isProgressFinished = (observedProgress.fractionCompleted >= 1.0 || observedProgress.finished);
+            } @catch (NSException *e) {
+                isProgressFinished = NO;
+            }
+            
+            // Check modpack flags
+            if (observedTask.metadata) {
+                isModpackInstall = [observedTask.metadata[@"isModpackInstall"] boolValue];
+                allTasksComplete = [observedTask.metadata[@"allTasksComplete"] boolValue];
+            }
         }
         
-        if (!isTrulyFinished) return;
+        // Log detailed state for debugging
+        NSLog(@"[MCDL] Download status: isDownloadPhaseComplete=%d, isProgressFinished=%d, isModpackInstall=%d, allTasksComplete=%d",
+              isTrulyFinished, isProgressFinished, isModpackInstall, allTasksComplete);
+        
+        // Only proceed if truly finished or we detect modpack completion
+        if (!isTrulyFinished && !(isModpackInstall && allTasksComplete)) {
+            return;
+        }
         
         NSLog(@"[MCDL] Download phase reported as complete.");
         
@@ -708,7 +729,7 @@ static NSDate *lastRemoteVersionRefresh;
         weakSelf.progressUpdateTimer = nil;
         
         // Thoroughly validate metadata
-        BOOL isModpackInstall = NO;
+        BOOL metadataValid = NO;
         NSDictionary *metadataCopy = nil;
         
         @synchronized(observedTask) {
@@ -726,6 +747,18 @@ static NSDate *lastRemoteVersionRefresh;
         
         NSLog(@"[MCDL] isModpackInstall: %d, has metadata: %@",
               isModpackInstall, metadataCopy ? @"YES" : @"NO");
+        
+        // For modpack installs, re-enable UI immediately 
+        if (isModpackInstall) {
+            NSLog(@"[MCDL] Modpack installation detected, re-enabling UI");
+            [weakSelf setInteractionEnabled:YES forDownloading:NO];
+            [weakSelf fetchLocalVersionList];
+            [PLProfiles updateCurrent];
+            
+            // Force layout update
+            [weakSelf.view setNeedsLayout];
+            [weakSelf.view layoutIfNeeded];
+        }
         
         // Validate metadata for non-modpack launches
         if (!isModpackInstall) {
@@ -753,14 +786,6 @@ static NSDate *lastRemoteVersionRefresh;
         
         // Store a final copy of metadata before clearing task
         NSDictionary *finalMetadataCopy = [metadataCopy copy];
-        
-        // Check if this is a modpack installation before clearing task references
-        if (isModpackInstall) {
-            NSLog(@"[MCDL] Modpack installation detected, re-enabling UI");
-            [weakSelf setInteractionEnabled:YES forDownloading:NO];
-            [weakSelf fetchLocalVersionList];
-            [PLProfiles updateCurrent];
-        }
         
         // Clean up task references
         @synchronized(weakSelf) {
