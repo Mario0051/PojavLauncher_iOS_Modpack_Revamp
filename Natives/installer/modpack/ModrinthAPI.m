@@ -1069,16 +1069,16 @@ extern void showDialog(NSString *title, NSString *message);
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
     
-    // Re-enable UI in LauncherNavigationController with multiple approaches for reliability
-    [self forceReenableLauncherUI];
-    
-    // Schedule additional UI re-enabling attempts to ensure success
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self forceReenableLauncherUI];
-    });
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self forceReenableLauncherUI];
+    // Post notification that modpack installation is complete
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSDictionary *userInfo = @{
+            @"profileName": profileName,
+            @"gameDir": gameDir
+        };
+        
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
+                                                            object:self 
+                                                          userInfo:userInfo];
     });
     
     // Check for Forge immediately
