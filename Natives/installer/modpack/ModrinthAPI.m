@@ -1049,7 +1049,7 @@ extern void showDialog(NSString *title, NSString *message);
     // Update setup progress
     setupProgress.completedUnitCount = 100; // 100% profile saved
     
-    // Ensure metadata reflects completion and marks this as a modpack install
+    // CRITICAL: Ensure metadata reflects completion and marks this as a modpack install
     if (!downloader.metadata) {
         downloader.metadata = [NSMutableDictionary dictionary];
     }
@@ -1057,8 +1057,14 @@ extern void showDialog(NSString *title, NSString *message);
     downloader.metadata[@"allTasksComplete"] = @YES;
     downloader.metadata[@"profileName"] = profileName;
     
+    // IMPORTANT: Explicitly mark download phase as complete
+    [downloader markDownloadPhaseComplete:YES];
+    
     // Ensure progress is marked as complete
     downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+    if (downloader.textProgress) {
+        downloader.textProgress.completedUnitCount = downloader.textProgress.totalUnitCount;
+    }
     
     // Add completion marker
     [downloader.fileList addObject:@"Complete"];
@@ -1068,6 +1074,9 @@ extern void showDialog(NSString *title, NSString *message);
     
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
+    
+    // Force re-enable the launcher UI
+    [self forceReenableLauncherUI];
     
     // Post notification that modpack installation is complete
     dispatch_async(dispatch_get_main_queue(), ^{
