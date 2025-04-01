@@ -1057,17 +1057,27 @@ extern void showDialog(NSString *title, NSString *message);
     downloader.metadata[@"allTasksComplete"] = @YES;
     downloader.metadata[@"profileName"] = profileName;
     
-    // IMPORTANT: Explicitly mark download phase as complete
-    [downloader markDownloadPhaseComplete:YES];
-    
-    // Ensure progress is marked as complete
-    downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
-    if (downloader.textProgress) {
-        downloader.textProgress.completedUnitCount = downloader.textProgress.totalUnitCount;
+    // IMPORTANT: Add completion marker to fileList, which will trigger completion
+    @synchronized(downloader.fileList) {
+        if (![downloader.fileList containsObject:@"Complete"]) {
+            [downloader.fileList addObject:@"Complete"];
+        }
     }
     
-    // Add completion marker
-    [downloader.fileList addObject:@"Complete"];
+    // Ensure progress is fully complete
+    @synchronized(downloader) {
+        // Complete main progress
+        if (downloader.progress && downloader.progress.totalUnitCount > 0) {
+            downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
+        }
+        
+        // Complete text progress
+        if (downloader.textProgress && downloader.textProgress.totalUnitCount > 0) {
+            downloader.textProgress.completedUnitCount = downloader.textProgress.totalUnitCount;
+        }
+    }
+    
+    // Add completion progress
     NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
     completeProgress.completedUnitCount = 1;
     [downloader.progressList addObject:completeProgress];
