@@ -1049,7 +1049,7 @@ extern void showDialog(NSString *title, NSString *message);
     // Update setup progress
     setupProgress.completedUnitCount = 100; // 100% profile saved
     
-    // CRITICAL: Ensure metadata reflects completion and marks this as a modpack install
+    // Ensure metadata reflects completion and marks this as a modpack install
     if (!downloader.metadata) {
         downloader.metadata = [NSMutableDictionary dictionary];
     }
@@ -1057,36 +1057,17 @@ extern void showDialog(NSString *title, NSString *message);
     downloader.metadata[@"allTasksComplete"] = @YES;
     downloader.metadata[@"profileName"] = profileName;
     
-    // IMPORTANT: Add completion marker to fileList, which will trigger completion
-    @synchronized(downloader.fileList) {
-        if (![downloader.fileList containsObject:@"Complete"]) {
-            [downloader.fileList addObject:@"Complete"];
-        }
-    }
+    // Ensure progress is marked as complete
+    downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
     
-    // Ensure progress is fully complete
-    @synchronized(downloader) {
-        // Complete main progress
-        if (downloader.progress && downloader.progress.totalUnitCount > 0) {
-            downloader.progress.completedUnitCount = downloader.progress.totalUnitCount;
-        }
-        
-        // Complete text progress
-        if (downloader.textProgress && downloader.textProgress.totalUnitCount > 0) {
-            downloader.textProgress.completedUnitCount = downloader.textProgress.totalUnitCount;
-        }
-    }
-    
-    // Add completion progress
+    // Add completion marker
+    [downloader.fileList addObject:@"Complete"];
     NSProgress *completeProgress = [NSProgress progressWithTotalUnitCount:1];
     completeProgress.completedUnitCount = 1;
     [downloader.progressList addObject:completeProgress];
     
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
-    
-    // Force re-enable the launcher UI
-    [self forceReenableLauncherUI];
     
     // Post notification that modpack installation is complete
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -1098,6 +1079,12 @@ extern void showDialog(NSString *title, NSString *message);
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
                                                             object:self 
                                                           userInfo:userInfo];
+        
+        // Force re-enable the UI after a short delay to ensure all processes complete
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // Force-reset the UI state regardless of normal completion detection
+            [self forceReenableLauncherUI];
+        });
     });
     
     // Check for Forge immediately
