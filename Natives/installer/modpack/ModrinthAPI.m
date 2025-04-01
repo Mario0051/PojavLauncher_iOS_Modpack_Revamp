@@ -1069,12 +1069,32 @@ extern void showDialog(NSString *title, NSString *message);
     // Log completion
     NSLog(@"[ModrinthAPI] Modpack installation complete: %@", profileName);
     
-    // Re-enable UI in LauncherNavigationController
+    // Re-enable UI in LauncherNavigationController with multiple approaches for reliability
+    [self forceReenableLauncherUI];
+    
+    // Schedule additional UI re-enabling attempts to ensure success
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self forceReenableLauncherUI];
+    });
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self forceReenableLauncherUI];
+    });
+    
+    // Check for Forge immediately
+    [self checkAndInstallForge:downloader 
+             withDependencies:indexDict[@"dependencies"] 
+                  profileName:profileName];
+}
+
+- (void)forceReenableLauncherUI {
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[ModrinthAPI] Attempting to force re-enable launcher UI");
+        
         // Find LauncherNavigationController
         UIViewController *rootVC = nil;
         
-        // Get key window using the appropriate API for iOS 13+
+        // Get key window using the appropriate API
         UIWindow *keyWindow = nil;
         NSArray<UIWindow *> *windows = nil;
             
@@ -1114,21 +1134,31 @@ extern void showDialog(NSString *title, NSString *message);
         
         // Re-enable the UI
         if (navVC) {
+            NSLog(@"[ModrinthAPI] Found LauncherNavigationController, re-enabling UI");
+            
+            // Force-dismiss any presented view controllers
+            if (navVC.presentedViewController) {
+                [navVC dismissViewControllerAnimated:NO completion:^{
+                    NSLog(@"[ModrinthAPI] Successfully dismissed presented view controller");
+                }];
+            }
+            
             // Enable UI interactions
             [navVC setInteractionEnabled:YES forDownloading:NO];
             
             // Refresh version list - this is a public method in the header
             [navVC fetchLocalVersionList];
             
-            // Also update profiles manually since reloadProfileList isn't accessible
+            // Also update profiles manually
             [PLProfiles updateCurrent];
+            
+            // Force UI update
+            [navVC.view setNeedsLayout];
+            [navVC.view layoutIfNeeded];
+        } else {
+            NSLog(@"[ModrinthAPI] Could not find LauncherNavigationController");
         }
     });
-    
-    // Check for Forge immediately
-    [self checkAndInstallForge:downloader 
-             withDependencies:indexDict[@"dependencies"] 
-                  profileName:profileName];
 }
 
 - (void)checkAndInstallForge:(MinecraftResourceDownloadTask *)downloader 
