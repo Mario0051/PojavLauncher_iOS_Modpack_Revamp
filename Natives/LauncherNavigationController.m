@@ -786,16 +786,19 @@ static NSDate *lastRemoteVersionRefresh;
         NSLog(@"[MCDL] isModpackInstall: %d, has metadata: %@",
               isModpackInstall, metadataCopy ? @"YES" : @"NO");
         
-        // For modpack installs, re-enable UI immediately 
+        // For modpack installs, don't re-enable UI here - let the notification handle it
+        // CRITICAL CHANGE: Remove the UI restoration for modpacks here to avoid duplicate calls
         if (isModpackInstall) {
-            NSLog(@"[MCDL] Modpack installation detected, re-enabling UI");
-            [weakSelf setInteractionEnabled:YES forDownloading:NO];
-            [weakSelf fetchLocalVersionList];
-            [PLProfiles updateCurrent];
+            NSLog(@"[MCDL] Modpack installation detected, UI will be restored via notification");
+            // Don't call setInteractionEnabled:forDownloading: here anymore
             
-            // Force layout update
-            [weakSelf.view setNeedsLayout];
-            [weakSelf.view layoutIfNeeded];
+            // Clean up task references though
+            @synchronized(weakSelf) {
+                weakSelf.task = nil;
+                weakSelf.progressVC = nil;
+            }
+            
+            return;
         }
         
         // Validate metadata for non-modpack launches
