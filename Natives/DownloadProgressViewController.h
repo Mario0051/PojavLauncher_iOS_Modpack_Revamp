@@ -1,5 +1,6 @@
 #import <UIKit/UIKit.h>
 #import "MinecraftResourceDownloadTask.h"
+#import "DownloadProgressManager.h"
 
 // Define task types for better UI presentation
 typedef NS_ENUM(NSInteger, DownloadTaskType) {
