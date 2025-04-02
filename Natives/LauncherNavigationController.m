@@ -80,8 +80,18 @@ static NSDate *lastRemoteVersionRefresh;
     // Register for modpack installation completion notification
     [NSNotificationCenter.defaultCenter addObserver:self
                                           selector:@selector(handleModpackInstallationComplete:)
-                                              name:@"ModpackInstallationComplete"
                                             object:nil];
+    
+    // Register for progress manager notifications
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(progressUpdated:)
+                                                 name:DMProgressUpdatedNotification
+                                               object:nil];
+                                               
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(downloadCompleted:)
+                                                 name:DMDownloadCompletedNotification
+                                               object:nil];
     
     // Handle authentication if needed
     [self refreshAuthenticationIfNeeded];
@@ -174,8 +184,7 @@ static NSDate *lastRemoteVersionRefresh;
     self.progressUpdateTimer = nil;
     
     // Remove notification observers
-    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"InstallModpack" object:nil];
-    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"ModpackInstallationComplete" object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (void)handleModpackInstallationComplete:(NSNotification *)notification {
@@ -509,16 +518,11 @@ static NSDate *lastRemoteVersionRefresh;
     
     // Add a slight delay for UI feedback
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // Check for active task
-        BOOL taskIsActive = NO;
+        // Check if manager has an active download
+        DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+        BOOL isActive = (!manager.isComplete && manager.currentStage != DownloadStagePreparation);
         
-        @synchronized(self) {
-            if (self.task && self.task.progress && !self.task.progress.cancelled) {
-                taskIsActive = YES;
-            }
-        }
-        
-        if (taskIsActive) {
+        if (isActive) {
             // Show download details
             if (!self.progressVC) {
                 @synchronized(self) {
@@ -628,14 +632,15 @@ static NSDate *lastRemoteVersionRefresh;
     
     NSLog(@"[MCDL] Starting download for version: %@", versionId);
     
-    // Create the download task with cleanup
+    // Reset progress manager for new download
+    DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+    [manager reset];
+    
+    // Create the download task
     @synchronized(self) {
         // Clean up any previous task
-        if (self.task && self.task.progress) {
-            @try {
-                [self.task.progress removeObserver:self forKeyPath:@"fractionCompleted"];
-            } @catch(NSException *e) {}
-        }
+        self.task = nil;
+        self.progressVC = nil;
         
         // Create new task
         self.task = [MinecraftResourceDownloadTask new];
@@ -669,45 +674,19 @@ static NSDate *lastRemoteVersionRefresh;
         
         // Start the download
         [weakSelf.task downloadVersion:object];
+    });
+}
+
+- (void)progressUpdated:(NSNotification *)notification {
+    DownloadProgressManager *manager = notification.object;
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Update progress bars
+        self.progressViewMain.progress = manager.overallProgress.fractionCompleted;
+        self.progressViewSub.progress = manager.currentStageProgress.fractionCompleted;
         
-        // Setup progress tracking on main thread
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (!weakSelf) return;
-            
-            @synchronized(weakSelf) {
-                if (!weakSelf.task || !weakSelf.task.progress) return;
-                
-                // Connect progress bars to task
-                weakSelf.progressViewMain.observedProgress = weakSelf.task.progress;
-                weakSelf.progressViewSub.observedProgress = weakSelf.task.textProgress;
-                
-                // Add KVO observer
-                @try {
-                    [weakSelf.task.progress addObserver:weakSelf
-                                            forKeyPath:@"fractionCompleted"
-                                               options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew
-                                               context:ProgressObserverContext];
-                } @catch (NSException *exception) {
-                    NSLog(@"[MCDL] Exception adding progress observer: %@", exception);
-                    
-                    [weakSelf setInteractionEnabled:YES forDownloading:YES];
-                    weakSelf.task = nil;
-                    weakSelf.progressVC = nil;
-                }
-                
-                // Setup a timer for more frequent UI updates
-                if (weakSelf.progressUpdateTimer) {
-                    [weakSelf.progressUpdateTimer invalidate];
-                }
-                
-                weakSelf.progressUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:0.2
-                                                                               target:weakSelf
-                                                                             selector:@selector(updateProgressText)
-                                                                             userInfo:nil
-                                                                              repeats:YES];
-                [NSRunLoop.mainRunLoop addTimer:weakSelf.progressUpdateTimer forMode:NSRunLoopCommonModes];
-            }
-        });
+        // Update status text
+        self.progressText.text = manager.statusMessage;
     });
 }
 
@@ -723,6 +702,58 @@ static NSDate *lastRemoteVersionRefresh;
         // Update progress text display
         self.progressText.text = self.task.textProgress.localizedAdditionalDescription;
     }
+}
+
+- (void)downloadCompleted:(NSNotification *)notification {
+    DownloadProgressManager *manager = notification.object;
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Only proceed if truly finished
+        if (!manager.isComplete) {
+            return;
+        }
+        
+        // Check if this is a modpack installation
+        BOOL isModpackInstall = manager.isModpackInstall;
+        BOOL isError = manager.isError;
+        
+        // For normal Minecraft downloads that completed successfully, launch the game
+        if (!isModpackInstall && !isError) {
+            // Dismiss progress view if open
+            if (self.progressVC) {
+                if (self.progressVC.presentedViewController) {
+                    [self.progressVC.presentedViewController dismissViewControllerAnimated:NO completion:nil];
+                } else if (self.progressVC.presentingViewController) {
+                    [self.progressVC.presentingViewController dismissViewControllerAnimated:NO completion:nil];
+                }
+            }
+            
+            // Clean up task references
+            @synchronized(self) {
+                self.task = nil;
+                self.progressVC = nil;
+            }
+            
+            // Launch the game with slight delay to ensure cleanup completes
+            NSDictionary *metadata = [manager.metadata copy];
+            
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self invokeAfterJITEnabled:^{
+                    if (self && self.view.window) {
+                        NSLog(@"[MCDL] Launching game with metadata: %@", metadata[@"id"]);
+                        UIKit_launchMinecraftSurfaceVC(self.view.window, metadata);
+                    } else {
+                        NSLog(@"[MCDL] Error: View hierarchy invalid for launch");
+                        [self setInteractionEnabled:YES forDownloading:YES];
+                    }
+                }];
+            });
+        } else if (isError) {
+            // For errors, just re-enable the UI
+            [self setInteractionEnabled:YES forDownloading:NO];
+        }
+        // For modpack installs, the UI is handled by handleModpackInstallationComplete
+    });
 }
 
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
