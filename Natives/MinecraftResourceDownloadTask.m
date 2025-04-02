@@ -7,6 +7,7 @@
 #import "LauncherPreferences.h"
 #import "MinecraftResourceDownloadTask.h"
 #import "MinecraftResourceUtils.h"
+#import "DownloadProgressManager.h"
 #import "ios_uikit_bridge.h"
 #import "PLProfiles.h"
 #import "utils.h"
@@ -167,11 +168,23 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
 
 - (void)prepareForDownload {
     @synchronized(self) {
-        // Create new progress tracking objects
+        // Initialize with improved session configuration
+        if (!self.manager) {
+            NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
+            configuration.timeoutIntervalForRequest = kDownloadTimeout;
+            configuration.timeoutIntervalForResource = kResourceTimeout;
+            configuration.HTTPMaximumConnectionsPerHost = kMaxConcurrentDownloads;
+            configuration.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+            
+            self.manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
+        }
+        
+        // Initialize progress tracking
         self.progress = [NSProgress new];
         self.progress.totalUnitCount = 0;
         self.progress.cancellable = YES;
         
+        // Initialize text progress for UI updates
         self.textProgress = [NSProgress new];
         self.textProgress.kind = NSProgressKindFile;
         self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
@@ -181,12 +194,18 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         // Reset counters
         self.successfulDownloads = 0;
         self.totalDownloads = 0;
+        self.verboseLogging = getPrefBool(@"general.debug_logging");
+        
+        // Initialize verification flag
+        self.deferSHAVerification = !getPrefBool(@"general.check_sha");
+        
+        // Flag to prevent duplicate asset processing
+        self.hasProcessedAssets = NO;
+        
+        // Reset download completion tracking
+        self.isDownloadPhaseComplete = NO;
         self.totalTasksEnqueued = 0;
         self.tasksLeftGroup = 0;
-        
-        // Reset flags
-        self.hasProcessedAssets = NO;
-        self.isDownloadPhaseComplete = NO;
         self.hasFinishedSetup = NO;
         
         // Set download start time for speed calculations
@@ -216,8 +235,26 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     // Flag UI update
     self.needsUIUpdate = YES;
     
-    // Check SHA verification preference
-    self.deferSHAVerification = !getPrefBool(@"general.check_sha");
+    // Initialize the progress manager
+    DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+    BOOL isModpackInstall = NO;
+    
+    @synchronized(self) {
+        if (self.metadata && self.metadata[@"isModpackInstall"]) {
+            isModpackInstall = [self.metadata[@"isModpackInstall"] boolValue];
+        }
+    }
+    
+    // Begin tracking with the manager
+    [manager beginDownload:isModpackInstall];
+    
+    // Sync metadata with manager
+    @synchronized(self) {
+        if (self.metadata) {
+            // Copy metadata to manager
+            [manager.metadata setDictionary:self.metadata];
+        }
+    }
 }
 
 #pragma mark - Completion Management
@@ -522,6 +559,17 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         // Track total downloads
         self.totalDownloads++;
         
+        // Get the progress manager
+        DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+        
+        // Create display name
+        NSString *displayName = altName ?: path.lastPathComponent;
+        
+        // Add file to manager
+        DownloadFileItem *fileItem = [manager addFileWithPath:path 
+                                              displayName:displayName 
+                                                    size:size];
+        
         // Check if file exists and has valid SHA
         BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
         BOOL isVersionFile = [path hasSuffix:@".json"] && [path containsString:@"/versions/"];
@@ -543,6 +591,9 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             
             // Increment successful downloads counter
             self.successfulDownloads++;
+            
+            // Mark file as complete in manager
+            [manager completeFile:fileItem];
             
             // Periodic logging
             if (self.verboseLogging && self.successfulDownloads % 50 == 0) {
@@ -574,6 +625,9 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             self.textProgress.completedUnitCount = self.progress.completedUnitCount;
             [self.progressLock unlock];
             
+            // Mark file as complete in manager
+            [manager completeFile:fileItem];
+            
             self.successfulDownloads++;
             
             if (success) {
@@ -585,13 +639,11 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             [self safelyLeaveDispatchGroup:@"DeferredVerification"];
             return nil;
         } else if (![self checkAccessWithDialog:YES]) {
+            [manager failFile:fileItem withError:@"Access denied"];
             [self safelyLeaveDispatchGroup:@"AccessDenied"];
             self.totalDownloads--;
             return nil;
         }
-        
-        // Use filename as display name if none provided
-        NSString *name = altName ?: path.lastPathComponent;
         
         // Create URL request
         NSURL *requestURL = [NSURL URLWithString:url];
@@ -600,6 +652,9 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             NSError *urlError = [NSError errorWithDomain:@"net.kdt.pojavlauncher"
                                                    code:1001
                                                userInfo:@{NSLocalizedDescriptionKey: @"Invalid download URL format"}];
+            
+            [manager failFile:fileItem withError:@"Invalid download URL format"];
+            
             if (failure) {
                 dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                     failure(urlError);
@@ -619,8 +674,8 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         
         // Add to file list for UI tracking
         [self.fileListLock lock];
-        if (![self.fileList containsObject:name]) {
-            [self.fileList addObject:name];
+        if (![self.fileList containsObject:displayName]) {
+            [self.fileList addObject:displayName];
             self.needsUIUpdate = YES;
         }
         [self.fileListLock unlock];
@@ -651,10 +706,12 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             NSLog(@"[MCDL] Exception adding progress: %@", exception);
             
             [self.fileListLock lock];
-            if ([self.fileList.lastObject isEqual:name]) {
+            if ([self.fileList.lastObject isEqual:displayName]) {
                 [self.fileList removeLastObject];
             }
             [self.fileListLock unlock];
+            
+            [manager failFile:fileItem withError:[NSString stringWithFormat:@"Exception: %@", exception.reason]];
             
             self.totalDownloads--;
             [self safelyLeaveDispatchGroup:@"ProgressAddFail"];
@@ -663,7 +720,8 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         [self.progressLock unlock];
         
         if (!progressAdded) {
-            NSLog(@"[MCDL] Failed to add progress for %@", name);
+            NSLog(@"[MCDL] Failed to add progress for %@", displayName);
+            [manager failFile:fileItem withError:@"Failed to add progress tracking"];
             [self safelyLeaveDispatchGroup:@"ProgressAddFail2"];
             self.totalDownloads--;
             return nil;
@@ -688,6 +746,10 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                         CGFloat fraction = taskProgress.fractionCompleted;
                         if (!isnan(fraction) && fraction >= 0 && fraction <= 1.0) {
                             downloadProgress.completedUnitCount = (NSInteger)(downloadProgress.totalUnitCount * fraction);
+                            
+                            // Update file in manager
+                            NSUInteger bytesCompleted = (NSUInteger)(fileItem.size * fraction);
+                            [manager updateFile:fileItem withBytesCompleted:bytesCompleted];
                         }
                     } @catch (NSException *exception) {
                         NSLog(@"[MCDL] Exception in progress update: %@", exception);
@@ -713,6 +775,10 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                     if (weakSelf.textProgress && !weakSelf.textProgress.cancelled) {
                         weakSelf.textProgress.totalUnitCount = weakSelf.progress.totalUnitCount;
                     }
+                    
+                    // Update file size in manager
+                    fileItem.size = actualSize;
+                    fileItem.progress.totalUnitCount = actualSize;
                 } @catch (NSException *exception) {
                     NSLog(@"[MCDL] Exception updating progress size: %@", exception);
                 }
@@ -764,12 +830,15 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             }
             
             if (isCancelled) {
+                [manager failFile:fileItem withError:@"Download cancelled"];
                 [weakSelf safelyLeaveDispatchGroup:@"Cancelled"];
                 return;
             }
             
             if (error) {
-                NSLog(@"[MCDL] Download error for %@: %@", name, error.localizedDescription);
+                NSLog(@"[MCDL] Download error for %@: %@", displayName, error.localizedDescription);
+                
+                [manager failFile:fileItem withError:error.localizedDescription];
                 
                 if (failure) {
                     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
@@ -777,7 +846,7 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                         [weakSelf safelyLeaveDispatchGroup:@"DownloadError"];
                     });
                 } else {
-                    [weakSelf finishDownloadWithError:error file:name];
+                    [weakSelf finishDownloadWithError:error file:displayName];
                     [weakSelf safelyLeaveDispatchGroup:@"DownloadErrorFinish"];
                 }
                 return;
@@ -813,6 +882,8 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                         
                         weakSelf.successfulDownloads--;
                         
+                        [manager failFile:fileItem withError:@"SHA1 verification failed"];
+                        
                         if (failure) {
                             dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
                                 failure(shaError);
@@ -845,6 +916,9 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                     NSLog(@"[MCDL] Exception marking progress complete: %@", exception);
                 }
             }
+            
+            // Mark file as complete in manager
+            [manager completeFile:fileItem];
             
             // Call success callback if SHA is valid
             if (success && shaValid) {
@@ -1149,6 +1223,10 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         }
     }
     
+    // Update progress manager
+    DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+    [manager failWithError:error];
+    
     // Show error dialog
     dispatch_async(dispatch_get_main_queue(), ^{
         showDialog(localize(@"Error", nil), error);
@@ -1211,6 +1289,9 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     // Prepare download state
     [self prepareForDownload];
     
+    // Get the progress manager
+    DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+    
     // Reset metadata
     @synchronized(self) {
         if (!self.metadata) {
@@ -1220,9 +1301,15 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         }
         self.metadata[@"isModpackInstall"] = @NO;
         self.isDownloadPhaseComplete = NO;
+        
+        // Copy metadata to manager
+        [manager.metadata setDictionary:self.metadata];
     }
     
     NSLog(@"[MCDL] Starting download for version: %@", version[@"id"]);
+    
+    // Move to metadata stage
+    [manager advanceToStage:DownloadStageMetadata withTotalItems:1];
     
     // Setup completion gate
     self.hasFinishedSetup = NO;
@@ -1243,6 +1330,9 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     
     // Start with metadata download
     [self downloadVersionMetadata:version success:^{
+        // Mark metadata stage complete
+        [manager completeCurrentStage]; // Advances to libraries stage
+        
         // Process all other downloads
         [weakSelf processPostMetadataDownloads];
         
@@ -2008,6 +2098,9 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     // Initialize download state
     [self prepareForDownload];
     
+    // Get progress manager
+    DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+    
     // Reset metadata and mark as modpack
     @synchronized(self) {
         if (!self.metadata) {
@@ -2017,7 +2110,13 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         }
         self.metadata[@"isModpackInstall"] = @YES;
         self.isDownloadPhaseComplete = NO;
+        
+        // Copy metadata to manager
+        [manager.metadata setDictionary:self.metadata];
     }
+    
+    // Set stage to preparation
+    [manager advanceToStage:DownloadStagePreparation withTotalItems:1];
     
     // Get modpack info
     NSString *url = modDetail[@"versionUrls"][selectedVersion];
@@ -2045,22 +2144,25 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     // Store game directory for profile creation
     @synchronized(self) {
         self.metadata[@"gameDir"] = gameDir;
+        
+        // Update manager metadata
+        [manager.metadata setDictionary:self.metadata];
     }
     
     // Create display name for progress
     NSString *displayName = [NSString stringWithFormat:@"Downloading modpack: %@", name];
     
+    // Update UI
+    manager.statusMessage = [NSString stringWithFormat:@"Downloading modpack: %@", name];
+    
     // Success callback for modpack download
     __weak typeof(self) weakSelf = self;
     void(^modpackSuccess)(void) = ^{
+        // Update manager stage
+        [manager advanceToStage:DownloadStageExtraction withTotalItems:1];
+        
         @synchronized(weakSelf) {
             if (!weakSelf) return;
-            
-            // Reset progress for extraction phase
-            weakSelf.progress.totalUnitCount = 1;
-            weakSelf.progress.completedUnitCount = 0;
-            weakSelf.textProgress.totalUnitCount = 1;
-            weakSelf.textProgress.completedUnitCount = 0;
             
             // Reset counters for mod downloads
             weakSelf.totalDownloads = 0;
@@ -2069,14 +2171,6 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             weakSelf.tasksLeftGroup = 0;
             weakSelf.isDownloadPhaseComplete = NO;
         }
-        
-        // Add extraction marker to UI
-        @synchronized(weakSelf.fileList) {
-            if (!weakSelf) return;
-            [weakSelf.fileList removeAllObjects];
-            [weakSelf.fileList addObject:[NSString stringWithFormat:@"Preparing modpack %@", name]];
-        }
-        weakSelf.needsUIUpdate = YES;
         
         NSLog(@"[MCDL] Modpack download complete, proceeding to installation.");
         
@@ -2090,12 +2184,8 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         
         NSLog(@"[MCDL] Failed to download modpack: %@. Retrying...", error.localizedDescription);
         
-        // Add retry notification to UI
-        @synchronized(weakSelf.fileList) {
-            if (!weakSelf) return;
-            [weakSelf.fileList addObject:[NSString stringWithFormat:@"Retrying download for %@", name]];
-        }
-        weakSelf.needsUIUpdate = YES;
+        // Update manager status
+        manager.statusMessage = [NSString stringWithFormat:@"Retrying download for %@", name];
         
         // Create retry task
         [weakSelf createDownloadTask:url
@@ -2106,6 +2196,7 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                              success:modpackSuccess
                              failure:^(NSError *retryError) {
             // Show error if retry fails
+            [manager failWithError:[NSString stringWithFormat:@"Failed to download modpack: %@", retryError.localizedDescription]];
             [weakSelf finishDownloadWithErrorString:[NSString stringWithFormat:@"Failed to download modpack after retry: %@", retryError.localizedDescription]];
         }];
     };
