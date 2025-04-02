@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import "DownloadProgressManager.h"
 
 NSMutableArray<NSDictionary *> *localVersionList, *remoteVersionList;
 
