@@ -67,7 +67,6 @@
                                          toPath:(NSString *)path DEPRECATED_MSG_ATTRIBUTE("Use createDownloadTask:size:sha:altName:toPath:success:failure: instead");
 
 // Helper methods for progress tracking
-// REMOVED - (void)addDownloadTaskToProgress:(NSURLSessionDownloadTask *)task size:(NSUInteger)size;
 - (void)prepareForDownload;
 
 // Error handling methods
