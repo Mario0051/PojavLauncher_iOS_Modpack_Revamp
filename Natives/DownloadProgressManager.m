@@ -1,5 +1,3 @@
-// DownloadProgressManager.m
-
 #import "DownloadProgressManager.h"
 
 // Notification names
