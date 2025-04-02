@@ -360,11 +360,14 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                     if (!isModpackInstall) {
                         metadataValid = (weakSelf.metadata != nil && weakSelf.metadata[@"id"] != nil);
                         
-                        // Special case for Forge installations
-                        if (metadataValid && weakSelf.metadata[@"id"] && 
-                            [weakSelf.metadata[@"id"] containsString:@"forge"]) {
-                            // Force a completion flag for Forge installations
-                            weakSelf.metadata[@"allTasksComplete"] = @YES;
+                        // Special case for Forge/NeoForge installations
+                        if (metadataValid && weakSelf.metadata[@"id"]) {
+                            NSString *versionId = [weakSelf.metadata[@"id"] description];
+                            if ([versionId containsString:@"forge"] || [versionId containsString:@"neoforge"]) {
+                                // Force a completion flag for Forge/NeoForge installations
+                                weakSelf.metadata[@"allTasksComplete"] = @YES;
+                                NSLog(@"[MCDL] Forge/NeoForge installation detected, forcing allTasksComplete flag");
+                            }
                         }
                         
                         if (!metadataValid && !weakSelf.progress.cancelled) {
