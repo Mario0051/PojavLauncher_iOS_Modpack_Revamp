@@ -1054,19 +1054,41 @@ static NSDate *lastRemoteVersionRefresh;
 }
 
 - (void)enterModInstallerWithPath:(NSString *)path hitEnterAfterWindowShown:(BOOL)hitEnter {
+    NSLog(@"[ModInstaller] Preparing to launch installer at path: %@", path);
+    
+    // Create the view controller
     JavaGUIViewController *vc = [[JavaGUIViewController alloc] init];
     vc.filepath = path;
     [vc setHitEnterAfterWindowShown:hitEnter];
     
+    // Check if the required Java version is available - add detailed logging
     if (!vc.requiredJavaVersion) {
+        NSLog(@"[ModInstaller] ERROR: requiredJavaVersion is nil, cannot launch installer");
+        dispatch_async(dispatch_get_main_queue(), ^{
+            showDialog(@"Installation Error", @"Could not determine required Java version for the installer.");
+        });
         return;
     }
     
-    [self invokeAfterJITEnabled:^{
-        vc.modalPresentationStyle = UIModalPresentationFullScreen;
-        NSLog(@"[ModInstaller] launching %@", vc.filepath);
-        [self presentViewController:vc animated:YES completion:nil];
-    }];
+    NSLog(@"[ModInstaller] Using Java version: %@", vc.requiredJavaVersion);
+    
+    // Ensure we're using the main thread for UI operations before JIT check
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self invokeAfterJITEnabled:^{
+            // Configure the view controller
+            vc.modalPresentationStyle = UIModalPresentationFullScreen;
+            
+            // Ensure we're on the main thread for presenting
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSLog(@"[ModInstaller] Attempting to present installer GUI: %@", vc.filepath);
+                
+                // Present with completion handler to verify presentation
+                [self presentViewController:vc animated:YES completion:^{
+                    NSLog(@"[ModInstaller] Installer view controller presentation completed");
+                }];
+            });
+        }];
+    });
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
@@ -1076,37 +1098,99 @@ static NSDate *lastRemoteVersionRefresh;
 #pragma mark - JIT and Launch Helper Methods
 
 - (void)invokeAfterJITEnabled:(void(^)(void))handler {
+    NSLog(@"[JIT] Starting JIT enablement check");
     BOOL hasTrollStoreJIT = getEntitlementValue(@"com.apple.private.local.sandboxed-jit");
-
+    
     if (isJITEnabled(false)) {
+        NSLog(@"[JIT] JIT already enabled, proceeding immediately");
         [ALTServerManager.sharedManager stopDiscovering];
         handler();
         return;
     } else if (hasTrollStoreJIT) {
+        NSLog(@"[JIT] Using TrollStore JIT enablement");
         NSURL *jitURL = [NSURL URLWithString:[NSString stringWithFormat:@"apple-magnifier://enable-jit?bundle-id=%@", NSBundle.mainBundle.bundleIdentifier]];
-        [UIApplication.sharedApplication openURL:jitURL options:@{} completionHandler:nil];
+        [UIApplication.sharedApplication openURL:jitURL options:@{} completionHandler:^(BOOL success) {
+            NSLog(@"[JIT] TrollStore JIT URL opened: %@", success ? @"YES" : @"NO");
+        }];
         // Do not return, wait for TrollStore to enable JIT and jump back
     } else if (getPrefBool(@"debug.debug_skip_wait_jit")) {
-        NSLog(@"Debug option skipped waiting for JIT. Java might not work.");
+        NSLog(@"[JIT] Debug option skipped waiting for JIT. Java might not work.");
         handler();
         return;
     }
-
+    
     self.progressText.text = localize(@"launcher.wait_jit.title", nil);
-
+    
+    // Store a reference to any existing view controller that might be presented
+    UIViewController *existingPresented = self.presentedViewController;
+    if (existingPresented) {
+        NSLog(@"[JIT] Note: There is already a presented view controller: %@", NSStringFromClass([existingPresented class]));
+    }
+    
+    // Create and present the alert
     UIAlertController* alert = [UIAlertController alertControllerWithTitle:localize(@"launcher.wait_jit.title", nil)
         message:hasTrollStoreJIT ? localize(@"launcher.wait_jit_trollstore.message", nil) : localize(@"launcher.wait_jit.message", nil)
         preferredStyle:UIAlertControllerStyleAlert];
-
-    [self presentViewController:alert animated:YES completion:nil];
-
+    
+    // Present the alert - check if we can actually present it
+    if (!self.presentedViewController) {
+        NSLog(@"[JIT] Presenting JIT waiting alert");
+        [self presentViewController:alert animated:YES completion:^{
+            NSLog(@"[JIT] JIT waiting alert presented successfully");
+        }];
+    } else {
+        NSLog(@"[JIT] Cannot present JIT alert - already have presented VC. Will proceed with JIT check only.");
+    }
+    
+    // Start checking for JIT in background
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        while (!isJITEnabled(false)) {
-            // Perform check for every 200ms
+        NSLog(@"[JIT] Starting background JIT polling");
+        NSInteger attempts = 0;
+        NSInteger maxAttempts = 150; // 30 seconds max (200ms * 150)
+        
+        while (!isJITEnabled(false) && attempts < maxAttempts) {
+            // Perform check every 200ms
             usleep(1000*200);
+            attempts++;
+            
+            if (attempts % 25 == 0) {
+                NSLog(@"[JIT] Still waiting for JIT, attempt %ld of %ld", (long)attempts, (long)maxAttempts);
+            }
         }
+        
+        if (attempts >= maxAttempts) {
+            NSLog(@"[JIT] ERROR: Timed out waiting for JIT after %ld attempts", (long)attempts);
+            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // Dismiss alert if it's the current presented VC
+                if (self.presentedViewController == alert) {
+                    [alert dismissViewControllerAnimated:YES completion:^{
+                        showDialog(@"JIT Error", @"Could not enable JIT within the timeout period. The installer may not work properly.");
+                        // Still try to proceed with the handler
+                        handler();
+                    }];
+                } else {
+                    showDialog(@"JIT Error", @"Could not enable JIT within the timeout period. The installer may not work properly.");
+                    handler();
+                }
+            });
+            return;
+        }
+        
+        NSLog(@"[JIT] JIT successfully enabled after %ld attempts", (long)attempts);
+        
         dispatch_async(dispatch_get_main_queue(), ^{
-            [alert dismissViewControllerAnimated:YES completion:handler];
+            // Only try to dismiss if this alert is actually presented
+            if (self.presentedViewController == alert) {
+                NSLog(@"[JIT] Dismissing JIT alert");
+                [alert dismissViewControllerAnimated:YES completion:^{
+                    NSLog(@"[JIT] JIT alert dismissed, calling handler");
+                    handler();
+                }];
+            } else {
+                NSLog(@"[JIT] Alert not presented or different VC is presented, calling handler directly");
+                handler();
+            }
         });
     });
 }
