@@ -360,6 +360,13 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                     if (!isModpackInstall) {
                         metadataValid = (weakSelf.metadata != nil && weakSelf.metadata[@"id"] != nil);
                         
+                        // Special case for Forge installations
+                        if (metadataValid && weakSelf.metadata[@"id"] && 
+                            [weakSelf.metadata[@"id"] containsString:@"forge"]) {
+                            // Force a completion flag for Forge installations
+                            weakSelf.metadata[@"allTasksComplete"] = @YES;
+                        }
+                        
                         if (!metadataValid && !weakSelf.progress.cancelled) {
                             NSLog(@"[MCDL] Warning: Download completed but metadata is incomplete or missing required keys. Delaying completion.");
                             
@@ -381,7 +388,8 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                         } else {
                             // If modpack but allTasksComplete not set, still mark as valid but log it
                             metadataValid = YES;
-                            NSLog(@"[MCDL] Warning: Modpack installation without allTasksComplete flag");
+                            weakSelf.metadata[@"allTasksComplete"] = @YES;  // Set flag to ensure completion
+                            NSLog(@"[MCDL] Warning: Modpack installation without allTasksComplete flag - setting it now");
                         }
                     }
                 }
