@@ -8,8 +8,6 @@ extern NSString * const DMProgressUpdatedNotification;
 extern NSString * const DMFileProgressUpdatedNotification;
 extern NSString * const DMDownloadCompletedNotification;
 
-@interface DownloadProgressManager : NSObject
-
 typedef NS_ENUM(NSInteger, DownloadStage) {
     DownloadStagePreparation = 0,      // Initial stage for setup
     DownloadStageMetadata = 1,         // Downloading version metadata
@@ -34,6 +32,8 @@ typedef NS_ENUM(NSInteger, DownloadStage) {
 @property (nonatomic, strong, nullable) NSString *errorMessage;
 @property (nonatomic, strong) NSProgress *progress;
 @end
+
+@interface DownloadProgressManager : NSObject
 
 // Core properties
 @property (nonatomic, readonly) DownloadStage currentStage;
