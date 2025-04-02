@@ -264,29 +264,34 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     BOOL shouldCheckCompletion = NO;
     
     [self.completionLock lock];
-    // Only leave if we haven't left all tasks already
-    if (self.tasksLeftGroup < self.totalTasksEnqueued) {
-        self.tasksLeftGroup++;
-        shouldLeave = YES;
-        
-        if (self.verboseLogging) {
-            NSLog(@"[MCDL] Task left group (%@). Total Left: %ld, Total Enqueued: %ld", 
-                  reason, (long)self.tasksLeftGroup, (long)self.totalTasksEnqueued);
+    @try {
+        // Prevent over-leaving the group
+        if (self.tasksLeftGroup < self.totalTasksEnqueued) {
+            self.tasksLeftGroup++;
+            shouldLeave = YES;
+            
+            // Only check for completion if we've hit the total number of enqueued tasks
+            shouldCheckCompletion = (self.tasksLeftGroup >= self.totalTasksEnqueued && self.totalTasksEnqueued > 0);
+            
+            if (self.verboseLogging) {
+                NSLog(@"[MCDL] Task left group (%@). Left: %ld, Enqueued: %ld", 
+                      reason, (long)self.tasksLeftGroup, (long)self.totalTasksEnqueued);
+            }
+        } else {
+            // Log warning, but don't increment or leave group again
+            NSLog(@"[MCDL] Warning: Attempted to leave group (%@) when all tasks already left. Ignored.", reason);
         }
-        
-        // Check if all tasks have left
-        shouldCheckCompletion = (self.tasksLeftGroup >= self.totalTasksEnqueued && self.totalTasksEnqueued > 0);
-    } else {
-        // Log attempt to leave when all tasks already left
-        NSLog(@"[MCDL] Warning: Attempted to leave dispatch group (%@) when all tasks already left. Ignored.", reason);
     }
-    [self.completionLock unlock];
+    @finally {
+        [self.completionLock unlock];
+    }
     
-    // Only leave the group if we should
+    // Perform outside of lock to prevent deadlock
     if (shouldLeave) {
         dispatch_group_leave(self.downloadCompletionGroup);
     }
     
+    // Check completion separately
     if (shouldCheckCompletion) {
         [self checkFinalCompletion];
     }
@@ -320,139 +325,143 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
 }
 
 - (void)checkFinalCompletion {
-    if (self.verboseLogging) {
-        NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
-    }
-    
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        if (!weakSelf) return;
-        
-        // Check for pending downloads
-        BOOL hasActiveDownloads = NO;
-        @synchronized(weakSelf.pendingDownloads) {
-            hasActiveDownloads = (weakSelf.pendingDownloads.count > 0 || weakSelf.activeDownloads > 0);
+    // Prevent multiple simultaneous completion checks
+    static dispatch_once_t completionCheckToken;
+    dispatch_once(&completionCheckToken, ^{
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] All enqueued tasks have left the group. Proceeding to final checks.");
         }
         
-        if (hasActiveDownloads) {
-            if (weakSelf.verboseLogging) {
-                NSLog(@"[MCDL] Warning: Tasks left dispatch group but downloads are still active. Delaying completion.");
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            if (!weakSelf) return;
+            
+            // Check for pending downloads
+            BOOL hasActiveDownloads = NO;
+            @synchronized(weakSelf.pendingDownloads) {
+                hasActiveDownloads = (weakSelf.pendingDownloads.count > 0 || weakSelf.activeDownloads > 0);
             }
-            return;
-        }
-        
-        // Check for pending verifications
-        BOOL hasPendingVerifications = NO;
-        @synchronized(weakSelf.pendingVerificationList) {
-            hasPendingVerifications = (weakSelf.pendingVerificationList.count > 0);
-        }
-        
-        // Verify any pending files
-        BOOL verificationSuccess = YES;
-        if (hasPendingVerifications) {
-            if (weakSelf.verboseLogging) {
-                NSLog(@"[MCDL] Starting verification of pending files...");
-            }
-            verificationSuccess = [weakSelf verifyPendingFiles];
-            if (!verificationSuccess) {
+            
+            if (hasActiveDownloads) {
                 if (weakSelf.verboseLogging) {
-                    NSLog(@"[MCDL] Verification failed, redownload initiated. Completion delayed.");
+                    NSLog(@"[MCDL] Warning: Tasks left dispatch group but downloads are still active. Delaying completion.");
                 }
                 return;
             }
-        }
-        
-        if (verificationSuccess) {
-            BOOL alreadyComplete = NO;
-            [weakSelf.completionLock lock];
-            alreadyComplete = weakSelf.isDownloadPhaseComplete;
-            [weakSelf.completionLock unlock];
             
-            if (!alreadyComplete) {
+            // Check for pending verifications
+            BOOL hasPendingVerifications = NO;
+            @synchronized(weakSelf.pendingVerificationList) {
+                hasPendingVerifications = (weakSelf.pendingVerificationList.count > 0);
+            }
+            
+            // Verify any pending files
+            BOOL verificationSuccess = YES;
+            if (hasPendingVerifications) {
                 if (weakSelf.verboseLogging) {
-                    NSLog(@"[MCDL] All tasks truly complete and verified.");
+                    NSLog(@"[MCDL] Starting verification of pending files...");
                 }
-                
-                // Ensure progress is complete
-                [weakSelf.progressLock lock];
-                if (weakSelf.progress.totalUnitCount <= 0) {
-                    weakSelf.progress.totalUnitCount = 1;
-                    weakSelf.textProgress.totalUnitCount = 1;
+                verificationSuccess = [weakSelf verifyPendingFiles];
+                if (!verificationSuccess) {
+                    if (weakSelf.verboseLogging) {
+                        NSLog(@"[MCDL] Verification failed, redownload initiated. Completion delayed.");
+                    }
+                    return;
                 }
-                weakSelf.progress.completedUnitCount = weakSelf.progress.totalUnitCount;
-                weakSelf.textProgress.completedUnitCount = weakSelf.textProgress.totalUnitCount;
-                [weakSelf.progressLock unlock];
+            }
+            
+            if (verificationSuccess) {
+                BOOL alreadyComplete = NO;
+                [weakSelf.completionLock lock];
+                alreadyComplete = weakSelf.isDownloadPhaseComplete;
+                [weakSelf.completionLock unlock];
                 
-                // Validate metadata before signaling completion
-                BOOL metadataValid = NO;
-                BOOL isModpackInstall = NO;
-                
-                @synchronized(weakSelf) {
-                    // Check if this is a modpack installation
-                    if (weakSelf.metadata && weakSelf.metadata[@"isModpackInstall"]) {
-                        isModpackInstall = [weakSelf.metadata[@"isModpackInstall"] boolValue];
+                if (!alreadyComplete) {
+                    if (weakSelf.verboseLogging) {
+                        NSLog(@"[MCDL] All tasks truly complete and verified.");
                     }
                     
-                    // For regular Minecraft installations, ensure we have valid metadata with an ID
-                    if (!isModpackInstall) {
-                        metadataValid = (weakSelf.metadata != nil && weakSelf.metadata[@"id"] != nil);
+                    // Ensure progress is complete
+                    [weakSelf.progressLock lock];
+                    if (weakSelf.progress.totalUnitCount <= 0) {
+                        weakSelf.progress.totalUnitCount = 1;
+                        weakSelf.textProgress.totalUnitCount = 1;
+                    }
+                    weakSelf.progress.completedUnitCount = weakSelf.progress.totalUnitCount;
+                    weakSelf.textProgress.completedUnitCount = weakSelf.textProgress.totalUnitCount;
+                    [weakSelf.progressLock unlock];
+                    
+                    // Validate metadata before signaling completion
+                    BOOL metadataValid = NO;
+                    BOOL isModpackInstall = NO;
+                    
+                    @synchronized(weakSelf) {
+                        // Check if this is a modpack installation
+                        if (weakSelf.metadata && weakSelf.metadata[@"isModpackInstall"]) {
+                            isModpackInstall = [weakSelf.metadata[@"isModpackInstall"] boolValue];
+                        }
                         
-                        // Special case for Forge/NeoForge installations
-                        if (metadataValid && weakSelf.metadata[@"id"]) {
-                            NSString *versionId = [weakSelf.metadata[@"id"] description];
-                            if ([versionId containsString:@"forge"] || [versionId containsString:@"neoforge"]) {
-                                // Force a completion flag for Forge/NeoForge installations
-                                weakSelf.metadata[@"allTasksComplete"] = @YES;
-                                NSLog(@"[MCDL] Forge/NeoForge installation detected, forcing allTasksComplete flag");
+                        // For regular Minecraft installations, ensure we have valid metadata with an ID
+                        if (!isModpackInstall) {
+                            metadataValid = (weakSelf.metadata != nil && weakSelf.metadata[@"id"] != nil);
+                            
+                            // Special case for Forge/NeoForge installations
+                            if (metadataValid && weakSelf.metadata[@"id"]) {
+                                NSString *versionId = [weakSelf.metadata[@"id"] description];
+                                if ([versionId containsString:@"forge"] || [versionId containsString:@"neoforge"]) {
+                                    // Force a completion flag for Forge/NeoForge installations
+                                    weakSelf.metadata[@"allTasksComplete"] = @YES;
+                                    NSLog(@"[MCDL] Forge/NeoForge installation detected, forcing allTasksComplete flag");
+                                }
+                            }
+                            
+                            if (!metadataValid && !weakSelf.progress.cancelled) {
+                                NSLog(@"[MCDL] Warning: Download completed but metadata is incomplete or missing required keys. Delaying completion.");
+                                
+                                // Schedule a retry after a short delay
+                                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                                    [weakSelf checkFinalCompletion];
+                                });
+                                return;
+                            }
+                            
+                            if (weakSelf.verboseLogging) {
+                                NSLog(@"[MCDL] Metadata validation passed. ID: %@", weakSelf.metadata[@"id"]);
+                            }
+                        } else {
+                            // For modpacks, explicitly check if allTasksComplete flag is set
+                            if (weakSelf.metadata[@"allTasksComplete"] && [weakSelf.metadata[@"allTasksComplete"] boolValue]) {
+                                metadataValid = YES;
+                                NSLog(@"[MCDL] Modpack installation confirmed complete via allTasksComplete flag");
+                            } else {
+                                // If modpack but allTasksComplete not set, still mark as valid but log it
+                                metadataValid = YES;
+                                weakSelf.metadata[@"allTasksComplete"] = @YES;  // Set flag to ensure completion
+                                NSLog(@"[MCDL] Warning: Modpack installation without allTasksComplete flag - setting it now");
                             }
                         }
-                        
-                        if (!metadataValid && !weakSelf.progress.cancelled) {
-                            NSLog(@"[MCDL] Warning: Download completed but metadata is incomplete or missing required keys. Delaying completion.");
-                            
-                            // Schedule a retry after a short delay
-                            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-                                [weakSelf checkFinalCompletion];
-                            });
-                            return;
-                        }
-                        
-                        if (weakSelf.verboseLogging) {
-                            NSLog(@"[MCDL] Metadata validation passed. ID: %@", weakSelf.metadata[@"id"]);
-                        }
-                    } else {
-                        // For modpacks, explicitly check if allTasksComplete flag is set
-                        if (weakSelf.metadata[@"allTasksComplete"] && [weakSelf.metadata[@"allTasksComplete"] boolValue]) {
-                            metadataValid = YES;
-                            NSLog(@"[MCDL] Modpack installation confirmed complete via allTasksComplete flag");
-                        } else {
-                            // If modpack but allTasksComplete not set, still mark as valid but log it
-                            metadataValid = YES;
-                            weakSelf.metadata[@"allTasksComplete"] = @YES;  // Set flag to ensure completion
-                            NSLog(@"[MCDL] Warning: Modpack installation without allTasksComplete flag - setting it now");
-                        }
                     }
-                }
-                
-                // Only mark complete if metadata is valid
-                if (metadataValid) {
-                    [weakSelf markDownloadPhaseComplete:YES];
                     
-                    // Final UI update
-                    weakSelf.needsUIUpdate = YES;
-                    [weakSelf processBatchedUIUpdates];
-                    
-                    // For modpack installs, post a notification to make sure UI is re-enabled
-                    if (isModpackInstall) {
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
-                                                                                object:weakSelf
-                                                                              userInfo:weakSelf.metadata];
-                        });
+                    // Only mark complete if metadata is valid
+                    if (metadataValid) {
+                        [weakSelf markDownloadPhaseComplete:YES];
+                        
+                        // Final UI update
+                        weakSelf.needsUIUpdate = YES;
+                        [weakSelf processBatchedUIUpdates];
+                        
+                        // For modpack installs, post a notification to make sure UI is re-enabled
+                        if (isModpackInstall) {
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
+                                                                                    object:weakSelf
+                                                                                  userInfo:weakSelf.metadata];
+                            });
+                        }
                     }
                 }
             }
-        }
+        });
     });
 }
 
