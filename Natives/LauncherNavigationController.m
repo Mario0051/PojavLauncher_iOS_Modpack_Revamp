@@ -41,6 +41,8 @@ static NSDate *lastRemoteVersionRefresh;
 @property(nonatomic, assign) int profileSelectedAt;
 @property(nonatomic, strong) NSTimer *progressUpdateTimer;
 
+- (void)finalizeModpackInstallation:(NSDictionary *)userInfo;
+
 @end
 
 @implementation LauncherNavigationController
@@ -220,6 +222,39 @@ static NSDate *lastRemoteVersionRefresh;
             [self finalizeModpackInstallation:userInfo];
         }
     });
+}
+
+- (void)finalizeModpackInstallation:(NSDictionary *)userInfo {
+    // Mark installation as complete
+    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"ModpackInstallInProgress"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    
+    NSLog(@"[MCDL] Modpack installation confirmed complete, restoring UI");
+    
+    // Force UI restoration
+    [self setInteractionEnabled:YES forDownloading:NO];
+    
+    // Refresh version lists and profiles
+    [self fetchLocalVersionList];
+    [PLProfiles updateCurrent];
+    
+    // Force layout update for UI consistency
+    [self.view setNeedsLayout];
+    [self.view layoutIfNeeded];
+    
+    // Ensure progress views are hidden
+    self.progressViewMain.hidden = YES;
+    self.progressViewSub.hidden = YES;
+    self.progressText.text = nil;
+    
+    // Reset button title
+    [self.buttonInstall setTitle:localize(@"Play", nil) forState:UIControlStateNormal];
+    
+    // Clean up any remaining task references
+    @synchronized(self) {
+        self.task = nil;
+        self.progressVC = nil;
+    }
 }
 
 #pragma mark - Version List Management
