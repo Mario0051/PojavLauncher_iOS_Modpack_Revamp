@@ -757,6 +757,7 @@ static NSDate *lastRemoteVersionRefresh;
         BOOL isProgressFinished = NO;
         BOOL isModpackInstall = NO;
         BOOL allTasksComplete = NO;
+        BOOL isForgeInstall = NO;
         
         @synchronized(observedTask) {
             // Check progress completion
@@ -770,15 +771,23 @@ static NSDate *lastRemoteVersionRefresh;
             if (observedTask.metadata) {
                 isModpackInstall = [observedTask.metadata[@"isModpackInstall"] boolValue];
                 allTasksComplete = [observedTask.metadata[@"allTasksComplete"] boolValue];
+                
+                // Check if this is a Forge installation
+                if (observedTask.metadata[@"id"] && 
+                    [[observedTask.metadata[@"id"] description] containsString:@"forge"]) {
+                    isForgeInstall = YES;
+                }
             }
         }
         
         // Log detailed state for debugging
-        NSLog(@"[MCDL] Download status: isDownloadPhaseComplete=%d, isProgressFinished=%d, isModpackInstall=%d, allTasksComplete=%d",
-              isTrulyFinished, isProgressFinished, isModpackInstall, allTasksComplete);
+        NSLog(@"[MCDL] Download status: isDownloadPhaseComplete=%d, isProgressFinished=%d, isModpackInstall=%d, isForgeInstall=%d, allTasksComplete=%d",
+              isTrulyFinished, isProgressFinished, isModpackInstall, isForgeInstall, allTasksComplete);
         
-        // Only proceed if truly finished or we detect modpack completion
-        if (!isTrulyFinished && !(isModpackInstall && allTasksComplete)) {
+        // Only proceed if truly finished, we detect modpack completion, or it's a completed Forge install
+        if (!isTrulyFinished && 
+            !(isModpackInstall && allTasksComplete) && 
+            !(isForgeInstall && isProgressFinished && !isModpackInstall)) {
             return;
         }
         
