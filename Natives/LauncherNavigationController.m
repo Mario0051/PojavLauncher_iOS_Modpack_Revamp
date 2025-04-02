@@ -757,7 +757,7 @@ static NSDate *lastRemoteVersionRefresh;
         BOOL isProgressFinished = NO;
         BOOL isModpackInstall = NO;
         BOOL allTasksComplete = NO;
-        BOOL isForgeInstall = NO;
+        BOOL isForgeOrNeoforgeInstall = NO;
         
         @synchronized(observedTask) {
             // Check progress completion
@@ -772,22 +772,24 @@ static NSDate *lastRemoteVersionRefresh;
                 isModpackInstall = [observedTask.metadata[@"isModpackInstall"] boolValue];
                 allTasksComplete = [observedTask.metadata[@"allTasksComplete"] boolValue];
                 
-                // Check if this is a Forge installation
-                if (observedTask.metadata[@"id"] && 
-                    [[observedTask.metadata[@"id"] description] containsString:@"forge"]) {
-                    isForgeInstall = YES;
+                // Check if this is a Forge/NeoForge installation
+                if (observedTask.metadata[@"id"]) {
+                    NSString *versionId = [observedTask.metadata[@"id"] description];
+                    if ([versionId containsString:@"forge"] || [versionId containsString:@"neoforge"]) {
+                        isForgeOrNeoforgeInstall = YES;
+                    }
                 }
             }
         }
         
         // Log detailed state for debugging
-        NSLog(@"[MCDL] Download status: isDownloadPhaseComplete=%d, isProgressFinished=%d, isModpackInstall=%d, isForgeInstall=%d, allTasksComplete=%d",
-              isTrulyFinished, isProgressFinished, isModpackInstall, isForgeInstall, allTasksComplete);
+        NSLog(@"[MCDL] Download status: isDownloadPhaseComplete=%d, isProgressFinished=%d, isModpackInstall=%d, isForgeOrNeoforgeInstall=%d, allTasksComplete=%d",
+              isTrulyFinished, isProgressFinished, isModpackInstall, isForgeOrNeoforgeInstall, allTasksComplete);
         
-        // Only proceed if truly finished, we detect modpack completion, or it's a completed Forge install
+        // Only proceed if truly finished, we detect modpack completion, or it's a completed Forge/NeoForge install
         if (!isTrulyFinished && 
             !(isModpackInstall && allTasksComplete) && 
-            !(isForgeInstall && isProgressFinished && !isModpackInstall)) {
+            !(isForgeOrNeoforgeInstall && isProgressFinished && !isModpackInstall)) {
             return;
         }
         
