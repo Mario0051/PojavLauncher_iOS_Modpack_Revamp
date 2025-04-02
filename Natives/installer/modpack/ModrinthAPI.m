@@ -1077,6 +1077,8 @@ extern void showDialog(NSString *title, NSString *message);
         NSDictionary *userInfo = @{
             @"profileName": profileName,
             @"gameDir": gameDir
+            @"isComplete": @YES,
+            @"allTasksComplete": @YES
         };
         
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ModpackInstallationComplete" 
