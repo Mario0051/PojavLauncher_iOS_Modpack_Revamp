@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import "DownloadProgressManager.h"
 
 @class ModpackAPI;
 @class AFURLSessionManager;
