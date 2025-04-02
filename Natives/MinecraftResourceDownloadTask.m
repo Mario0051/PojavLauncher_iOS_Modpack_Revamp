@@ -1804,11 +1804,18 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     
     // Skip if no libraries defined
     if (!versionMetadata[@"libraries"] || ![versionMetadata[@"libraries"] isKindOfClass:[NSArray class]]) {
+        // Immediately advance stage if no libraries to download
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+            [manager advanceToStage:DownloadStageAssets withTotalItems:1];
+            [manager completeCurrentStage];
+        });
         return tasks;
     }
-    
+
     NSArray *libraries = versionMetadata[@"libraries"];
     NSInteger libraryCount = libraries.count;
+    NSInteger skippedLibraries = 0;
     
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Processing %ld libraries for download", (long)libraryCount);
@@ -1836,6 +1843,7 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             if (self.verboseLogging) {
                 NSLog(@"[MCDL] Skipping Forge/NeoForge JAR %@ - installed separately", name);
             }
+            skippedLibraries++;
             continue;
         }
         
@@ -1905,6 +1913,7 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
             if (self.verboseLogging) {
                 NSLog(@"[MCDL] Skipped library %@", name);
             }
+            skippedLibraries++;
             continue;
         }
         
@@ -1933,6 +1942,7 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                 if (self.verboseLogging) {
                     NSLog(@"[MCDL] Skipped library due to rules: %@", name);
                 }
+                skippedLibraries++;
                 continue;
             }
         }
@@ -1946,6 +1956,7 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         // Skip if URL is missing
         if (!url || [url length] == 0) {
             NSLog(@"[MCDL] Warning: Skipping library %@ due to missing URL", name);
+            skippedLibraries++;
             continue;
         }
         
@@ -1956,8 +1967,17 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         }
     }
     
+    // If all libraries were skipped, advance to next stage
+    if (skippedLibraries == libraryCount) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+            [manager advanceToStage:DownloadStageAssets withTotalItems:1];
+            [manager completeCurrentStage];
+        });
+    }
+    
     if (self.verboseLogging) {
-        NSLog(@"[MCDL] Enqueued %ld library downloads", (long)tasks.count);
+        NSLog(@"[MCDL] Enqueued %ld library downloads, %ld skipped", (long)tasks.count, (long)skippedLibraries);
     }
     
     return tasks;
