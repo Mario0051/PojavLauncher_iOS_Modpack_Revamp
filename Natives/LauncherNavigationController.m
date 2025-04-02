@@ -178,51 +178,46 @@ static NSDate *lastRemoteVersionRefresh;
 
 - (void)handleModpackInstallationComplete:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
-        NSLog(@"[MCDL] Received ModpackInstallationComplete notification, ensuring UI is restored");
+        NSLog(@"[MCDL] Received ModpackInstallationComplete notification, validating completion status");
         
-        // ENHANCED: Add protection against premature UI restoration
-        // Check if this is potentially a notification for an intermediate step (e.g. the first notification)
         NSDictionary *userInfo = notification.userInfo;
+        
+        // Check for critical completion indicators
         BOOL isComplete = [userInfo[@"isComplete"] boolValue];
+        BOOL allTasksComplete = [userInfo[@"allTasksComplete"] boolValue];
         BOOL hasProfileInfo = (userInfo[@"profileName"] != nil);
+        BOOL hasGameDir = (userInfo[@"gameDir"] != nil);
+        
+        // Get current installation state
         BOOL installInProgress = [[NSUserDefaults standardUserDefaults] boolForKey:@"ModpackInstallInProgress"];
         
-        // Simple notification with just isComplete flag may be from DownloadProgressViewController
-        // Only honor it if no install is in progress or it contains complete profile information
-        if (isComplete && !hasProfileInfo && installInProgress) {
-            NSLog(@"[MCDL] Ignoring intermediate notification during modpack installation");
+        // Only proceed if this is truly the final notification with complete information
+        if (!(isComplete && allTasksComplete && hasProfileInfo && hasGameDir)) {
+            NSLog(@"[MCDL] Ignoring incomplete modpack installation notification");
+            if (installInProgress) {
+                NSLog(@"[MCDL] Installation still in progress, waiting for complete notification");
+            }
             return;
         }
         
-        // Mark installation as complete - safe to restore UI now
-        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"ModpackInstallInProgress"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
+        // Check if we have mods downloading
+        NSString *gameDir = userInfo[@"gameDir"];
+        NSString *modsPath = [NSString stringWithFormat:@"%s/instances/%@/%@", 
+                             getenv("POJAV_HOME"), 
+                             getPrefObject(@"general.game_directory"), 
+                             gameDir];
         
-        NSLog(@"[MCDL] Modpack installation confirmed complete, restoring UI");
-        
-        // Force UI restoration
-        [self setInteractionEnabled:YES forDownloading:NO];
-        
-        // Refresh version lists and profiles
-        [self fetchLocalVersionList];
-        [PLProfiles updateCurrent];
-        
-        // Force layout update for UI consistency
-        [self.view setNeedsLayout];
-        [self.view layoutIfNeeded];
-        
-        // Ensure progress views are hidden
-        self.progressViewMain.hidden = YES;
-        self.progressViewSub.hidden = YES;
-        self.progressText.text = nil;
-        
-        // Reset button title
-        [self.buttonInstall setTitle:localize(@"Play", nil) forState:UIControlStateNormal];
-        
-        // Clean up any remaining task references
-        @synchronized(self) {
-            self.task = nil;
-            self.progressVC = nil;
+        // If installation is still downloading mods, don't restore UI yet
+        if (installInProgress) {
+            // Add a short delay to ensure all downloads are truly complete
+            NSLog(@"[MCDL] Adding verification delay to ensure all files are downloaded");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                NSLog(@"[MCDL] Verification delay complete, proceeding with UI restoration");
+                [self finalizeModpackInstallation:userInfo];
+            });
+        } else {
+            // No delay needed, proceed immediately
+            [self finalizeModpackInstallation:userInfo];
         }
     });
 }
