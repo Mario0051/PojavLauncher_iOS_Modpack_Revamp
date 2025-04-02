@@ -80,6 +80,7 @@ static NSDate *lastRemoteVersionRefresh;
     // Register for modpack installation completion notification
     [NSNotificationCenter.defaultCenter addObserver:self
                                           selector:@selector(handleModpackInstallationComplete:)
+                                              name:@"InstallModpack"
                                             object:nil];
     
     // Register for progress manager notifications
