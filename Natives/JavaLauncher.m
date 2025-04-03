@@ -90,9 +90,6 @@ void init_loadCustomJvmFlags(int* argc, const char** argv) {
     }
 }
 
-// --- End of Helper Function Definitions ---
-
-
 int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
     NSLog(@"[JavaLauncher] Beginning JVM launch");
 
@@ -197,7 +194,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = [NSString stringWithFormat:@"-Dorg.lwjgl.opengl.libname=%s", glLibName].UTF8String;
     }
 
-    // --- Start Fix: Conditionally add Java Agents ---
     NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
     if (!launchJar) { // Only add agents when launching Minecraft
         margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath].UTF8String;
@@ -205,14 +201,14 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
             margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
         }
     }
-    // --- End Fix ---
 
     margv[++margc] = "-XX:+UnlockExperimentalVMOptions";
     margv[++margc] = "-XX:+DisablePrimordialThreadGuardPages";
 
-    // --- Start Fix: Increase CodeCache Size ---
     margv[++margc] = "-XX:ReservedCodeCacheSize=512M"; // Added to prevent CodeCache full errors
-    // --- End Fix ---
+    margv[++margc] = "-XX:InitialCodeCacheSize=256M"; // Add explicit initial size
+    margv[++margc] = "-XX:+UseCodeCacheFlushing"; // Enable code cache flushing
+    margv[++margc] = "-XX:CodeCacheMinimumFreeSpace=64M"; // Ensure minimum contiguous space
 
     margv[++margc] = "-Dfml.earlyprogresswindow=false";
 
