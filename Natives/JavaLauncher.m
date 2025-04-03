@@ -96,6 +96,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     if (NSBundle.mainBundle.infoDictionary[@"LCDataUUID"]) {
         NSDebugLog(@"[JavaLauncher] Running in LiveContainer, skipping dyld patch");
     } else {
+        // Activate Library Validation bypass for external runtime and dylibs (JNA, etc)
         init_bypassDyldLibValidation();
     }
 
@@ -105,34 +106,37 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     BOOL launchJar = NO;
     NSString *gameDir;
     NSString *defaultJRETag;
-
     if ([launchTarget isKindOfClass:NSDictionary.class]) {
-        launchJar = NO;
+        // Get preferred Java version from current profile
         int preferredJavaVersion = [PLProfiles resolveKeyForCurrentProfile:@"javaVersion"].intValue;
         if (preferredJavaVersion > 0) {
             if (minVersion > preferredJavaVersion) {
                 NSLog(@"[JavaLauncher] Profile's preferred Java version (%d) does not meet the minimum version (%d), dropping request", preferredJavaVersion, minVersion);
             } else {
-                NSDebugLog(@"[PLProfiles] Applying preferred javaVersion %d", preferredJavaVersion);
+                NSDebugLog(@"[PLProfiles] Applying javaVersion");
                 minVersion = preferredJavaVersion;
             }
         }
-        defaultJRETag = (minVersion <= 8) ? @"1_16_5_older" : @"1_17_newer";
+        if (minVersion <= 8) {
+            defaultJRETag = @"1_16_5_older";
+        } else {
+            defaultJRETag = @"1_17_newer";
+        }
+
+        // Setup POJAV_RENDERER
         NSString *renderer = [PLProfiles resolveKeyForCurrentProfile:@"renderer"];
         NSLog(@"[JavaLauncher] RENDERER is set to %@\n", renderer);
         setenv("POJAV_RENDERER", renderer.UTF8String, 1);
-        gameDir = [PLProfiles fullPathForProfileWithName:PLProfiles.current.selectedProfileName
-                                                 gameDir:[PLProfiles resolveKeyForCurrentProfile:@"gameDir"]];
-    } else if ([launchTarget isKindOfClass:NSString.class]) {
-        launchJar = YES;
+        // Setup gameDir
+        gameDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
+            getenv("POJAV_HOME"), getPrefObject(@"general.game_directory"),
+            [PLProfiles resolveKeyForCurrentProfile:@"gameDir"]]
+            .stringByStandardizingPath;
+    } else {
         defaultJRETag = @"execute_jar";
         gameDir = @(getenv("POJAV_GAME_DIR"));
-        minVersion = MAX(minVersion, 8);
-    } else {
-        showDialog(localize(@"Error", nil), @"Invalid launch target provided.");
-        return 1;
+        launchJar = YES;
     }
-
     NSLog(@"[JavaLauncher] Looking for Java %d or later", minVersion);
     NSString *javaHome = getSelectedJavaHome(defaultJRETag, minVersion);
 
@@ -143,10 +147,10 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
             isExecuteJar ? [launchTarget lastPathComponent] : PLProfiles.current.selectedProfile[@"lastVersionId"], minVersion]);
         return 1;
     } else if ([javaHome hasPrefix:@(getenv("POJAV_HOME"))]) {
+        // Symlink libawt_xawt.dylib
         NSString *dest = [NSString stringWithFormat:@"%@/lib/libawt_xawt.dylib", javaHome];
         NSString *source = [NSString stringWithFormat:@"%@/Frameworks/libawt_xawt.dylib", NSBundle.mainBundle.bundlePath];
         NSError *error;
-        [fm removeItemAtPath:dest error:nil];
         [fm createSymbolicLinkAtPath:dest withDestinationPath:source error:&error];
         if (error) {
             NSLog(@"[JavaLauncher] Symlink libawt_xawt.dylib failed: %@", error.localizedDescription);
@@ -170,11 +174,9 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
 
     margv[++margc] = [NSString stringWithFormat:@"%@/bin/java", javaHome].UTF8String;
     margv[++margc] = "-XstartOnFirstThread";
-
     if (!launchJar) {
         margv[++margc] = "-Djava.system.class.loader=net.kdt.pojavlaunch.PojavClassLoader";
     }
-
     margv[++margc] = "-Xms128M";
     margv[++margc] = [NSString stringWithFormat:@"-Xmx%dM", allocmem].UTF8String;
     margv[++margc] = [NSString stringWithFormat:@"-Djava.library.path=%@/Frameworks", NSBundle.mainBundle.bundlePath].UTF8String;
@@ -186,34 +188,48 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = "-Dorg.lwjgl.system.allocator=system";
     margv[++margc] = "-Dlog4j2.formatMsgNoLookups=true";
 
+    // Preset OpenGL libname
     const char *glLibName = getenv("POJAV_RENDERER");
     if (glLibName) {
         if (!strcmp(glLibName, "auto")) {
+            // workaround only applies to 1.20.2+
             glLibName = RENDERER_NAME_MTL_ANGLE;
         }
         margv[++margc] = [NSString stringWithFormat:@"-Dorg.lwjgl.opengl.libname=%s", glLibName].UTF8String;
     }
 
+    // Only add Java agents for Minecraft launch
     NSString *librariesPath = [NSString stringWithFormat:@"%@/libs", NSBundle.mainBundle.bundlePath];
-    if (!launchJar) { // Only add agents when launching Minecraft
+    if (!launchJar) {
         margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/patchjna_agent.jar=", librariesPath].UTF8String;
         if(getPrefBool(@"general.cosmetica")) {
             margv[++margc] = [NSString stringWithFormat:@"-javaagent:%@/arc_dns_injector.jar=23.95.137.176", librariesPath].UTF8String;
         }
     }
 
+    // Workaround random stack guard allocation crashes
     margv[++margc] = "-XX:+UnlockExperimentalVMOptions";
     margv[++margc] = "-XX:+DisablePrimordialThreadGuardPages";
 
-    margv[++margc] = "-XX:ReservedCodeCacheSize=512M"; // Added to prevent CodeCache full errors
-    margv[++margc] = "-XX:InitialCodeCacheSize=256M"; // Add explicit initial size
-    margv[++margc] = "-XX:+UseCodeCacheFlushing"; // Enable code cache flushing
-    margv[++margc] = "-XX:CodeCacheMinimumFreeSpace=64M"; // Ensure minimum contiguous space
+    // CodeCache settings - differentiate between JAR execution and Minecraft
+    if (launchJar) {
+        // Improved CodeCache parameters specifically for installer JARs
+        margv[++margc] = "-XX:ReservedCodeCacheSize=256M";
+        margv[++margc] = "-XX:InitialCodeCacheSize=64M";
+        margv[++margc] = "-XX:+UseCodeCacheFlushing";
+        margv[++margc] = "-XX:CodeCacheMinimumFreeSpace=8M";
+        margv[++margc] = "-XX:+UseCompressedOops";
+    } else {
+        // Regular Minecraft requires more CodeCache
+        margv[++margc] = "-XX:ReservedCodeCacheSize=512M";
+    }
 
+    // Disable Forge 1.16.x early progress window
     margv[++margc] = "-Dfml.earlyprogresswindow=false";
 
-    NSString *libjlipath8 = [NSString stringWithFormat:@"%@/lib/jli/libjli.dylib", javaHome];
-    NSString *libjlipath11 = [NSString stringWithFormat:@"%@/lib/libjli.dylib", javaHome];
+    // Load java
+    NSString *libjlipath8 = [NSString stringWithFormat:@"%@/lib/jli/libjli.dylib", javaHome]; // java 8
+    NSString *libjlipath11 = [NSString stringWithFormat:@"%@/lib/libjli.dylib", javaHome]; // java 11+
     BOOL isJava8 = [fm fileExistsAtPath:libjlipath8];
     setenv("INTERNAL_JLI_PATH", (isJava8 ? libjlipath8 : libjlipath11).UTF8String, 1);
     void* libjli = dlopen(getenv("INTERNAL_JLI_PATH"), RTLD_GLOBAL);
@@ -226,18 +242,25 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         return 1;
     }
 
+    // Setup Caciocavallo
     margv[++margc] = "-Djava.awt.headless=false";
     margv[++margc] = "-Dcacio.font.fontmanager=sun.awt.X11FontManager";
     margv[++margc] = "-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler";
     margv[++margc] = [NSString stringWithFormat:@"-Dcacio.managed.screensize=%dx%d", width, height].UTF8String;
     margv[++margc] = "-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel";
     if (isJava8) {
+        // Setup Caciocavallo
         margv[++margc] = "-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit";
         margv[++margc] = "-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment";
     } else {
+        // Required by Cosmetica to inject DNS
         margv[++margc] = "--add-opens=java.base/java.net=ALL-UNNAMED";
+
+        // Setup Caciocavallo
         margv[++margc] = "-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit";
         margv[++margc] = "-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment";
+
+        // Required by Caciocavallo17 to access internal API
         margv[++margc] = "--add-exports=java.desktop/java.awt=ALL-UNNAMED";
         margv[++margc] = "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED";
         margv[++margc] = "--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED";
@@ -253,9 +276,12 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         margv[++margc] = "--add-opens=java.desktop/sun.font=ALL-UNNAMED";
         margv[++margc] = "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED";
         margv[++margc] = "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED";
+
+        // TODO: workaround, will be removed once the startup part works without PLaunchApp
         margv[++margc] = "--add-exports=cpw.mods.bootstraplauncher/cpw.mods.bootstraplauncher=ALL-UNNAMED";
     }
 
+    // Add Caciocavallo bootclasspath
     NSString *cacio_classpath = [NSString stringWithFormat:@"-Xbootclasspath/%s", isJava8 ? "p" : "a"];
     NSString *cacio_libs_path = [NSString stringWithFormat:@"%@/libs_caciocavallo%s", NSBundle.mainBundle.bundlePath, isJava8 ? "" : "17"];
     NSArray *files = [fm contentsOfDirectoryAtPath:cacio_libs_path error:nil];
@@ -267,80 +293,64 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     margv[++margc] = cacio_classpath.UTF8String;
 
     if (!getEntitlementValue(@"com.apple.developer.kernel.extended-virtual-addressing")) {
+        // In jailed environment, where extended virtual addressing entitlement isn't
+        // present (for free dev account), allocating compressed space fails.
+        // FIXME: does extended VA allow allocating compressed class space?
         margv[++margc] = "-XX:-UseCompressedClassPointers";
     }
 
-    if (!launchJar && [launchTarget isKindOfClass:NSDictionary.class]) {
-        NSDictionary *arguments = launchTarget[@"arguments"];
-        if (arguments && [arguments isKindOfClass:[NSDictionary class]]) {
-             NSArray *jvmProcessedArgs = arguments[@"jvm_processed"];
-             if (jvmProcessedArgs && [jvmProcessedArgs isKindOfClass:[NSArray class]]) {
-                 for (NSString *arg in jvmProcessedArgs) {
-                     if ([arg isKindOfClass:[NSString class]]) {
-                         margv[++margc] = arg.UTF8String;
-                     }
-                 }
-             }
+    if ([launchTarget isKindOfClass:NSDictionary.class]) {
+        for (NSString *arg in launchTarget[@"arguments"][@"jvm_processed"]) {
+            margv[++margc] = arg.UTF8String;
         }
     }
 
     init_loadCustomJvmFlags(&margc, (const char **)margv);
     NSLog(@"[Init] Found JLI lib");
 
-    NSString *classpath = [NSString stringWithFormat:@"%@/*", librariesPath];
+    // Different handling for JAR files vs Minecraft
     if (launchJar) {
-        classpath = [classpath stringByAppendingFormat:@":%@", launchTarget];
-    }
-    margv[++margc] = "-cp";
-    margv[++margc] = classpath.UTF8String;
-
-    if (launchJar) {
+        // For JAR files like Forge installer, use -jar directly
         margv[++margc] = "-jar";
         margv[++margc] = [launchTarget UTF8String];
     } else {
+        // For Minecraft, use classpath
+        NSString *classpath = [NSString stringWithFormat:@"%@/*", librariesPath];
+        margv[++margc] = "-cp";
+        margv[++margc] = classpath.UTF8String;
         margv[++margc] = "net.kdt.pojavlaunch.PojavLauncher";
         margv[++margc] = username.UTF8String;
-        if ([launchTarget isKindOfClass:NSDictionary.class] && launchTarget[@"id"]) {
-             margv[++margc] = [launchTarget[@"id"] UTF8String];
-        } else {
-             margv[++margc] = "unknown-version";
-             NSLog(@"[JavaLauncher] Warning: Could not determine version ID for Minecraft launch.");
-        }
+        margv[++margc] = [launchTarget[@"id"] UTF8String];
     }
 
     pJLI_Launch = (JLI_Launch_func *)dlsym(libjli, "JLI_Launch");
 
     if (NULL == pJLI_Launch) {
         NSLog(@"[Init] JLI_Launch = NULL");
-        UIKit_returnToSplitView();
-        showDialog(localize(@"Error", nil), @"Failed to find JLI_Launch symbol in Java runtime.");
-        dlclose(libjli);
         return -2;
     }
 
     NSLog(@"[Init] Calling JLI_Launch");
 
+    // Cr4shed known issue: exit after crash dump,
+    // reset signal handler so that JVM can catch them
     signal(SIGSEGV, SIG_DFL);
     signal(SIGPIPE, SIG_DFL);
     signal(SIGBUS, SIG_DFL);
     signal(SIGILL, SIG_DFL);
     signal(SIGFPE, SIG_DFL);
 
+    // Free split VC
     tmpRootVC = nil;
 
-    NSLog(@"[JavaLauncher] Final JVM Arguments (%d):", margc + 1);
-    for (int i = 0; i <= margc; i++) {
-        NSLog(@"[JavaLauncher] argv[%d]: %s", i, margv[i] ? margv[i] : "(null)");
-    }
+    return pJLI_Launch(++margc, margv,
+                   0, NULL, // sizeof(const_jargs) / sizeof(char *), const_jargs,
+                   0, NULL, // sizeof(const_appclasspath) / sizeof(char *), const_appclasspath,
+                   // These values are ignored in Java 17, so keep it anyways
+                   "1.8.0-internal",
+                   "1.8",
 
-    int result = pJLI_Launch(++margc, margv,
-                   0, NULL,
-                   0, NULL,
-                   "1.8.0-internal", "1.8",
                    "java", "openjdk",
-                   JNI_FALSE, JNI_TRUE, JNI_FALSE, 0);
-
-    dlclose(libjli);
-
-    return result;
+                   /* (const_jargs != NULL) ? JNI_TRUE : */ JNI_FALSE,
+                   JNI_TRUE, JNI_FALSE, JNI_TRUE);
 }
