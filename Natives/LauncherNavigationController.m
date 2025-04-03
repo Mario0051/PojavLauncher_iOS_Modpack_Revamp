@@ -707,56 +707,75 @@ static NSDate *lastRemoteVersionRefresh;
 
 - (void)downloadCompleted:(NSNotification *)notification {
     DownloadProgressManager *manager = notification.object;
-    
+
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Only proceed if truly finished
-        if (!manager.isComplete) {
+        // Only proceed if truly finished and not an error
+        if (!manager.isComplete || manager.isError) {
+             if (manager.isError) {
+                 NSLog(@"[LauncherNav] Download completed with error, not launching.");
+                 // Re-enable UI on error, ensuring the button text is appropriate
+                 [self setInteractionEnabled:YES forDownloading:NO];
+                 [self.buttonInstall setTitle:localize(@"Play", nil) forState:UIControlStateNormal];
+             }
             return;
         }
-        
-        // Check if this is a modpack installation
+
+        // Check if this is a modpack installation (handled differently)
         BOOL isModpackInstall = manager.isModpackInstall;
-        BOOL isError = manager.isError;
-        
+
         // For normal Minecraft downloads that completed successfully, launch the game
-        if (!isModpackInstall && !isError) {
+        if (!isModpackInstall) {
             // Dismiss progress view if open
             if (self.progressVC) {
-                if (self.progressVC.presentedViewController) {
-                    [self.progressVC.presentedViewController dismissViewControllerAnimated:NO completion:nil];
-                } else if (self.progressVC.presentingViewController) {
-                    [self.progressVC.presentingViewController dismissViewControllerAnimated:NO completion:nil];
+                // Check presentation state before dismissing
+                if (self.progressVC.presentingViewController) {
+                    // If progressVC presented something, dismiss that first
+                     [self.progressVC.presentedViewController dismissViewControllerAnimated:NO completion:^{
+                        // Then dismiss progressVC itself if needed
+                        if (self.presentedViewController == self.progressVC || self.presentedViewController == self.progressVC.navigationController) {
+                            [self dismissViewControllerAnimated:NO completion:nil];
+                        }
+                     }];
+                } else if (self.presentedViewController == self.progressVC || self.presentedViewController == self.progressVC.navigationController) {
+                    // If progressVC itself is presented
+                     [self dismissViewControllerAnimated:NO completion:nil];
                 }
+                self.progressVC = nil; // Clear reference after dismissal attempt
             }
-            
-            // Clean up task references
-            @synchronized(self) {
-                self.task = nil;
-                self.progressVC = nil;
-            }
-            
-            // Launch the game with slight delay to ensure cleanup completes
+
+            // Get metadata safely
             NSDictionary *metadata = [manager.metadata copy];
-            
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+             if (!metadata || !metadata[@"id"]) {
+                 NSLog(@"[MCDL] Error: Final metadata invalid or missing ID at launch time.");
+                 [self setInteractionEnabled:YES forDownloading:NO]; // Re-enable UI
+                 [self.buttonInstall setTitle:localize(@"Play", nil) forState:UIControlStateNormal]; // Reset button
+                 showDialog(@"Launch Error", @"Failed to finalize game data for launch.");
+                 return;
+             }
+            // Add a small delay (e.g., 0.5 seconds) before launching, This gives file system operations and verification a chance to fully complete.
+            NSTimeInterval launchDelay = 0.5;
+            NSLog(@"[MCDL] Download reported complete. Waiting %.1f seconds before launch...", launchDelay);
+
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(launchDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                NSLog(@"[MCDL] Delay finished, invoking JIT check and launch sequence.");
                 [self invokeAfterJITEnabled:^{
                     if (self && self.view.window) {
                         NSLog(@"[MCDL] Launching game with metadata: %@", metadata[@"id"]);
                         UIKit_launchMinecraftSurfaceVC(self.view.window, metadata);
+                        // Note: UI interaction state is handled by the launch process itself or by UIKit_returnToSplitView
                     } else {
-                        NSLog(@"[MCDL] Error: View hierarchy invalid for launch");
-                        [self setInteractionEnabled:YES forDownloading:YES];
+                        NSLog(@"[MCDL] Error: View hierarchy invalid for launch after delay");
+                        // Ensure UI is enabled if launch fails at this stage
+                        [self setInteractionEnabled:YES forDownloading:NO];
+                        [self.buttonInstall setTitle:localize(@"Play", nil) forState:UIControlStateNormal];
                     }
                 }];
             });
-        } else if (isError) {
-            // For errors, just re-enable the UI
-            [self setInteractionEnabled:YES forDownloading:NO];
+        } else {
+             NSLog(@"[LauncherNav] Modpack installation detected via DownloadProgressManager notification, completion handled elsewhere.");
         }
-        // For modpack installs, the UI is handled by handleModpackInstallationComplete
     });
 }
-
 - (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
     if (context != ProgressObserverContext) {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
