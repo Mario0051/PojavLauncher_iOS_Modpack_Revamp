@@ -1143,53 +1143,37 @@ static NSDate *lastRemoteVersionRefresh;
 }
 
 - (void)enterModInstallerWithPath:(NSString *)path hitEnterAfterWindowShown:(BOOL)hitEnter {
-    NSLog(@"[ModInstaller] Preparing to launch installer at path: %@", path);
-    
     // Verify file exists
     if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
-        NSLog(@"[ModInstaller] ERROR: JAR file not found at path: %@", path);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            showDialog(@"Installation Error", @"Installer file not found or is inaccessible.");
-        });
+        NSLog(@"[ModInstaller] ERROR: File not found: %@", path);
+        showDialog(@"Error", @"Installer file not found.");
         return;
     }
     
-    // Create the view controller
     JavaGUIViewController *vc = [[JavaGUIViewController alloc] init];
     vc.filepath = path;
     vc.hitEnterAfterWindowShown = hitEnter;
     
-    // Check Java version - don't return here, just log the issue
+    // Log warning but continue even if requiredJavaVersion is nil
     if (!vc.requiredJavaVersion) {
-        NSLog(@"[ModInstaller] WARNING: requiredJavaVersion is nil, attempting to continue anyway");
-    } else {
-        NSLog(@"[ModInstaller] Using Java version: %@", vc.requiredJavaVersion);
+        NSLog(@"[ModInstaller] WARNING: requiredJavaVersion is nil, continuing anyway");
     }
     
-    // Launch process with additional safety
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSLog(@"[ModInstaller] Invoking JIT check before launch");
-        [self invokeAfterJITEnabled:^{
-            dispatch_async(dispatch_get_main_queue(), ^{
-                // Setup completion handler to track success/failure
-                NSLog(@"[ModInstaller] Setting up presentation for: %@", vc.filepath);
-                
-                // Configure view controller
-                vc.modalPresentationStyle = UIModalPresentationFullScreen;
-                
-                // Present with error handling
-                @try {
-                    [self presentViewController:vc animated:YES completion:^{
-                        NSLog(@"[ModInstaller] Installer view controller presented successfully");
-                    }];
-                } @catch (NSException *exception) {
-                    NSLog(@"[ModInstaller] EXCEPTION during presentation: %@", exception);
-                    showDialog(@"Launch Error", 
-                               [NSString stringWithFormat:@"Failed to launch installer: %@", exception.reason]);
-                }
-            });
-        }];
-    });
+    [self invokeAfterJITEnabled:^{
+        // Ensure UI updates happen on main thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            vc.modalPresentationStyle = UIModalPresentationFullScreen;
+            NSLog(@"[ModInstaller] launching %@", vc.filepath);
+            
+            // Add exception handling
+            @try {
+                [self presentViewController:vc animated:YES completion:nil];
+            } @catch (NSException *exception) {
+                NSLog(@"[ModInstaller] Failed to present: %@", exception);
+                showDialog(@"Error", [NSString stringWithFormat:@"Failed to launch installer: %@", exception.reason]);
+            }
+        });
+    }];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
