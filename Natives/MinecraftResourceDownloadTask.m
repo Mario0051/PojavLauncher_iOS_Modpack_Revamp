@@ -2045,46 +2045,97 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     NSString *altName = [NSString stringWithFormat:@"%@.jar", versionId];
     
     if (self.verboseLogging) {
-        NSLog(@"[MCDL] Enqueuing client JAR: %@", altName);
+        NSLog(@"[MCDL] Processing client JAR: %@", altName);
     }
     
-    // Check if file exists before attempting download
+    // The critical fix: NEVER skip this step, only skip the actual download if file exists
     BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
-    if (fileExists && [self checkSHA:sha1 forFile:path altName:altName]) {
-        // File already exists and is valid, skip download and advance stage
-        if (self.verboseLogging) {
-            NSLog(@"[MCDL] Client JAR %@ already downloaded, skipping", altName);
-        }
-        
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
-            [manager advanceToStage:DownloadStageSetup withTotalItems:1];
-            [manager completeCurrentStage];
-        });
-        return;
-    }
+    BOOL filePasses = fileExists && [self checkSHA:sha1 forFile:path altName:altName];
     
     // Create download task with a success callback to advance stage
-    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha1 altName:altName toPath:path success:^{
-        // Task completed successfully, advance to next stage
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
-            [manager advanceToStage:DownloadStageSetup withTotalItems:1];
-            [manager completeCurrentStage];
-        });
-    } failure:nil];
-    
-    // If task is nil, the file was already downloaded, so advance stage
-    if (!task) {
-        if (self.verboseLogging) {
-            NSLog(@"[MCDL] Client JAR was already downloaded, advancing stage");
+    // For files that already exist, this will return nil but still call the success block
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url 
+                                                         size:size 
+                                                          sha:sha1 
+                                                      altName:altName 
+                                                       toPath:path 
+                                                      success:^{
+        // Processing successful - this block is called whether the file was downloaded or already existed
+        
+        if (filePasses && self.verboseLogging) {
+            NSLog(@"[MCDL] Client JAR %@ already exists, using existing", altName);
         }
         
+        // The Java version is actually contained in the version metadata, not the JAR
+        // Make sure it's included in our metadata
+        NSDictionary *javaVersionInfo = versionMetadata[@"javaVersion"];
+        if (javaVersionInfo) {
+            @synchronized(self) {
+                if (self.metadata) {
+                    // Ensure Java version info is in our metadata
+                    self.metadata[@"javaVersion"] = javaVersionInfo;
+                    
+                    // Update manager metadata
+                    DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+                    @synchronized(manager.metadata) {
+                        manager.metadata[@"javaVersion"] = javaVersionInfo;
+                    }
+                    
+                    if (self.verboseLogging) {
+                        NSLog(@"[MCDL] Java version info added to metadata: %@", javaVersionInfo);
+                    }
+                }
+            }
+        }
+        
+        // Advance to setup stage
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
             [manager advanceToStage:DownloadStageSetup withTotalItems:1];
             [manager completeCurrentStage];
         });
+    } 
+    failure:^(NSError *error) {
+        // Handle download failure
+        NSLog(@"[MCDL] Error downloading client JAR: %@", error.localizedDescription);
+        
+        // Try to recover by advancing anyway if this is a second launch attempt
+        if (fileExists) {
+            NSLog(@"[MCDL] Using existing client JAR despite download failure");
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+                [manager advanceToStage:DownloadStageSetup withTotalItems:1];
+                [manager completeCurrentStage];
+            });
+        } else {
+            [self finishDownloadWithError:error file:altName];
+        }
+    }];
+    
+    // Handle case where task is nil (file already exists and passes validation)
+    // The success callback will be called by createDownloadTask if verification passes
+    if (!task && !filePasses) {
+        NSLog(@"[MCDL] Warning: Client JAR %@ not found or verification failed, and download task not created", altName);
+        
+        // Try to recover - attempt to redownload
+        NSError *removeError = nil;
+        if (fileExists) {
+            [[NSFileManager defaultManager] removeItemAtPath:path error:&removeError];
+            if (removeError) {
+                NSLog(@"[MCDL] Error removing invalid client JAR: %@", removeError.localizedDescription);
+            }
+        }
+        
+        // Create a fresh download task
+        [self createDownloadTask:url size:size sha:sha1 altName:altName toPath:path success:^{
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+                [manager advanceToStage:DownloadStageSetup withTotalItems:1];
+                [manager completeCurrentStage];
+            });
+        } failure:^(NSError *error) {
+            [self finishDownloadWithError:error file:altName];
+        }];
     }
 }
 
