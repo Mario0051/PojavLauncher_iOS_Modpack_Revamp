@@ -1140,8 +1140,10 @@ static NSDate *lastRemoteVersionRefresh;
 
 #pragma mark - JIT and Launch Helper Methods
 
+// LauncherNavigationController.m
 - (void)invokeAfterJITEnabled:(void(^)(void))handler {
     NSLog(@"[JIT] Starting JIT enablement check");
+    localVersionList = remoteVersionList = nil;
     BOOL hasTrollStoreJIT = getEntitlementValue(@"com.apple.private.local.sandboxed-jit");
     
     if (isJITEnabled(false)) {
