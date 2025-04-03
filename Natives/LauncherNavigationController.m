@@ -1150,13 +1150,20 @@ static NSDate *lastRemoteVersionRefresh;
     vc.filepath = path;
     [vc setHitEnterAfterWindowShown:hitEnter];
     
-    // Check if the required Java version is available - add detailed logging
+    // For generic JAR files, set a default Java version if not determined automatically
     if (!vc.requiredJavaVersion) {
-        NSLog(@"[ModInstaller] ERROR: requiredJavaVersion is nil, cannot launch installer");
-        dispatch_async(dispatch_get_main_queue(), ^{
-            showDialog(@"Installation Error", @"Could not determine required Java version for the installer.");
-        });
-        return;
+        NSLog(@"[ModInstaller] No Java version detected, setting default Java 8 for generic JAR");
+        // Use reflection to set the property since we don't have the header
+        [vc setValue:@8 forKey:@"requiredJavaVersion"];
+        
+        // Check if it worked
+        if (!vc.requiredJavaVersion) {
+            NSLog(@"[ModInstaller] ERROR: Failed to set default Java version, cannot launch installer");
+            dispatch_async(dispatch_get_main_queue(), ^{
+                showDialog(@"Installation Error", @"Could not determine required Java version for the installer.");
+            });
+            return;
+        }
     }
     
     NSLog(@"[ModInstaller] Using Java version: %@", vc.requiredJavaVersion);
