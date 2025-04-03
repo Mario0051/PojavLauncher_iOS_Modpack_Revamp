@@ -319,6 +319,18 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
                 self.needsUIUpdate = YES;
             }
             [self.fileListLock unlock];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+                
+                if (manager.currentStage != DownloadStageSetup && 
+                    manager.currentStage != DownloadStageComplete) {
+                    NSLog(@"[MCDL] Advancing from stage %ld to final Setup stage", (long)manager.currentStage);
+                    [manager advanceToStage:DownloadStageSetup withTotalItems:1];
+                }
+                
+                // Complete the current stage, which will mark the download as complete
+                [manager completeCurrentStage];
+            });
         }
     }
     [self.completionLock unlock];
