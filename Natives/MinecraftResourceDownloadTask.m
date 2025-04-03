@@ -2004,6 +2004,12 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     
     if (!clientInfo) {
         NSLog(@"[MCDL] No client JAR information found in version metadata.");
+        // Advance stage even if no client info to prevent getting stuck
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+            [manager advanceToStage:DownloadStageSetup withTotalItems:1];
+            [manager completeCurrentStage];
+        });
         return;
     }
     
@@ -2014,6 +2020,12 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     
     if (!versionId || !url || !sha1) {
         NSLog(@"[MCDL] Client JAR information incomplete. Cannot download.");
+        // Advance stage even if info incomplete to prevent getting stuck
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+            [manager advanceToStage:DownloadStageSetup withTotalItems:1];
+            [manager completeCurrentStage];
+        });
         return;
     }
     
@@ -2024,8 +2036,44 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         NSLog(@"[MCDL] Enqueuing client JAR: %@", altName);
     }
     
-    // Create download task
-    [self createDownloadTask:url size:size sha:sha1 altName:altName toPath:path success:nil failure:nil];
+    // Check if file exists before attempting download
+    BOOL fileExists = [NSFileManager.defaultManager fileExistsAtPath:path];
+    if (fileExists && [self checkSHA:sha1 forFile:path altName:altName]) {
+        // File already exists and is valid, skip download and advance stage
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Client JAR %@ already downloaded, skipping", altName);
+        }
+        
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+            [manager advanceToStage:DownloadStageSetup withTotalItems:1];
+            [manager completeCurrentStage];
+        });
+        return;
+    }
+    
+    // Create download task with a success callback to advance stage
+    NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha1 altName:altName toPath:path success:^{
+        // Task completed successfully, advance to next stage
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+            [manager advanceToStage:DownloadStageSetup withTotalItems:1];
+            [manager completeCurrentStage];
+        });
+    } failure:nil];
+    
+    // If task is nil, the file was already downloaded, so advance stage
+    if (!task) {
+        if (self.verboseLogging) {
+            NSLog(@"[MCDL] Client JAR was already downloaded, advancing stage");
+        }
+        
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
+            [manager advanceToStage:DownloadStageSetup withTotalItems:1];
+            [manager completeCurrentStage];
+        });
+    }
 }
 
 - (NSArray *)downloadClientAssets:(NSDictionary *)assetIndexObj {
