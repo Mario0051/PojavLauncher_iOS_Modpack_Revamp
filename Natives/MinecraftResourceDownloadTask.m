@@ -1825,6 +1825,7 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     NSArray *libraries = versionMetadata[@"libraries"];
     NSInteger libraryCount = libraries.count;
     NSInteger skippedLibraries = 0;
+    NSInteger downloadedLibraries = 0; // Track libraries that were already downloaded
     
     if (self.verboseLogging) {
         NSLog(@"[MCDL] Processing %ld libraries for download", (long)libraryCount);
@@ -1973,11 +1974,14 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
         NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil failure:nil];
         if (task) {
             [tasks addObject:task];
+        } else {
+            // Task is nil, which means the file was already downloaded
+            downloadedLibraries++;
         }
     }
     
-    // If all libraries were skipped, advance to next stage
-    if (skippedLibraries == libraryCount) {
+    // If all libraries were either skipped due to rules or already downloaded, advance to next stage
+    if ((skippedLibraries + downloadedLibraries) == libraryCount) {
         dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             DownloadProgressManager *manager = [DownloadProgressManager sharedManager];
             [manager advanceToStage:DownloadStageAssets withTotalItems:1];
@@ -1986,7 +1990,8 @@ static const NSTimeInterval kResourceTimeout = 300.0; // 5 minute timeout for re
     }
     
     if (self.verboseLogging) {
-        NSLog(@"[MCDL] Enqueued %ld library downloads, %ld skipped", (long)tasks.count, (long)skippedLibraries);
+        NSLog(@"[MCDL] Enqueued %ld library downloads, %ld skipped, %ld already downloaded", 
+              (long)tasks.count, (long)skippedLibraries, (long)downloadedLibraries);
     }
     
     return tasks;
