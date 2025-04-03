@@ -22,16 +22,110 @@
 
 extern char **environ;
 
-// --- Helper Functions (Assumed defined elsewhere, e.g., utils.m or similar) ---
-// void init_bypassDyldLibValidation(); // Declared in utils.h if external
-// void init_loadDefaultEnv();
-// void init_loadCustomEnv();
-// void init_loadCustomJvmFlags(int* argc, const char** argv);
-// NSString* getSelectedJavaHome(NSString* defaultJRETag, int minVersion); // Declared in LauncherPreferences.h
-// BOOL getEntitlementValue(NSString *key); // Declared in LauncherPreferences.h
-// void UIKit_returnToSplitView(); // Declared in ios_uikit_bridge.h
-// void showDialog(NSString* title, NSString* message); // Declared in ios_uikit_bridge.h
-// ---------------------------------------------------------------------------
+void init_loadDefaultEnv() {
+    /* Define default env */
+
+    // Silent Caciocavallo NPE error in locating Android-only lib
+    setenv("LD_LIBRARY_PATH", "", 1);
+
+    // Ignore mipmap for performance(?) seems does not affect iOS
+    //setenv("LIBGL_MIPMAP", "3", 1);
+
+    // Disable overloaded functions hack for Minecraft 1.17+
+    setenv("LIBGL_NOINTOVLHACK", "1", 1);
+
+    // Fix white color on banner and sheep, since GL4ES 1.1.5
+    setenv("LIBGL_NORMALIZE", "1", 1);
+
+    // Override OpenGL version to 4.1 for Zink
+    setenv("MESA_GL_VERSION_OVERRIDE", "4.1", 1);
+
+    // Runs JVM in a separate thread
+    setenv("HACK_IGNORE_START_ON_FIRST_THREAD", "1", 1);
+}
+
+void init_loadCustomEnv() {
+    NSString *envvars = getPrefObject(@"java.env_variables");
+    if (envvars == nil || [envvars length] == 0) return; // Check for empty string too
+    NSLog(@"[JavaLauncher] Reading custom environment variables");
+    // Use componentsSeparatedByCharactersInSet to handle multiple spaces/newlines
+    NSCharacterSet *separators = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    for (NSString *line in [envvars componentsSeparatedByCharactersInSet:separators]) {
+        NSString *trimmedLine = [line stringByTrimmingCharactersInSet:separators];
+        if (trimmedLine.length == 0 || ![trimmedLine containsString:@"="]) {
+            // Skip empty lines or lines without '='
+            continue;
+        }
+        NSRange range = [trimmedLine rangeOfString:@"="];
+        NSString *key = [trimmedLine substringToIndex:range.location];
+        NSString *value = [trimmedLine substringFromIndex:range.location + range.length];
+        // Trim key and value just in case
+        key = [key stringByTrimmingCharactersInSet:separators];
+        value = [value stringByTrimmingCharactersInSet:separators];
+        if (key.length == 0) { // Ensure key is not empty
+             NSLog(@"[JavaLauncher] Warning: skipped custom env variable with empty key: %@", trimmedLine);
+             continue;
+        }
+        setenv(key.UTF8String, value.UTF8String, 1);
+        NSLog(@"[JavaLauncher] Added custom env variable: %@=%@", key, value);
+    }
+}
+
+void init_loadCustomJvmFlags(int* argc, const char** argv) {
+    NSString *jvmargs = [PLProfiles resolveKeyForCurrentProfile:@"javaArgs"];
+    if (jvmargs == nil || [jvmargs length] == 0) return; // Check for nil or empty
+
+    NSLog(@"[JavaLauncher] Reading custom JVM flags: %@", jvmargs);
+    NSArray *argsToPurge = @[@"Xms", @"Xmx", @"d32", @"d64"]; // Flags to ignore
+
+    // Split arguments robustly, respecting quotes if necessary (though simple split often suffices)
+    // For now, using componentsSeparatedByString which is simple but might break with quoted args.
+    // Consider a more robust parser if complex arguments with spaces are needed.
+    NSArray *potentialArgs = [jvmargs componentsSeparatedByString:@" "];
+
+    for (NSString *potentialArg in potentialArgs) {
+        NSString *jvmarg = [potentialArg stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (jvmarg.length == 0) continue;
+
+        BOOL ignore = NO;
+        // Check if the argument starts with any of the prefixes to purge
+        for (NSString *argToPurge in argsToPurge) {
+            // Check for both "-Xms..." and "Xms..." (without leading dash)
+             if ([jvmarg hasPrefix:[@"-" stringByAppendingString:argToPurge]] || [jvmarg hasPrefix:argToPurge]) {
+                 NSLog(@"[JavaLauncher] Ignored JVM flag: %@", jvmarg);
+                 ignore = YES;
+                 break;
+             }
+        }
+        if (ignore) continue;
+
+        // Prepend '-' if it's missing (common user error)
+        if (![jvmarg hasPrefix:@"-"]) {
+            jvmarg = [@"-" stringByAppendingString:jvmarg];
+        }
+
+        // Ensure we don't overflow the argv buffer
+        if (*argc < 999) { // Leave one space buffer before the limit
+             ++(*argc);
+             // IMPORTANT: We need to retain the string data.
+             // Create a C string that will persist for the duration of the launch.
+             // A simple way is to copy it. Ensure the buffer `margv` points to is large enough.
+             // Since margv is stack-allocated in launchJVM, using strdup is safer
+             // if the NSString might be released. However, for command-line args,
+             // just getting UTF8String *should* be okay as long as the NSString exists.
+             // Let's be safer and potentially leak a small amount if needed, or manage lifetime.
+             // For now, assume the NSString lives long enough.
+             argv[*argc] = [jvmarg UTF8String];
+             NSLog(@"[JavaLauncher] Added custom JVM flag: %s", argv[*argc]);
+        } else {
+             NSLog(@"[JavaLauncher] Warning: Too many JVM arguments, skipping: %@", jvmarg);
+             break; // Stop adding args if buffer is full
+        }
+    }
+}
+
+// --- End of Helper Function Definitions ---
+
 
 int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
     NSLog(@"[JavaLauncher] Beginning JVM launch");
@@ -43,6 +137,7 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         init_bypassDyldLibValidation();
     }
 
+    // Load environment variables
     init_loadDefaultEnv();
     init_loadCustomEnv();
 
@@ -60,7 +155,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
         if (preferredJavaVersion > 0) {
             if (minVersion > preferredJavaVersion) {
                 NSLog(@"[JavaLauncher] Profile's preferred Java version (%d) does not meet the minimum version (%d), dropping request", preferredJavaVersion, minVersion);
-                // Optionally fall back or show error, but for now, proceed with minVersion check
             } else {
                 NSDebugLog(@"[PLProfiles] Applying preferred javaVersion %d", preferredJavaVersion);
                 minVersion = preferredJavaVersion; // Use profile's preference if valid
@@ -287,8 +381,6 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
              NSLog(@"[JavaLauncher] Warning: Could not determine version ID for Minecraft launch.");
         }
     }
-    // --- End of Conditional Argument Handling ---
-
     // Resolve JLI_Launch function pointer
     pJLI_Launch = (JLI_Launch_func *)dlsym(libjli, "JLI_Launch");
 
@@ -338,8 +430,9 @@ int launchJVM(NSString *username, id launchTarget, int width, int height, int mi
     int result = pJLI_Launch(++margc, margv, // Argument count (margc is index, so count is margc+1)
                    0, NULL,       // jargc, jargv
                    0, NULL,       // appclassc, appclassv
-                   "1.8.0-internal", // fullversion
-                   "1.8",         // dotversion
+                   // These values are ignored in Java 17+, so keep it anyways
+                   "1.8.0-internal",
+                   "1.8",
                    "java",        // pname
                    "openjdk",     // lname
                    JNI_FALSE,     // javaargs
