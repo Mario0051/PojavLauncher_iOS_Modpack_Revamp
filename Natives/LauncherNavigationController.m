@@ -1145,43 +1145,48 @@ static NSDate *lastRemoteVersionRefresh;
 - (void)enterModInstallerWithPath:(NSString *)path hitEnterAfterWindowShown:(BOOL)hitEnter {
     NSLog(@"[ModInstaller] Preparing to launch installer at path: %@", path);
     
+    // Verify file exists
+    if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        NSLog(@"[ModInstaller] ERROR: JAR file not found at path: %@", path);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            showDialog(@"Installation Error", @"Installer file not found or is inaccessible.");
+        });
+        return;
+    }
+    
     // Create the view controller
     JavaGUIViewController *vc = [[JavaGUIViewController alloc] init];
     vc.filepath = path;
-    [vc setHitEnterAfterWindowShown:hitEnter];
+    vc.hitEnterAfterWindowShown = hitEnter;
     
-    // For generic JAR files, set a default Java version if not determined automatically
+    // Check Java version - don't return here, just log the issue
     if (!vc.requiredJavaVersion) {
-        NSLog(@"[ModInstaller] No Java version detected, setting default Java 8 for generic JAR");
-        // Use reflection to set the property since we don't have the header
-        [vc setValue:@8 forKey:@"requiredJavaVersion"];
-        
-        // Check if it worked
-        if (!vc.requiredJavaVersion) {
-            NSLog(@"[ModInstaller] ERROR: Failed to set default Java version, cannot launch installer");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                showDialog(@"Installation Error", @"Could not determine required Java version for the installer.");
-            });
-            return;
-        }
+        NSLog(@"[ModInstaller] WARNING: requiredJavaVersion is nil, attempting to continue anyway");
+    } else {
+        NSLog(@"[ModInstaller] Using Java version: %@", vc.requiredJavaVersion);
     }
     
-    NSLog(@"[ModInstaller] Using Java version: %@", vc.requiredJavaVersion);
-    
-    // Ensure we're using the main thread for UI operations before JIT check
+    // Launch process with additional safety
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[ModInstaller] Invoking JIT check before launch");
         [self invokeAfterJITEnabled:^{
-            // Configure the view controller
-            vc.modalPresentationStyle = UIModalPresentationFullScreen;
-            
-            // Ensure we're on the main thread for presenting
             dispatch_async(dispatch_get_main_queue(), ^{
-                NSLog(@"[ModInstaller] Attempting to present installer GUI: %@", vc.filepath);
+                // Setup completion handler to track success/failure
+                NSLog(@"[ModInstaller] Setting up presentation for: %@", vc.filepath);
                 
-                // Present with completion handler to verify presentation
-                [self presentViewController:vc animated:YES completion:^{
-                    NSLog(@"[ModInstaller] Installer view controller presentation completed");
-                }];
+                // Configure view controller
+                vc.modalPresentationStyle = UIModalPresentationFullScreen;
+                
+                // Present with error handling
+                @try {
+                    [self presentViewController:vc animated:YES completion:^{
+                        NSLog(@"[ModInstaller] Installer view controller presented successfully");
+                    }];
+                } @catch (NSException *exception) {
+                    NSLog(@"[ModInstaller] EXCEPTION during presentation: %@", exception);
+                    showDialog(@"Launch Error", 
+                               [NSString stringWithFormat:@"Failed to launch installer: %@", exception.reason]);
+                }
             });
         }];
     });
