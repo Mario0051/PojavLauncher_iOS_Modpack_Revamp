@@ -128,6 +128,7 @@ jobs:
           export BRANCH=${{ github.head_ref || github.ref_name }}
           export PATH=/opt/procursus/bin:/opt/homebrew/bin:$PATH
           export RUNNER=1 SLIMMED=1
+          brew install make
           if [ "${{ matrix.platform_name }}" == "ios" ]; then
             # Build ipa and tipa for iOS
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }}
